@@ -1,0 +1,158 @@
+import re
+import os
+import time
+import json
+import urllib.request
+from PyQt6.QtCore import QThread, pyqtSignal
+from config import GITHUB_REPO, APP_VERSION
+from core.entities import LogEntry
+
+# --- Worker Thread for Loading Files ---
+class LogLoader(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(list, dict, str)
+
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+
+    def run(self):
+        entries = []
+        stats = {"INFO": 0, "DEBUG": 0, "ERROR": 0, "WARN": 0}
+        log_pattern = re.compile(r'^(\d{2}:\d{2}:\d{2}\.\d{3})\s+\[\s*(INFO|DEBUG|ERROR|WARN)\s*\]')
+
+        try:
+            file_size = os.path.getsize(self.file_path)
+            bytes_read = 0
+            last_emit_time = 0
+
+            with open(self.file_path, 'r', encoding='utf-8', errors='replace') as f:
+                current_entry = None
+                for line in f:
+                    line_len = len(line.encode('utf-8'))
+                    bytes_read += line_len
+
+                    current_time = time.time()
+                    if current_time - last_emit_time > 0.1:
+                        progress_pct = int((bytes_read / file_size) * 100)
+                        self.progress.emit(progress_pct)
+                        last_emit_time = current_time
+
+                    match = log_pattern.match(line)
+                    if match:
+                        if current_entry:
+                            entries.append(current_entry)
+                        timestamp_str = match.group(1)
+                        level_str = match.group(2)
+                        if level_str in stats:
+                            stats[level_str] += 1
+                        current_entry = LogEntry(timestamp_str, level_str, line.strip(), line)
+                    else:
+                        if current_entry:
+                            if len(current_entry.message) < 50000:
+                                current_entry.message += "\n" + line.strip()
+                            current_entry.full_line += line
+                        else:
+                            current_entry = LogEntry("", "UNKNOWN", line.strip(), line)
+
+                if current_entry:
+                    entries.append(current_entry)
+
+            self.progress.emit(100)
+            self.finished.emit(entries, stats, "")
+        except Exception as e:
+            self.finished.emit([], {}, str(e))
+
+
+# --- Worker Thread for Filtering ---
+class FilterWorker(QThread):
+    finished = pyqtSignal(list)
+
+    def __init__(self, entries, show_info, show_debug, show_error, show_warn, search_text):
+        super().__init__()
+        self.entries = entries
+        self.show_info = show_info
+        self.show_debug = show_debug
+        self.show_error = show_error
+        self.show_warn = show_warn
+        self.search_text = search_text
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
+
+    def run(self):
+        active_levels = set()
+        if self.show_info: active_levels.add("INFO")
+        if self.show_debug: active_levels.add("DEBUG")
+        if self.show_error: active_levels.add("ERROR")
+        if self.show_warn: active_levels.add("WARN")
+
+        search_text = self.search_text
+        entries = self.entries
+
+        if not search_text:
+            new_indices = [
+                i for i, e in enumerate(entries)
+                if e.level in active_levels or e.level == "UNKNOWN"
+            ]
+        else:
+            search_regex = None
+            try:
+                search_regex = re.compile(search_text, re.IGNORECASE)
+            except re.error:
+                search_regex = None
+
+            if search_regex:
+                match = search_regex.search
+                new_indices = [
+                    i for i, e in enumerate(entries)
+                    if (e.level in active_levels or e.level == "UNKNOWN") and match(e.full_line)
+                ]
+            else:
+                search_lower = search_text.lower()
+                new_indices = [
+                    i for i, e in enumerate(entries)
+                    if (e.level in active_levels or e.level == "UNKNOWN") and search_lower in e.full_line.lower()
+                ]
+
+        if not self._is_cancelled:
+            self.finished.emit(new_indices)
+
+
+# --- Update Worker ---
+class UpdateWorker(QThread):
+    status_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str, str)  # success, download_url, version
+
+    def run(self):
+        try:
+            self.status_signal.emit("Checking for updates...")
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+            # Create request with User-Agent to avoid 403 Forbidden
+            req = urllib.request.Request(url, headers={'User-Agent': 'LogAnalyzer-Updater'})
+
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+
+            latest_version = data['tag_name'].lstrip('v')
+
+            # Simple version compare (assuming semantic versioning)
+            if latest_version != APP_VERSION:
+                # Find the .exe asset
+                download_url = None
+                for asset in data['assets']:
+                    if asset['name'].endswith('.exe'):
+                        download_url = asset['browser_download_url']
+                        break
+
+                if download_url:
+                    self.finished_signal.emit(True, download_url, latest_version)
+                else:
+                    self.finished_signal.emit(False, "", "No executable found in release.")
+            else:
+                self.finished_signal.emit(False, "", "You are using the latest version.")
+
+        except Exception as e:
+            self.finished_signal.emit(False, "", str(e))
