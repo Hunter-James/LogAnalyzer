@@ -17,9 +17,9 @@ from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QThread,
 from PyQt6.QtGui import QColor, QFont, QPainter, QBrush, QPen, QKeySequence, QWheelEvent, QIcon
 
 # --- Configuration ---
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 # TODO: CHANGE THIS TO YOUR GITHUB REPO "username/repository"
-GITHUB_REPO = "your_username/your_repo_name"
+GITHUB_REPO = "Hunter-James/LogAnalyzerEVOL"
 
 # --- Theme Definitions ---
 THEMES = {
@@ -483,33 +483,57 @@ class SettingsDialog(QDialog):
         else:
             QMessageBox.information(self, "Update Info", message)
 
+    # ИСПРАВЛЕНИЕ: Вынес метод из on_update_checked, чтобы он был методом класса
     def perform_update(self, url):
-        # 1. Download new exe
+        # 1. Проверяем, запущен ли код как скомпилированный exe
+        if not getattr(sys, 'frozen', False):
+            QMessageBox.warning(self, "Update Error",
+                                "Auto-update is only supported when running as a compiled .exe file.")
+            return
+
         try:
             self.btn_update.setText("Downloading...")
             self.btn_update.setEnabled(False)
             QApplication.processEvents()
 
-            new_exe_name = "update.tmp"
-            urllib.request.urlretrieve(url, new_exe_name)
-
-            # 2. Create Batch Script
             current_exe = sys.executable
-            batch_script = f"""
-@echo off
+            exe_dir = os.path.dirname(current_exe)
+
+            # Делаем пути абсолютными и безопасными
+            new_exe_path = os.path.join(exe_dir, "update_temp.exe")
+            bat_path = os.path.join(exe_dir, "updater.bat")
+
+            # 2. Скачиваем новый exe
+            urllib.request.urlretrieve(url, new_exe_path)
+
+            # 3. Создаем Batch-скрипт
+            batch_script = f"""@echo off
 timeout /t 2 /nobreak > NUL
-del "{current_exe}"
-move "{new_exe_name}" "{current_exe}"
+move /y "{new_exe_path}" "{current_exe}"
 start "" "{current_exe}"
 del "%~f0"
-            """
-
-            with open("update.bat", "w") as f:
+"""
+            with open(bat_path, "w", encoding="utf-8") as f:
                 f.write(batch_script)
 
-            # 3. Launch Batch and Exit
-            subprocess.Popen("update.bat", shell=True)
+            # 4. Очищаем окружение и запускаем bat-файл отвязанным
+            env = os.environ.copy()
+            env.pop('_MEIPASS2', None)
+            env.pop('_MEIPASS', None)
+
+            # Специфичные для Windows флаги, чтобы запустить скрипт невидимым
+            CREATE_NO_WINDOW = 0x08000000
+
+            subprocess.Popen(
+                bat_path,
+                shell=True,
+                env=env,
+                creationflags=CREATE_NO_WINDOW
+            )
+
+            # 5. Выходим из приложения, чтобы освободить файл
             QApplication.quit()
+            sys.exit(0)
 
         except Exception as e:
             QMessageBox.critical(self, "Update Failed", str(e))
@@ -521,7 +545,7 @@ del "%~f0"
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"Log Analyzer Pro v{APP_VERSION}")
+        self.setWindowTitle(f"Log Analyzer v{APP_VERSION}")
         self.resize(1400, 900)
         self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
 
