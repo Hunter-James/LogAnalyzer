@@ -1,10 +1,7 @@
 import re
 import os
 import time
-import json
-import urllib.request
 from PyQt6.QtCore import QThread, pyqtSignal
-from config import GITHUB_REPO, APP_VERSION
 from core.entities import LogEntry
 
 # --- Worker Thread for Loading Files ---
@@ -118,41 +115,3 @@ class FilterWorker(QThread):
 
         if not self._is_cancelled:
             self.finished.emit(new_indices)
-
-
-# --- Update Worker ---
-class UpdateWorker(QThread):
-    status_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal(bool, str, str)  # success, download_url, version
-
-    def run(self):
-        try:
-            self.status_signal.emit("Checking for updates...")
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-
-            # Create request with User-Agent to avoid 403 Forbidden
-            req = urllib.request.Request(url, headers={'User-Agent': 'LogAnalyzer-Updater'})
-
-            with urllib.request.urlopen(req) as response:
-                data = json.loads(response.read().decode())
-
-            latest_version = data['tag_name'].lstrip('v')
-
-            # Simple version compare (assuming semantic versioning)
-            if latest_version != APP_VERSION:
-                # Find the .exe asset
-                download_url = None
-                for asset in data['assets']:
-                    if asset['name'].endswith('.exe'):
-                        download_url = asset['browser_download_url']
-                        break
-
-                if download_url:
-                    self.finished_signal.emit(True, download_url, latest_version)
-                else:
-                    self.finished_signal.emit(False, "", "No executable found in release.")
-            else:
-                self.finished_signal.emit(False, "", "You are using the latest version.")
-
-        except Exception as e:
-            self.finished_signal.emit(False, "", str(e))
