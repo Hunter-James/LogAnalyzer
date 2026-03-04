@@ -3,6 +3,8 @@ import os
 import json
 import urllib.request
 import subprocess
+import ssl
+import time
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, 
                              QProgressBar, QMessageBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -10,7 +12,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 # Configuration
 GITHUB_REPO = "Hunter-James/LogAnalyzerEVOL"
 MAIN_EXE_NAME = "LogAnalyzer.exe"
-VERSION_FILE = "../version.txt"
+VERSION_FILE = "version.txt"
 
 class UpdateWorker(QThread):
     progress = pyqtSignal(int)
@@ -30,10 +32,16 @@ class UpdateWorker(QThread):
 
             # 2. Check GitHub for latest release
             self.status_msg.emit("Checking for updates...")
+            
+            # Create SSL context that ignores errors (safer for frozen apps sometimes)
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
             url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
             req = urllib.request.Request(url, headers={'User-Agent': 'LogAnalyzer-Updater'})
             
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, context=ctx) as response:
                 data = json.loads(response.read().decode())
             
             latest_version = data['tag_name'].lstrip('v')
@@ -58,30 +66,52 @@ class UpdateWorker(QThread):
                 self.finished.emit(False, "No executable found in release")
                 return
 
-            # 4. Download new version
+            # 4. Download new version (Manual implementation)
             self.status_msg.emit("Downloading update...")
             temp_file = "update_temp.exe"
             
-            def report_hook(block_num, block_size, total_size):
-                downloaded = block_num * block_size
-                if total_size > 0:
-                    percent = int((downloaded / total_size) * 50) + 30 # Map 0-100 to 30-80
-                    self.progress.emit(min(percent, 80))
+            with urllib.request.urlopen(download_url, context=ctx) as response:
+                total_size = int(response.info().get('Content-Length', 0))
+                downloaded = 0
+                with open(temp_file, 'wb') as out_file:
+                    while True:
+                        chunk = response.read(8192)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = int((downloaded / total_size) * 50) + 30
+                            self.progress.emit(min(percent, 80))
 
-            urllib.request.urlretrieve(download_url, temp_file, report_hook)
             self.progress.emit(85)
 
             # 5. Replace old file
             self.status_msg.emit("Installing update...")
             
+            # Check if we are trying to overwrite ourselves (Loader shouldn't be named LogAnalyzer.exe)
+            if getattr(sys, 'frozen', False):
+                current_exe = sys.executable
+                if os.path.basename(current_exe).lower() == MAIN_EXE_NAME.lower():
+                    self.finished.emit(False, "Loader cannot update itself. Rename loader to Loader.exe")
+                    return
+
             if os.path.exists(MAIN_EXE_NAME):
                 try:
                     os.remove(MAIN_EXE_NAME)
                 except OSError:
-                    pass
+                    # File might be in use, try to rename it to .old
+                    try:
+                        old_file = MAIN_EXE_NAME + ".old"
+                        if os.path.exists(old_file):
+                            os.remove(old_file)
+                        os.rename(MAIN_EXE_NAME, old_file)
+                    except OSError as e:
+                        self.finished.emit(False, f"Cannot replace file: {e}")
+                        return
             
             if os.path.exists(temp_file):
-                os.replace(temp_file, MAIN_EXE_NAME)
+                os.rename(temp_file, MAIN_EXE_NAME)
             
             # 6. Update version file
             with open(VERSION_FILE, "w") as f:
