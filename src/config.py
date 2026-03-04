@@ -1,6 +1,41 @@
+import json
+import os
+
 APP_VERSION = "1.0.0"
 
 GITHUB_REPO = "Hunter-James/LogAnalyzerEVOL"
+
+# --- Settings Management ---
+SETTINGS_FILE = "settings.json"
+
+def get_settings_path():
+    # Determine path relative to the executable or script
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, SETTINGS_FILE)
+
+def load_settings():
+    path = get_settings_path()
+    defaults = {"theme": "Default", "font_size": 10}
+    
+    if os.path.exists(path):
+        try:
+            with open(path, 'r') as f:
+                saved = json.load(f)
+                # Merge with defaults to ensure all keys exist
+                defaults.update(saved)
+                return defaults
+        except Exception:
+            return defaults
+    return defaults
+
+def save_settings(theme_name, font_size):
+    path = get_settings_path()
+    data = {"theme": theme_name, "font_size": font_size}
+    try:
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Failed to save settings: {e}")
 
 # --- Theme Definitions ---
 THEMES = {

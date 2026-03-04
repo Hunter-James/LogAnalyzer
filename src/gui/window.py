@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPu
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QIcon, QKeySequence
 
-from config import THEMES, APP_VERSION
+from config import THEMES, APP_VERSION, load_settings, save_settings
 from core.models import LogModel
 from core.workers import LogLoader
 from gui.custom_widgets import ScalableListView, ScalableTextEdit
@@ -19,8 +19,10 @@ class MainWindow(QMainWindow):
         self.resize(1400, 900)
         self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
 
-        self.current_theme_name = "Default"
-        self.current_font_size = 10
+        # Load settings
+        settings = load_settings()
+        self.current_theme_name = settings.get("theme", "Default")
+        self.current_font_size = settings.get("font_size", 10)
 
         self.setup_ui()
         self.apply_theme(self.current_theme_name)
@@ -317,6 +319,7 @@ class MainWindow(QMainWindow):
             theme, size = dlg.get_settings()
             self.current_font_size = size
             self.apply_theme(theme)
+            save_settings(theme, size)
 
     def on_zoom_request(self, delta):
         if delta > 0:
@@ -324,6 +327,7 @@ class MainWindow(QMainWindow):
         else:
             self.current_font_size = max(6, self.current_font_size - 1)
         self.update_fonts()
+        save_settings(self.current_theme_name, self.current_font_size)
 
     def open_file_dialog(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open Log File", "", "Log Files (*.log *.txt);;All Files (*)")
