@@ -1,17 +1,15 @@
 import os
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                             QLineEdit, QLabel, QFileDialog, QProgressBar, QSplitter,
-                             QMessageBox, QAbstractItemView, QStyle, QFrame, QCheckBox, QApplication)
+                             QLineEdit, QLabel, QFileDialog, QProgressBar,
+                             QMessageBox, QStyle, QFrame, QCheckBox, QApplication)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QIcon, QKeySequence
 
 from config import THEMES, APP_VERSION, load_settings, save_settings
-from core.models import LogModel
-from core.workers import LogLoader
-from gui.custom_widgets import ScalableListView, ScalableTextEdit
+from gui.log_viewer import LogViewerWidget
+from gui.tab_manager import SplitManager
 from gui.settings import SettingsDialog
 
-# --- Main Window ---
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -27,25 +25,13 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self.apply_theme(self.current_theme_name)
 
-        self.model = LogModel()
-        self.log_view.setModel(self.model)
-        self.log_view.selectionModel().selectionChanged.connect(self.on_selection_changed)
-
-        # Connect Zoom Signals
-        self.log_view.zoomRequest.connect(self.on_zoom_request)
-        self.details_view.zoomRequest.connect(self.on_zoom_request)
-
-        # Connect Filter Finished Signal for Scroll Restoration
-        self.model.filterFinished.connect(self.on_filter_finished_scroll)
-
-        self.current_file = None
-        self.stats = {}
-        self.preserved_real_index = None
-
         self.search_timer = QTimer()
         self.search_timer.setSingleShot(True)
-        self.search_timer.setInterval(50)
+        self.search_timer.setInterval(250)
         self.search_timer.timeout.connect(self.trigger_search)
+        
+        # Flag to prevent recursive updates when syncing UI
+        self.updating_ui = False
 
     def setup_ui(self):
         self.central_widget = QWidget()
@@ -60,25 +46,11 @@ class MainWindow(QMainWindow):
 
         self.create_widgets()
 
-        self.content_widget = QWidget()
-        content_layout = QVBoxLayout(self.content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-
-        self.splitter = QSplitter(Qt.Orientation.Vertical)
-
-        # Use Custom Scalable Widgets
-        self.log_view = ScalableListView()
-        self.log_view.setUniformItemSizes(True)
-        self.log_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.splitter.addWidget(self.log_view)
-
-        self.details_view = ScalableTextEdit()
-        self.details_view.setReadOnly(True)
-        self.splitter.addWidget(self.details_view)
-        self.splitter.setSizes([600, 250])
-
-        content_layout.addWidget(self.splitter)
+        # Main content is now the SplitManager
+        self.split_manager = SplitManager()
+        self.split_manager.activeTabChanged.connect(self.on_active_tab_changed)
+        
+        # We need to add split_manager to layout later in build_layout methods
 
     def create_widgets(self):
         self.btn_open = QPushButton("Open File")
@@ -88,16 +60,16 @@ class MainWindow(QMainWindow):
 
         self.chk_info = QCheckBox("INFO")
         self.chk_info.setChecked(True)
-        self.chk_info.stateChanged.connect(self.refresh_view)
+        self.chk_info.stateChanged.connect(self.on_filter_changed)
         self.chk_debug = QCheckBox("DEBUG")
         self.chk_debug.setChecked(True)
-        self.chk_debug.stateChanged.connect(self.refresh_view)
+        self.chk_debug.stateChanged.connect(self.on_filter_changed)
         self.chk_warn = QCheckBox("WARN")
         self.chk_warn.setChecked(True)
-        self.chk_warn.stateChanged.connect(self.refresh_view)
+        self.chk_warn.stateChanged.connect(self.on_filter_changed)
         self.chk_error = QCheckBox("ERROR")
         self.chk_error.setChecked(True)
-        self.chk_error.stateChanged.connect(self.refresh_view)
+        self.chk_error.stateChanged.connect(self.on_filter_changed)
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search...")
@@ -105,6 +77,7 @@ class MainWindow(QMainWindow):
 
         self.lbl_file_name = QLabel("No File")
         self.lbl_stats = QLabel("")
+        self.lbl_stats.setWordWrap(True)
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
 
@@ -114,7 +87,7 @@ class MainWindow(QMainWindow):
             self.chk_info, self.chk_debug, self.chk_warn, self.chk_error,
             self.search_input,
             self.lbl_file_name, self.lbl_stats, self.progress_bar,
-            self.content_widget
+            self.split_manager
         ]
         for w in widgets:
             w.setParent(self.widget_holder)
@@ -141,20 +114,15 @@ class MainWindow(QMainWindow):
             self.build_side_layout(t)
 
         self.apply_stylesheet(t)
-
-        if hasattr(self, 'model'):
-            self.model.set_theme(theme_name, self.current_font_size)
-        if hasattr(self, 'details_view'):
-            font = QFont(t['mono_font'], self.current_font_size)
-            self.details_view.setFont(font)
+        self.update_fonts()
 
     def update_fonts(self):
-        t = THEMES[self.current_theme_name]
-        if hasattr(self, 'model'):
-            self.model.set_theme(self.current_theme_name, self.current_font_size)
-        if hasattr(self, 'details_view'):
-            font = QFont(t['mono_font'], self.current_font_size)
-            self.details_view.setFont(font)
+        # Update all open viewers
+        for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
+            for i in range(group.count()):
+                viewer = group.widget(i)
+                if isinstance(viewer, LogViewerWidget):
+                    viewer.apply_theme(self.current_theme_name, self.current_font_size)
 
     def build_top_layout(self, t):
         toolbar = QFrame()
@@ -181,7 +149,9 @@ class MainWindow(QMainWindow):
         tb_layout.addWidget(self.search_input)
 
         self.root_layout.addWidget(toolbar)
-        self.root_layout.addWidget(self.content_widget)
+
+        # 👇 ИСПРАВЛЕНИЕ ЗДЕСЬ: Добавлен коэффициент растяжения (1) 👇
+        self.root_layout.addWidget(self.split_manager, 1)
 
         status = QFrame()
         status.setObjectName("Panel")
@@ -201,7 +171,7 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Panel")
-        sidebar.setFixedWidth(430)
+        sidebar.setFixedWidth(220)
         sb_layout = QVBoxLayout(sidebar)
         sb_layout.setContentsMargins(15, 15, 15, 15)
         sb_layout.setSpacing(10)
@@ -229,35 +199,64 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.progress_bar)
 
         h_layout.addWidget(sidebar)
-        h_layout.addWidget(self.content_widget)
+        h_layout.addWidget(self.split_manager)
 
         container = QWidget()
         container.setLayout(h_layout)
         self.root_layout.addWidget(container)
 
     def apply_stylesheet(self, t):
+        # Base styles
         qss = f"""
             QMainWindow {{ background-color: {t['bg_main']}; color: {t['text_main']}; }}
             QWidget {{ font-family: '{t['font_family']}', sans-serif; color: {t['text_main']}; }}
+            
+            /* Panels and Frames */
             QFrame#Panel {{ background-color: {t['bg_panel']}; border: 1px solid {t['border']}; }}
-            QLineEdit {{
-                background-color: {t['bg_main']};
-                border: 1px solid {t['border']};
-                padding: 6px;
-                color: {t['text_main']};
+            
+            /* Inputs */
+            QLineEdit {{ 
+                background-color: {t['bg_main']}; 
+                border: 1px solid {t['border']}; 
+                padding: 6px; 
+                color: {t['text_main']}; 
             }}
+            
+            /* List View */
             QListView {{ background-color: {t['bg_main']}; border: none; }}
             QListView::item {{ padding: 4px; border-bottom: 1px solid {t['border']}; }}
             QListView::item:selected {{ background-color: {t['selection']}; color: {t['text_main']}; }}
-            QTextEdit {{
-                background-color: {t['bg_panel']};
-                border-top: 1px solid {t['border']};
-                color: {t['text_main']};
-                font-family: '{t['mono_font']}';
+            
+            /* Text Edit */
+            QTextEdit {{ 
+                background-color: {t['bg_panel']}; 
+                border-top: 1px solid {t['border']}; 
+                color: {t['text_main']}; 
+                font-family: '{t['mono_font']}'; 
             }}
-            QSplitter::handle {{ background-color: {t['border']}; height: 2px; }}
+            
+            /* Splitter */
+            QSplitter::handle {{ background-color: {t['border']}; }}
+            
+            /* Tab Widget */
+            QTabWidget::pane {{ border: 1px solid {t['border']}; top: -1px; }}
+            QTabBar::tab {{ 
+                background: {t['bg_panel']}; 
+                color: {t['text_muted']}; 
+                padding: 8px 15px; 
+                border: 1px solid {t['border']}; 
+                border-bottom: none; 
+                margin-right: 2px;
+            }}
+            QTabBar::tab:selected {{ 
+                background: {t['bg_main']}; 
+                color: {t['text_main']}; 
+                border-bottom: 1px solid {t['bg_main']};
+            }}
+            QTabBar::tab:!selected:hover {{ background: {t['selection']}; }}
+            QTabBar::close-button {{ subcontrol-position: right; }}
         """
-
+        
         if self.current_theme_name == "Default":
             qss += f"""
                 QPushButton {{
@@ -270,26 +269,8 @@ class MainWindow(QMainWindow):
                 QPushButton:hover {{ background-color: #454545; }}
                 QCheckBox {{ color: {t['text_main']}; font-weight: bold; }}
             """
-        elif self.current_theme_name == "Brutalist":
-            qss += f"""
-                QPushButton {{
-                    background-color: {t['bg_main']};
-                    color: {t['accent']};
-                    border: 1px solid {t['accent']};
-                    padding: 6px 12px;
-                    font-weight: bold;
-                }}
-                QPushButton:hover {{ background-color: {t['accent']}; color: {t['bg_main']}; }}
-                QPushButton#OpenBtn {{
-                    padding: 15px;
-                    font-weight: 900;
-                    font-size: 14px;
-                    text-transform: uppercase;
-                    letter-spacing: 2px;
-                }}
-            """
         else:
-            qss += f"""
+             qss += f"""
                 QPushButton {{
                     background-color: {t['bg_main']};
                     color: {t['accent']};
@@ -299,9 +280,9 @@ class MainWindow(QMainWindow):
                 }}
                 QPushButton:hover {{ background-color: {t['accent']}; color: {t['bg_main']}; }}
             """
-
+            
         self.setStyleSheet(qss)
-
+        
         if self.current_theme_name == "Default":
             self.chk_info.setStyleSheet(f"color: {t['info']}; font-weight: bold;")
             self.chk_debug.setStyleSheet(f"color: {t['debug']}; font-weight: bold;")
@@ -330,102 +311,75 @@ class MainWindow(QMainWindow):
         save_settings(self.current_theme_name, self.current_font_size)
 
     def open_file_dialog(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Open Log File", "", "Log Files (*.log *.txt);;All Files (*)")
-        if file_name:
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Open Log File", "", "Log Files (*.log *.txt);;All Files (*)")
+        for file_name in file_names:
             self.load_file(file_name)
 
     def load_file(self, file_path):
-        self.current_file = file_path
-        self.lbl_file_name.setText(os.path.basename(file_path))
-        self.lbl_stats.setText("Loading...")
-        self.progress_bar.setValue(0)
+        viewer = LogViewerWidget(file_path, self.current_theme_name, self.current_font_size)
+        viewer.statsChanged.connect(self.update_stats_display)
+        viewer.progressChanged.connect(self.progress_bar.setValue)
+        viewer.loadingFinished.connect(self.on_loading_finished)
+        
+        self.split_manager.add_tab(viewer, os.path.basename(file_path))
         self.progress_bar.setVisible(True)
         self.btn_open.setEnabled(False)
 
-        self.loader = LogLoader(file_path)
-        self.loader.progress.connect(self.progress_bar.setValue)
-        self.loader.finished.connect(self.on_load_finished)
-        self.loader.start()
-
-    def on_load_finished(self, entries, stats, error_msg):
+    def on_loading_finished(self):
         self.progress_bar.setVisible(False)
         self.btn_open.setEnabled(True)
 
-        if error_msg:
-            QMessageBox.critical(self, "Error", f"Failed to load file:\n{error_msg}")
-            self.lbl_stats.setText("Error")
+    def on_active_tab_changed(self, viewer):
+        self.updating_ui = True
+        if viewer and isinstance(viewer, LogViewerWidget):
+            self.lbl_file_name.setText(os.path.basename(viewer.file_path))
+            self.update_stats_display(viewer.stats)
+            
+            # Sync toolbar with the new active tab's filter state
+            self.chk_info.setChecked(viewer.filter_state['info'])
+            self.chk_debug.setChecked(viewer.filter_state['debug'])
+            self.chk_warn.setChecked(viewer.filter_state['warn'])
+            self.chk_error.setChecked(viewer.filter_state['error'])
+            self.search_input.setText(viewer.filter_state['search'])
+        else:
+            self.lbl_file_name.setText("No File")
+            self.lbl_stats.setText("")
+        self.updating_ui = False
+
+    def update_stats_display(self, stats):
+        if not stats:
+            self.lbl_stats.setText("")
             return
-
-        self.model.set_entries(entries)
-        self.stats = stats
-        self.update_stats_display()
-
-        if self.model.rowCount() > 0:
-            self.log_view.scrollToBottom()
-
-    def update_stats_display(self):
-        total = len(self.model._entries)
-        text = f"Total: {total:,} | Info: {self.stats.get('INFO', 0):,} | Error: {self.stats.get('ERROR', 0):,} | Debug: {self.stats.get('DEBUG', 0):,} | Warn: {self.stats.get('WARN', 0):,}"
+        
+        total = sum(stats.values())
+        text = f"Total: {total:,} | Info: {stats.get('INFO', 0):,} | Error: {stats.get('ERROR', 0):,} | Debug: {stats.get('DEBUG', 0):,} | Warn: {stats.get('WARN', 0):,}"
         self.lbl_stats.setText(text)
 
+    def on_filter_changed(self):
+        if not self.updating_ui:
+            self.refresh_view()
+
     def on_search_text_changed(self, text):
-        self.search_timer.start()
+        if not self.updating_ui:
+            self.search_timer.start()
 
     def trigger_search(self):
         self.refresh_view()
 
     def refresh_view(self):
-        # Capture current selection (Real Index)
-        current_index = self.log_view.currentIndex()
-        if current_index.isValid():
-            self.preserved_real_index = self.model.get_real_index(current_index.row())
-        else:
-            self.preserved_real_index = None
-
-        self.model.update_filters(
-            self.chk_info.isChecked(),
-            self.chk_debug.isChecked(),
-            self.chk_error.isChecked(),
-            self.chk_warn.isChecked(),
-            self.search_input.text()
-        )
-
-    def on_filter_finished_scroll(self):
-        # Restore Selection
-        if self.preserved_real_index is not None:
-            new_row = self.model.find_row_by_real_index(self.preserved_real_index)
-            if new_row != -1:
-                new_index = self.model.index(new_row)
-                self.log_view.setCurrentIndex(new_index)
-                self.log_view.scrollTo(new_index, QAbstractItemView.ScrollHint.PositionAtCenter)
-
-    def on_selection_changed(self, selected, deselected):
-        selected_indexes = self.log_view.selectedIndexes()
-        if not selected_indexes:
-            self.details_view.clear()
-            return
-        selected_indexes.sort(key=lambda x: x.row())
-        display_indexes = selected_indexes[:50]
-        full_text = ""
-        for idx in display_indexes:
-            text = self.model.data(idx, Qt.ItemDataRole.UserRole)
-            full_text += text + "\n" + "=" * 80 + "\n"
-        if len(selected_indexes) > 50:
-            full_text += f"\n... and {len(selected_indexes) - 50} more items selected."
-        self.details_view.setPlainText(full_text)
-
+        viewer = self.split_manager.get_current_viewer()
+        if viewer:
+            viewer.set_filters(
+                self.chk_info.isChecked(),
+                self.chk_debug.isChecked(),
+                self.chk_warn.isChecked(),
+                self.chk_error.isChecked(),
+                self.search_input.text()
+            )
+            
     def keyPressEvent(self, event):
-        if event.matches(QKeySequence.StandardKey.Copy):
-            if self.details_view.hasFocus():
-                self.details_view.copy()
-                return
-            selected_indexes = self.log_view.selectedIndexes()
-            if selected_indexes:
-                selected_indexes.sort(key=lambda x: x.row())
-                text_list = []
-                for idx in selected_indexes:
-                    text_list.append(self.model.data(idx, Qt.ItemDataRole.UserRole))
-                full_text = "\n".join(text_list)
-                QApplication.clipboard().setText(full_text)
+        viewer = self.split_manager.get_current_viewer()
+        if viewer:
+            viewer.keyPressEvent(event)
         else:
             super().keyPressEvent(event)
