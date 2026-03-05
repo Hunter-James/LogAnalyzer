@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
         self.chk_error.stateChanged.connect(self.on_global_filter_changed)
 
         self.lbl_file_name = QLabel("No File")
-        self.lbl_stats = QLabel("")
+        # Global stats label removed, moved to local viewer
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
 
@@ -73,7 +73,7 @@ class MainWindow(QMainWindow):
         widgets = [
             self.btn_open, self.btn_settings,
             self.chk_info, self.chk_debug, self.chk_warn, self.chk_error,
-            self.lbl_file_name, self.lbl_stats, self.progress_bar,
+            self.lbl_file_name, self.progress_bar,
             self.split_manager
         ]
         for w in widgets:
@@ -142,7 +142,7 @@ class MainWindow(QMainWindow):
         st_layout.setContentsMargins(10, 2, 10, 2)
         st_layout.addWidget(self.lbl_file_name)
         st_layout.addStretch()
-        st_layout.addWidget(self.lbl_stats)
+        # Stats label removed from here
         st_layout.addWidget(self.progress_bar)
 
         self.root_layout.addWidget(status)
@@ -175,7 +175,7 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.chk_error)
         sb_layout.addStretch()
         sb_layout.addWidget(self.lbl_file_name)
-        sb_layout.addWidget(self.lbl_stats)
+        # Stats label removed from here
         sb_layout.addWidget(self.progress_bar)
 
         h_layout.addWidget(sidebar)
@@ -274,7 +274,7 @@ class MainWindow(QMainWindow):
 
     def load_file(self, file_path):
         viewer = LogViewerWidget(file_path, self.current_theme_name, self.current_font_size)
-        viewer.statsChanged.connect(self.update_stats_display)
+        # Stats signal no longer connected to main window
         viewer.progressChanged.connect(self.progress_bar.setValue)
         viewer.loadingFinished.connect(self.on_loading_finished)
         
@@ -298,20 +298,10 @@ class MainWindow(QMainWindow):
         self.updating_ui = True
         if viewer and isinstance(viewer, LogViewerWidget):
             self.lbl_file_name.setText(os.path.basename(viewer.file_path))
-            self.update_stats_display(viewer.stats)
+            # Stats update removed from here
         else:
             self.lbl_file_name.setText("No File")
-            self.lbl_stats.setText("")
         self.updating_ui = False
-
-    def update_stats_display(self, stats):
-        if not stats:
-            self.lbl_stats.setText("")
-            return
-        
-        total = sum(stats.values())
-        text = f"Total: {total:,} | Info: {stats.get('INFO', 0):,} | Error: {stats.get('ERROR', 0):,} | Debug: {stats.get('DEBUG', 0):,} | Warn: {stats.get('WARN', 0):,}"
-        self.lbl_stats.setText(text)
 
     def on_global_filter_changed(self):
         if self.updating_ui:

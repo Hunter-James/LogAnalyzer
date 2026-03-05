@@ -83,6 +83,18 @@ class LogViewerWidget(QWidget):
 
         layout.addWidget(self.splitter)
 
+        # --- Local Stats Panel ---
+        self.stats_frame = QFrame()
+        self.stats_frame.setObjectName("StatsPanel")
+        stats_layout = QHBoxLayout(self.stats_frame)
+        stats_layout.setContentsMargins(5, 2, 5, 2)
+        
+        self.lbl_stats = QLabel("Loading...")
+        stats_layout.addWidget(self.lbl_stats)
+        stats_layout.addStretch()
+        
+        layout.addWidget(self.stats_frame)
+
         # Connections
         self.log_view.selectionModel().selectionChanged.connect(self.on_selection_changed)
         self.log_view.zoomRequest.connect(self.on_zoom_request)
@@ -98,11 +110,13 @@ class LogViewerWidget(QWidget):
     def on_load_finished(self, entries, stats, error_msg):
         if error_msg:
             QMessageBox.critical(self, "Error", f"Failed to load file:\n{error_msg}")
+            self.lbl_stats.setText("Error loading file")
             self.loadingFinished.emit()
             return
 
         self.model.set_entries(entries)
         self.stats = stats
+        self.update_stats_text()
         self.statsChanged.emit(stats)
         self.loadingFinished.emit()
 
@@ -111,6 +125,11 @@ class LogViewerWidget(QWidget):
             
         # Apply initial filters
         self.refresh_view()
+
+    def update_stats_text(self):
+        total = sum(self.stats.values())
+        text = f"Total: {total:,} | Info: {self.stats.get('INFO', 0):,} | Error: {self.stats.get('ERROR', 0):,} | Debug: {self.stats.get('DEBUG', 0):,} | Warn: {self.stats.get('WARN', 0):,}"
+        self.lbl_stats.setText(text)
 
     def apply_theme(self, theme_name, font_size):
         self.current_theme_name = theme_name
@@ -124,9 +143,9 @@ class LogViewerWidget(QWidget):
         # Update model theme
         self.model.set_theme(theme_name, font_size)
         
-        # Apply styles to local search bar
-        self.search_frame.setStyleSheet(f"""
-            #SearchPanel {{ background-color: {t['bg_panel']}; border-bottom: 1px solid {t['border']}; }}
+        # Apply styles to local panels
+        style = f"""
+            #SearchPanel, #StatsPanel {{ background-color: {t['bg_panel']}; border: 1px solid {t['border']}; }}
             QLabel {{ color: {t['text_main']}; }}
             QLineEdit {{ 
                 background-color: {t['bg_main']}; 
@@ -134,7 +153,9 @@ class LogViewerWidget(QWidget):
                 padding: 4px; 
                 color: {t['text_main']}; 
             }}
-        """)
+        """
+        self.search_frame.setStyleSheet(style)
+        self.stats_frame.setStyleSheet(style)
 
     def on_zoom_request(self, delta):
         if delta > 0:
