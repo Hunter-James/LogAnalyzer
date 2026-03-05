@@ -24,11 +24,6 @@ class MainWindow(QMainWindow):
 
         self.setup_ui()
         self.apply_theme(self.current_theme_name)
-
-        self.search_timer = QTimer()
-        self.search_timer.setSingleShot(True)
-        self.search_timer.setInterval(250)
-        self.search_timer.timeout.connect(self.trigger_search)
         
         # Flag to prevent recursive updates when syncing UI
         self.updating_ui = False
@@ -49,8 +44,6 @@ class MainWindow(QMainWindow):
         # Main content is now the SplitManager
         self.split_manager = SplitManager()
         self.split_manager.activeTabChanged.connect(self.on_active_tab_changed)
-        
-        # We need to add split_manager to layout later in build_layout methods
 
     def create_widgets(self):
         self.btn_open = QPushButton("Open File")
@@ -60,24 +53,19 @@ class MainWindow(QMainWindow):
 
         self.chk_info = QCheckBox("INFO")
         self.chk_info.setChecked(True)
-        self.chk_info.stateChanged.connect(self.on_filter_changed)
+        self.chk_info.stateChanged.connect(self.on_global_filter_changed)
         self.chk_debug = QCheckBox("DEBUG")
         self.chk_debug.setChecked(True)
-        self.chk_debug.stateChanged.connect(self.on_filter_changed)
+        self.chk_debug.stateChanged.connect(self.on_global_filter_changed)
         self.chk_warn = QCheckBox("WARN")
         self.chk_warn.setChecked(True)
-        self.chk_warn.stateChanged.connect(self.on_filter_changed)
+        self.chk_warn.stateChanged.connect(self.on_global_filter_changed)
         self.chk_error = QCheckBox("ERROR")
         self.chk_error.setChecked(True)
-        self.chk_error.stateChanged.connect(self.on_filter_changed)
-
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search...")
-        self.search_input.textChanged.connect(self.on_search_text_changed)
+        self.chk_error.stateChanged.connect(self.on_global_filter_changed)
 
         self.lbl_file_name = QLabel("No File")
         self.lbl_stats = QLabel("")
-        self.lbl_stats.setWordWrap(True)
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
 
@@ -85,7 +73,6 @@ class MainWindow(QMainWindow):
         widgets = [
             self.btn_open, self.btn_settings,
             self.chk_info, self.chk_debug, self.chk_warn, self.chk_error,
-            self.search_input,
             self.lbl_file_name, self.lbl_stats, self.progress_bar,
             self.split_manager
         ]
@@ -144,13 +131,9 @@ class MainWindow(QMainWindow):
         tb_layout.addWidget(self.chk_debug)
         tb_layout.addWidget(self.chk_warn)
         tb_layout.addWidget(self.chk_error)
-        tb_layout.addSpacing(20)
-        tb_layout.addWidget(QLabel("Search:"))
-        tb_layout.addWidget(self.search_input)
+        tb_layout.addStretch()
 
         self.root_layout.addWidget(toolbar)
-
-        # 👇 ИСПРАВЛЕНИЕ ЗДЕСЬ: Добавлен коэффициент растяжения (1) 👇
         self.root_layout.addWidget(self.split_manager, 1)
 
         status = QFrame()
@@ -190,16 +173,13 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.chk_debug)
         sb_layout.addWidget(self.chk_warn)
         sb_layout.addWidget(self.chk_error)
-        sb_layout.addSpacing(10)
-        sb_layout.addWidget(QLabel("SEARCH"))
-        sb_layout.addWidget(self.search_input)
         sb_layout.addStretch()
         sb_layout.addWidget(self.lbl_file_name)
         sb_layout.addWidget(self.lbl_stats)
         sb_layout.addWidget(self.progress_bar)
 
         h_layout.addWidget(sidebar)
-        h_layout.addWidget(self.split_manager)
+        h_layout.addWidget(self.split_manager, 1)
 
         container = QWidget()
         container.setLayout(h_layout)
@@ -208,37 +188,14 @@ class MainWindow(QMainWindow):
     def apply_stylesheet(self, t):
         # Base styles
         qss = f"""
-            QMainWindow {{ background-color: {t['bg_main']}; color: {t['text_main']}; }}
-            QWidget {{ font-family: '{t['font_family']}', sans-serif; color: {t['text_main']}; }}
-            
-            /* Panels and Frames */
+            QMainWindow, QWidget {{ background-color: {t['bg_main']}; color: {t['text_main']}; font-family: '{t['font_family']}'; }}
             QFrame#Panel {{ background-color: {t['bg_panel']}; border: 1px solid {t['border']}; }}
-            
-            /* Inputs */
-            QLineEdit {{ 
-                background-color: {t['bg_main']}; 
-                border: 1px solid {t['border']}; 
-                padding: 6px; 
-                color: {t['text_main']}; 
-            }}
-            
-            /* List View */
+            QLineEdit {{ background-color: {t['bg_main']}; border: 1px solid {t['border']}; padding: 6px; color: {t['text_main']}; }}
             QListView {{ background-color: {t['bg_main']}; border: none; }}
             QListView::item {{ padding: 4px; border-bottom: 1px solid {t['border']}; }}
             QListView::item:selected {{ background-color: {t['selection']}; color: {t['text_main']}; }}
-            
-            /* Text Edit */
-            QTextEdit {{ 
-                background-color: {t['bg_panel']}; 
-                border-top: 1px solid {t['border']}; 
-                color: {t['text_main']}; 
-                font-family: '{t['mono_font']}'; 
-            }}
-            
-            /* Splitter */
+            QTextEdit {{ background-color: {t['bg_panel']}; border-top: 1px solid {t['border']}; color: {t['text_main']}; font-family: '{t['mono_font']}'; }}
             QSplitter::handle {{ background-color: {t['border']}; }}
-            
-            /* Tab Widget */
             QTabWidget::pane {{ border: 1px solid {t['border']}; top: -1px; }}
             QTabBar::tab {{ 
                 background: {t['bg_panel']}; 
@@ -321,6 +278,14 @@ class MainWindow(QMainWindow):
         viewer.progressChanged.connect(self.progress_bar.setValue)
         viewer.loadingFinished.connect(self.on_loading_finished)
         
+        # Apply current global filters to new viewer
+        viewer.set_global_filters(
+            self.chk_info.isChecked(),
+            self.chk_debug.isChecked(),
+            self.chk_warn.isChecked(),
+            self.chk_error.isChecked()
+        )
+        
         self.split_manager.add_tab(viewer, os.path.basename(file_path))
         self.progress_bar.setVisible(True)
         self.btn_open.setEnabled(False)
@@ -334,13 +299,6 @@ class MainWindow(QMainWindow):
         if viewer and isinstance(viewer, LogViewerWidget):
             self.lbl_file_name.setText(os.path.basename(viewer.file_path))
             self.update_stats_display(viewer.stats)
-            
-            # Sync toolbar with the new active tab's filter state
-            self.chk_info.setChecked(viewer.filter_state['info'])
-            self.chk_debug.setChecked(viewer.filter_state['debug'])
-            self.chk_warn.setChecked(viewer.filter_state['warn'])
-            self.chk_error.setChecked(viewer.filter_state['error'])
-            self.search_input.setText(viewer.filter_state['search'])
         else:
             self.lbl_file_name.setText("No File")
             self.lbl_stats.setText("")
@@ -355,27 +313,21 @@ class MainWindow(QMainWindow):
         text = f"Total: {total:,} | Info: {stats.get('INFO', 0):,} | Error: {stats.get('ERROR', 0):,} | Debug: {stats.get('DEBUG', 0):,} | Warn: {stats.get('WARN', 0):,}"
         self.lbl_stats.setText(text)
 
-    def on_filter_changed(self):
-        if not self.updating_ui:
-            self.refresh_view()
-
-    def on_search_text_changed(self, text):
-        if not self.updating_ui:
-            self.search_timer.start()
-
-    def trigger_search(self):
-        self.refresh_view()
-
-    def refresh_view(self):
-        viewer = self.split_manager.get_current_viewer()
-        if viewer:
-            viewer.set_filters(
-                self.chk_info.isChecked(),
-                self.chk_debug.isChecked(),
-                self.chk_warn.isChecked(),
-                self.chk_error.isChecked(),
-                self.search_input.text()
-            )
+    def on_global_filter_changed(self):
+        if self.updating_ui:
+            return
+            
+        # Apply to ALL viewers
+        info = self.chk_info.isChecked()
+        debug = self.chk_debug.isChecked()
+        warn = self.chk_warn.isChecked()
+        error = self.chk_error.isChecked()
+        
+        for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
+            for i in range(group.count()):
+                viewer = group.widget(i)
+                if isinstance(viewer, LogViewerWidget):
+                    viewer.set_global_filters(info, debug, warn, error)
             
     def keyPressEvent(self, event):
         viewer = self.split_manager.get_current_viewer()

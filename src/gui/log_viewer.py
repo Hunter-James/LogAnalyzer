@@ -1,6 +1,6 @@
 import os
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QSplitter, QAbstractItemView, 
-                             QMessageBox, QApplication)
+                             QMessageBox, QApplication, QLineEdit, QHBoxLayout, QLabel, QFrame)
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QKeySequence
 
@@ -24,14 +24,19 @@ class LogViewerWidget(QWidget):
         self.stats = {}
         self.preserved_real_index = None
         
-        # Filter states (local to this tab)
-        self.filter_state = {
+        # Filter states (Global filters passed from MainWindow, Search is local)
+        self.global_filters = {
             "info": True,
             "debug": True,
             "warn": True,
-            "error": True,
-            "search": ""
+            "error": True
         }
+
+        # Search debounce timer
+        self.search_timer = QTimer()
+        self.search_timer.setSingleShot(True)
+        self.search_timer.setInterval(300)
+        self.search_timer.timeout.connect(self.refresh_view)
 
         self.setup_ui()
         self.apply_theme(theme_name, font_size)
@@ -44,6 +49,21 @@ class LogViewerWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # --- Local Search Bar ---
+        self.search_frame = QFrame()
+        self.search_frame.setObjectName("SearchPanel")
+        search_layout = QHBoxLayout(self.search_frame)
+        search_layout.setContentsMargins(5, 5, 5, 5)
+        
+        search_layout.addWidget(QLabel("Search:"))
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search in this file...")
+        self.search_input.textChanged.connect(self.on_search_text_changed)
+        search_layout.addWidget(self.search_input)
+        
+        layout.addWidget(self.search_frame)
+
+        # --- Splitter (List + Details) ---
         self.splitter = QSplitter(Qt.Orientation.Vertical)
 
         # Log List
@@ -104,12 +124,19 @@ class LogViewerWidget(QWidget):
         # Update model theme
         self.model.set_theme(theme_name, font_size)
         
-        # We don't set stylesheet here, MainWindow handles global stylesheet, 
-        # but specific widget styles might need updates if we add them later.
+        # Apply styles to local search bar
+        self.search_frame.setStyleSheet(f"""
+            #SearchPanel {{ background-color: {t['bg_panel']}; border-bottom: 1px solid {t['border']}; }}
+            QLabel {{ color: {t['text_main']}; }}
+            QLineEdit {{ 
+                background-color: {t['bg_main']}; 
+                border: 1px solid {t['border']}; 
+                padding: 4px; 
+                color: {t['text_main']}; 
+            }}
+        """)
 
     def on_zoom_request(self, delta):
-        # Propagate zoom to parent (MainWindow) to handle global setting save
-        # But also update locally immediately
         if delta > 0:
             self.current_font_size = min(24, self.current_font_size + 1)
         else:
@@ -117,18 +144,20 @@ class LogViewerWidget(QWidget):
         
         self.apply_theme(self.current_theme_name, self.current_font_size)
         
-        # Notify parent if possible (optional, for saving settings)
         window = self.window()
         if hasattr(window, 'on_zoom_request'):
             window.on_zoom_request(delta)
 
-    def set_filters(self, info, debug, warn, error, search_text):
-        self.filter_state["info"] = info
-        self.filter_state["debug"] = debug
-        self.filter_state["warn"] = warn
-        self.filter_state["error"] = error
-        self.filter_state["search"] = search_text
+    def set_global_filters(self, info, debug, warn, error):
+        """Called by MainWindow when global checkboxes change"""
+        self.global_filters["info"] = info
+        self.global_filters["debug"] = debug
+        self.global_filters["warn"] = warn
+        self.global_filters["error"] = error
         self.refresh_view()
+
+    def on_search_text_changed(self, text):
+        self.search_timer.start()
 
     def refresh_view(self):
         # Capture selection
@@ -138,12 +167,13 @@ class LogViewerWidget(QWidget):
         else:
             self.preserved_real_index = None
 
+        # Use global boolean filters + local search text
         self.model.update_filters(
-            self.filter_state["info"],
-            self.filter_state["debug"],
-            self.filter_state["error"],
-            self.filter_state["warn"],
-            self.filter_state["search"]
+            self.global_filters["info"],
+            self.global_filters["debug"],
+            self.global_filters["error"],
+            self.global_filters["warn"],
+            self.search_input.text()
         )
 
     def on_filter_finished_scroll(self):

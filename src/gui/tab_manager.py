@@ -232,16 +232,24 @@ class SplitManager(QSplitter):
         widget = source.widget(index)
         text = source.tabText(index)
         source.removeTab(index)
-        
+
         new_index = target.addTab(widget, text)
         target.setCurrentIndex(new_index)
-        
+
         if source.count() == 0 and source == self.right_tabs:
             source.hide()
-        
-        if not target.isVisible():
+
+        # 👇 ИСПРАВЛЕНИЕ ЗДЕСЬ 👇
+        was_hidden = not target.isVisible()
+        if was_hidden:
             target.show()
-            
+
+            # Заставляем QSplitter разделить пространство поровну (50/50)
+            # Передача одинаковых больших значений заставит его распределить
+            # доступную ширину пропорционально 1:1
+            half_width = self.width() // 2
+            self.setSizes([half_width, half_width])
+
         self.active_group = target
         target.setFocus()
         self.activeTabChanged.emit(widget)
