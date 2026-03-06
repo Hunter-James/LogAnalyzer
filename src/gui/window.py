@@ -64,16 +64,15 @@ class MainWindow(QMainWindow):
         self.chk_error.setChecked(True)
         self.chk_error.stateChanged.connect(self.on_global_filter_changed)
 
-        self.lbl_file_name = QLabel("No File")
-        # Global stats label removed, moved to local viewer
         self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedWidth(150)
         self.progress_bar.setVisible(False)
 
     def detach_widgets(self):
         widgets = [
             self.btn_open, self.btn_settings,
             self.chk_info, self.chk_debug, self.chk_warn, self.chk_error,
-            self.lbl_file_name, self.progress_bar,
+            self.progress_bar,
             self.split_manager
         ]
         for w in widgets:
@@ -132,20 +131,10 @@ class MainWindow(QMainWindow):
         tb_layout.addWidget(self.chk_warn)
         tb_layout.addWidget(self.chk_error)
         tb_layout.addStretch()
+        tb_layout.addWidget(self.progress_bar)
 
         self.root_layout.addWidget(toolbar)
         self.root_layout.addWidget(self.split_manager, 1)
-
-        status = QFrame()
-        status.setObjectName("Panel")
-        st_layout = QHBoxLayout(status)
-        st_layout.setContentsMargins(10, 2, 10, 2)
-        st_layout.addWidget(self.lbl_file_name)
-        st_layout.addStretch()
-        # Stats label removed from here
-        st_layout.addWidget(self.progress_bar)
-
-        self.root_layout.addWidget(status)
 
     def build_side_layout(self, t):
         h_layout = QHBoxLayout()
@@ -174,8 +163,6 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.chk_warn)
         sb_layout.addWidget(self.chk_error)
         sb_layout.addStretch()
-        sb_layout.addWidget(self.lbl_file_name)
-        # Stats label removed from here
         sb_layout.addWidget(self.progress_bar)
 
         h_layout.addWidget(sidebar)
@@ -274,7 +261,6 @@ class MainWindow(QMainWindow):
 
     def load_file(self, file_path):
         viewer = LogViewerWidget(file_path, self.current_theme_name, self.current_font_size)
-        # Stats signal no longer connected to main window
         viewer.progressChanged.connect(self.progress_bar.setValue)
         viewer.loadingFinished.connect(self.on_loading_finished)
         
@@ -295,13 +281,8 @@ class MainWindow(QMainWindow):
         self.btn_open.setEnabled(True)
 
     def on_active_tab_changed(self, viewer):
-        self.updating_ui = True
-        if viewer and isinstance(viewer, LogViewerWidget):
-            self.lbl_file_name.setText(os.path.basename(viewer.file_path))
-            # Stats update removed from here
-        else:
-            self.lbl_file_name.setText("No File")
-        self.updating_ui = False
+        # No updates needed here as stats and file name are local/removed
+        pass
 
     def on_global_filter_changed(self):
         if self.updating_ui:
