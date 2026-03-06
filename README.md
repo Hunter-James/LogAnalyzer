@@ -1,7 +1,6 @@
 # LogAnalyzerEVOL
 
-**LogAnalyzerEVOL** is a modern, high-performance log analysis tool written in Python and PyQt6. Designed for developers and system administrators, it offers a flexible Multi-Document Interface (MDI) similar to Notepad++, allowing you to analyze multiple log files simultaneously with ease.
-
+**LogAnalyzerEVOL** — это современный, высокопроизводительный инструмент для анализа логов, написанный на Python и PyQt6. Разработанный для разработчиков и системных администраторов, он предлагает гибкий многодокументный интерфейс (MDI), аналогичный Notepad++, позволяющий легко анализировать несколько лог-файлов одновременно.
 ---
 ## 🇷🇺 Русский
 
@@ -79,6 +78,8 @@
 
 ## 🇬🇧 English
 
+**LogAnalyzerEVOL** is a modern, high-performance log analysis tool written in Python and PyQt6. Designed for developers and system administrators, it offers a flexible Multi-Document Interface (MDI) similar to Notepad++, allowing you to analyze multiple log files simultaneously with ease.
+
 ### 🚀 Key Features
 
 #### 🖥️ Advanced Interface
@@ -98,7 +99,7 @@
 *   **Asynchronous Loading:** Large log files are loaded in background threads without freezing the UI.
 *   **Smart Rendering:** Optimized list view handles thousands of log entries smoothly.
 
-### 🛠️ Installation & Running
+### 🛠️ Installation & Running from Scratch
 
 #### Prerequisites
 *   Python 3.8+
