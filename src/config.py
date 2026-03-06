@@ -15,7 +15,12 @@ def get_settings_path():
 
 def load_settings():
     path = get_settings_path()
-    defaults = {"theme": "Default", "font_size": 10}
+    defaults = {
+        "theme": "Default", 
+        "font_size": 10,
+        "files_left": [],
+        "files_right": []
+    }
     
     if os.path.exists(path):
         try:
@@ -28,9 +33,12 @@ def load_settings():
             return defaults
     return defaults
 
-def save_settings(theme_name, font_size):
+def save_settings(data):
+    """
+    Saves a dictionary of settings to the JSON file.
+    Expected keys: theme, font_size, files_left, files_right
+    """
     path = get_settings_path()
-    data = {"theme": theme_name, "font_size": font_size}
     try:
         with open(path, 'w') as f:
             json.dump(data, f, indent=4)

@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPu
                              QLineEdit, QLabel, QFileDialog, QProgressBar,
                              QMessageBox, QStyle, QFrame, QCheckBox, QApplication)
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QIcon, QKeySequence
+from PyQt6.QtGui import QFont, QIcon, QKeySequence, QCloseEvent
 
 from config import THEMES, APP_VERSION, load_settings, save_settings
 from gui.log_viewer import LogViewerWidget
@@ -18,15 +18,18 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
 
         # Load settings
-        settings = load_settings()
-        self.current_theme_name = settings.get("theme", "Default")
-        self.current_font_size = settings.get("font_size", 10)
+        self.settings = load_settings()
+        self.current_theme_name = self.settings.get("theme", "Default")
+        self.current_font_size = self.settings.get("font_size", 10)
 
         self.setup_ui()
         self.apply_theme(self.current_theme_name)
         
         # Flag to prevent recursive updates when syncing UI
         self.updating_ui = False
+        
+        # Restore session
+        self.restore_session()
 
     def setup_ui(self):
         self.central_widget = QWidget()
@@ -244,7 +247,7 @@ class MainWindow(QMainWindow):
             theme, size = dlg.get_settings()
             self.current_font_size = size
             self.apply_theme(theme)
-            save_settings(theme, size)
+            self.save_current_settings()
 
     def on_zoom_request(self, delta):
         if delta > 0:
@@ -252,14 +255,14 @@ class MainWindow(QMainWindow):
         else:
             self.current_font_size = max(6, self.current_font_size - 1)
         self.update_fonts()
-        save_settings(self.current_theme_name, self.current_font_size)
+        self.save_current_settings()
 
     def open_file_dialog(self):
         file_names, _ = QFileDialog.getOpenFileNames(self, "Open Log File", "", "Log Files (*.log *.txt);;All Files (*)")
         for file_name in file_names:
             self.load_file(file_name)
 
-    def load_file(self, file_path):
+    def load_file(self, file_path, side="active"):
         viewer = LogViewerWidget(file_path, self.current_theme_name, self.current_font_size)
         viewer.progressChanged.connect(self.progress_bar.setValue)
         viewer.loadingFinished.connect(self.on_loading_finished)
@@ -272,7 +275,7 @@ class MainWindow(QMainWindow):
             self.chk_error.isChecked()
         )
         
-        self.split_manager.add_tab(viewer, os.path.basename(file_path))
+        self.split_manager.add_tab(viewer, os.path.basename(file_path), side)
         self.progress_bar.setVisible(True)
         self.btn_open.setEnabled(False)
 
@@ -281,7 +284,7 @@ class MainWindow(QMainWindow):
         self.btn_open.setEnabled(True)
 
     def on_active_tab_changed(self, viewer):
-        # No updates needed here as stats and file name are local/removed
+        # UI updates if needed
         pass
 
     def on_global_filter_changed(self):
@@ -306,3 +309,30 @@ class MainWindow(QMainWindow):
             viewer.keyPressEvent(event)
         else:
             super().keyPressEvent(event)
+
+    def restore_session(self):
+        files_left = self.settings.get("files_left", [])
+        files_right = self.settings.get("files_right", [])
+        
+        for f in files_left:
+            if os.path.exists(f):
+                self.load_file(f, side="left")
+                
+        for f in files_right:
+            if os.path.exists(f):
+                self.load_file(f, side="right")
+
+    def save_current_settings(self):
+        files_left, files_right = self.split_manager.get_open_files()
+        
+        data = {
+            "theme": self.current_theme_name,
+            "font_size": self.current_font_size,
+            "files_left": files_left,
+            "files_right": files_right
+        }
+        save_settings(data)
+
+    def closeEvent(self, event: QCloseEvent):
+        self.save_current_settings()
+        super().closeEvent(event)
