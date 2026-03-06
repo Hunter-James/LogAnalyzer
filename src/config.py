@@ -10,21 +10,10 @@ GITHUB_REPO = "Hunter-James/LogAnalyzerEVOL"
 SETTINGS_FILENAME = "settings.json"
 
 def get_settings_path():
-    # Проверяем, запущено ли приложение как скомпилированный EXE
     if getattr(sys, 'frozen', False):
-        # Если это EXE, получаем путь к папке, где лежит сам EXE-файл
         application_path = os.path.dirname(sys.executable)
     else:
-        # Если это запуск скрипта (.py), получаем путь к папке скрипта
         application_path = os.path.dirname(os.path.abspath(__file__))
-        
-        # Если скрипт в src/, а settings.json должен быть в корне проекта (рядом с src),
-        # поднимаемся на уровень выше.
-        # В текущей структуре проекта settings.json создается рядом с main.py (в src/),
-        # поэтому application_path уже правильный.
-        # Если нужно в корне проекта (LogAnalyzerEVOL/), раскомментируйте:
-        # application_path = os.path.dirname(application_path)
-
     return os.path.join(application_path, SETTINGS_FILENAME)
 
 def load_settings():
@@ -40,7 +29,6 @@ def load_settings():
         try:
             with open(path, 'r') as f:
                 saved = json.load(f)
-                # Merge with defaults to ensure all keys exist
                 defaults.update(saved)
                 return defaults
         except Exception:

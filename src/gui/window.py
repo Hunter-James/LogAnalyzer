@@ -1,4 +1,7 @@
 import os
+import sys
+import ctypes
+
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLineEdit, QLabel, QFileDialog, QProgressBar,
                              QMessageBox, QStyle, QFrame, QCheckBox, QApplication)
@@ -10,12 +13,34 @@ from gui.log_viewer import LogViewerWidget
 from gui.tab_manager import SplitManager
 from gui.settings import SettingsDialog
 
+
+def resource_path(relative_path):
+    """ Получает абсолютный путь к ресурсу, работает для dev и для PyInstaller """
+    try:
+        # PyInstaller создает временную папку _MEIPASS и хранит пути в ней
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        # Отвязываем приложение от стандартной иконки Python в панели задач Windows
+        try:
+            myappid = 'LogAnalyzer.CustomApp.1.0'
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except Exception:
+            pass
+
         self.setWindowTitle(f"Log Analyzer v{APP_VERSION}")
         self.resize(1400, 900)
-        self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+
+        # Устанавливаем вашу кастомную иконку
+        icon_path = resource_path("log_perfect.ico")
+        self.setWindowIcon(QIcon(icon_path))
 
         # Load settings
         self.settings = load_settings()
@@ -24,10 +49,10 @@ class MainWindow(QMainWindow):
 
         self.setup_ui()
         self.apply_theme(self.current_theme_name)
-        
+
         # Flag to prevent recursive updates when syncing UI
         self.updating_ui = False
-        
+
         # Restore session
         self.restore_session()
 
@@ -203,7 +228,7 @@ class MainWindow(QMainWindow):
             QTabBar::tab:!selected:hover {{ background: {t['selection']}; }}
             QTabBar::close-button {{ subcontrol-position: right; }}
         """
-        
+
         if self.current_theme_name == "Default":
             qss += f"""
                 QPushButton {{
@@ -217,7 +242,7 @@ class MainWindow(QMainWindow):
                 QCheckBox {{ color: {t['text_main']}; font-weight: bold; }}
             """
         else:
-             qss += f"""
+            qss += f"""
                 QPushButton {{
                     background-color: {t['bg_main']};
                     color: {t['accent']};
@@ -227,9 +252,9 @@ class MainWindow(QMainWindow):
                 }}
                 QPushButton:hover {{ background-color: {t['accent']}; color: {t['bg_main']}; }}
             """
-            
+
         self.setStyleSheet(qss)
-        
+
         if self.current_theme_name == "Default":
             self.chk_info.setStyleSheet(f"color: {t['info']}; font-weight: bold;")
             self.chk_debug.setStyleSheet(f"color: {t['debug']}; font-weight: bold;")
@@ -258,7 +283,8 @@ class MainWindow(QMainWindow):
         self.save_current_settings()
 
     def open_file_dialog(self):
-        file_names, _ = QFileDialog.getOpenFileNames(self, "Open Log File", "", "Log Files (*.log *.txt);;All Files (*)")
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Open Log File", "",
+                                                     "Log Files (*.log *.txt);;All Files (*)")
         for file_name in file_names:
             self.load_file(file_name)
 
@@ -266,7 +292,7 @@ class MainWindow(QMainWindow):
         viewer = LogViewerWidget(file_path, self.current_theme_name, self.current_font_size)
         viewer.progressChanged.connect(self.progress_bar.setValue)
         viewer.loadingFinished.connect(self.on_loading_finished)
-        
+
         # Apply current global filters to new viewer
         viewer.set_global_filters(
             self.chk_info.isChecked(),
@@ -274,7 +300,7 @@ class MainWindow(QMainWindow):
             self.chk_warn.isChecked(),
             self.chk_error.isChecked()
         )
-        
+
         self.split_manager.add_tab(viewer, os.path.basename(file_path), side)
         self.progress_bar.setVisible(True)
         self.btn_open.setEnabled(False)
@@ -290,19 +316,19 @@ class MainWindow(QMainWindow):
     def on_global_filter_changed(self):
         if self.updating_ui:
             return
-            
+
         # Apply to ALL viewers
         info = self.chk_info.isChecked()
         debug = self.chk_debug.isChecked()
         warn = self.chk_warn.isChecked()
         error = self.chk_error.isChecked()
-        
+
         for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
             for i in range(group.count()):
                 viewer = group.widget(i)
                 if isinstance(viewer, LogViewerWidget):
                     viewer.set_global_filters(info, debug, warn, error)
-            
+
     def keyPressEvent(self, event):
         viewer = self.split_manager.get_current_viewer()
         if viewer:
@@ -313,18 +339,18 @@ class MainWindow(QMainWindow):
     def restore_session(self):
         files_left = self.settings.get("files_left", [])
         files_right = self.settings.get("files_right", [])
-        
+
         for f in files_left:
             if os.path.exists(f):
                 self.load_file(f, side="left")
-                
+
         for f in files_right:
             if os.path.exists(f):
                 self.load_file(f, side="right")
 
     def save_current_settings(self):
         files_left, files_right = self.split_manager.get_open_files()
-        
+
         data = {
             "theme": self.current_theme_name,
             "font_size": self.current_font_size,
