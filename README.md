@@ -132,14 +132,15 @@ Just like in advanced code editors, you can organize your workspace:
 *   If the second view is hidden, dragging a tab to the right edge (or using the context menu) will activate the Split View.
 
 #### 2. Using Search (Regex)
-The search bar at the top of each tab supports standard text search and **Regular Expressions (Regex)**.
+The search bar at the top of the window supports both standard text search and **Regular Expressions (Regex)**. The search is always case-insensitive. If a regular expression contains a syntax error, the application automatically falls back to a standard text search.
 
-*   **Standard Search:** Just type the word you are looking for (e.g., `Database`).
-*   **Regex Search:** The search automatically detects regex patterns.
-    *   *Example:* Find any error code: `Error \d+`
-    *   *Example:* Find lines starting with a timestamp: `^\d{2}:\d{2}:\d{2}`
-    *   *Example:* Case-insensitive search for "fail": `(?i)fail`
-
+* **Standard Search:** Simply enter a word, IP address, or log fragment (e.g., `startPrint` or `192.168.5.2`).
+* **Regex Search:** Allows you to use flexible patterns for filtering complex production logs.
+    * *Hardware Tracking:* Filter the output to show only interactions with scanners and PLCs: `\[\s*(HIKROBOT|PLCService).*?\]`
+    * *Specific Marking Code (SGTIN) Search:* Marking codes often contain a special `<GS>` character that cannot be copied. Replace it with a dot `.` (matches any character), and escape regular dots `\.`: `0104600905000875215C2\.Oj.93/nrd`
+    * *Filtering API JSON Responses:* Find only HTTP response lines that contain a JSON body: `Response\s+/api/.*?\{"timestamp"`
+    * *Finding Hidden Issues:* Locate equipment failures or text errors in the log, even if the log level is `INFO`: `(Запуск.*false|Не указан|error)`
+    * *Exact Time Search (milliseconds):* Find all events that occurred within a specific second (e.g., from 800 to 899 ms): `^07:13:43\.8\d{2}`
 #### 3. Filtering Logs
 Use the checkboxes in the top toolbar (`INFO`, `DEBUG`, `WARN`, `ERROR`).
 *   **Note:** These filters are **global**. Unchecking `DEBUG` will hide debug messages in **all** currently open tabs simultaneously.
