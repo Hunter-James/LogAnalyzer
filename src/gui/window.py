@@ -349,13 +349,24 @@ class MainWindow(QMainWindow):
             super().dragEnterEvent(event)
 
     def dropEvent(self, event):
-        # Если перетащили файлы, перебираем их и открываем каждый
         if event.mimeData().hasUrls():
+            drop_pos = event.position().toPoint()
+
+            mapped_pos = self.split_manager.mapFrom(self, drop_pos)
+
+            side = "active"
+
+            if self.split_manager.right_tabs.isVisible():
+                if self.split_manager.left_tabs.geometry().contains(mapped_pos):
+                    side = "left"
+                elif self.split_manager.right_tabs.geometry().contains(mapped_pos):
+                    side = "right"
+
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     file_path = url.toLocalFile()
-                    # Используем ваш существующий метод для загрузки логов
-                    self.load_file(file_path)
+                    self.load_file(file_path, side=side)
+
             event.acceptProposedAction()
         else:
             super().dropEvent(event)
