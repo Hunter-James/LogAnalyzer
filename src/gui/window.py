@@ -42,10 +42,15 @@ class MainWindow(QMainWindow):
         icon_path = resource_path("log_perfect.ico")
         self.setWindowIcon(QIcon(icon_path))
 
+        # drag and drop support
+        self.setAcceptDrops(True)
+
         # Load settings
         self.settings = load_settings()
         self.current_theme_name = self.settings.get("theme", "Default")
         self.current_font_size = self.settings.get("font_size", 10)
+
+
 
         self.setup_ui()
         self.apply_theme(self.current_theme_name)
@@ -335,6 +340,25 @@ class MainWindow(QMainWindow):
             viewer.keyPressEvent(event)
         else:
             super().keyPressEvent(event)
+
+    def dragEnterEvent(self, event):
+        # Проверяем, содержит ли перетаскиваемый объект ссылки (файлы)
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        # Если перетащили файлы, перебираем их и открываем каждый
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    # Используем ваш существующий метод для загрузки логов
+                    self.load_file(file_path)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
 
     def restore_session(self):
         files_left = self.settings.get("files_left", [])
