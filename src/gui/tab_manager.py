@@ -1,22 +1,59 @@
 import os
+import ctypes
 from PyQt6.QtWidgets import (QTabWidget, QSplitter, QWidget, QVBoxLayout, QMenu,
                              QTabBar, QApplication)
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QTimer
-from PyQt6.QtGui import QDrag, QPixmap, QCursor
+from PyQt6.QtGui import QDrag, QPixmap, QCursor, QPainter, QColor
 from gui.log_viewer import LogViewerWidget
-
 
 class DraggableTabBar(QTabBar):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Allow dropping directly onto the tab bar
         self.setAcceptDrops(True)
         self.drag_start_pos = None
+        self.selected_indices = set()
+        self.last_clicked_index = -1
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_pos = event.pos()
+
+            index = self.tabAt(event.pos())
+            if index >= 0:
+                modifiers = QApplication.keyboardModifiers()
+
+                if modifiers == Qt.KeyboardModifier.ControlModifier:
+                    if index in self.selected_indices:
+                        self.selected_indices.remove(index)
+                    else:
+                        self.selected_indices.add(index)
+                    self.last_clicked_index = index
+                    self.update()
+                    return
+
+                elif modifiers == Qt.KeyboardModifier.ShiftModifier:
+                    if self.last_clicked_index >= 0:
+                        start = min(self.last_clicked_index, index)
+                        end = max(self.last_clicked_index, index)
+                        self.selected_indices.update(range(start, end + 1))
+                        self.update()
+                        return
+                else:
+                    self.selected_indices = {index}
+                    self.last_clicked_index = index
+                    self.update()
+
         super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if getattr(self, 'selected_indices', None):
+            painter = QPainter(self)
+            for i in self.selected_indices:
+                if i != self.currentIndex():
+                    rect = self.tabRect(i)
+                    painter.fillRect(rect, QColor(130, 180, 255, 50))
+            painter.end()
 
     def mouseMoveEvent(self, event):
         if not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -31,22 +68,17 @@ class DraggableTabBar(QTabBar):
         if tab_index < 0:
             return
 
-        # Notify parent to prepare for drag
         parent = self.parent()
         if isinstance(parent, EditorTabWidget):
-            EditorTabWidget._drag_source = parent  # Пишем в переменную класса
+            EditorTabWidget._drag_source = parent
 
-        # Start Drag
         drag = QDrag(self)
         mime_data = QMimeData()
-
-        # We only pass the tab index in text, source is stored in class var
         mime_data.setText(str(tab_index))
         mime_data.setData("application/x-loganalyzer-tab", b"dummy")
 
         drag.setMimeData(mime_data)
 
-        # Visual feedback
         rect = self.tabRect(tab_index)
         pixmap = self.grab(rect)
         drag.setPixmap(pixmap)
@@ -54,11 +86,9 @@ class DraggableTabBar(QTabBar):
 
         drag.exec(Qt.DropAction.MoveAction)
 
-        # Cleanup
         if isinstance(parent, EditorTabWidget):
-            EditorTabWidget._drag_source = None  # Очищаем переменную класса
+            EditorTabWidget._drag_source = None
 
-    # Forward drag events to parent (EditorTabWidget)
     def dragEnterEvent(self, event):
         self.parent().dragEnterEvent(event)
 
@@ -74,13 +104,12 @@ class EditorTabWidget(QTabWidget):
     tabActivated = pyqtSignal(QWidget)
     tabDropped = pyqtSignal()
 
-    # Class variable to safely store the source widget during drag
     _drag_source = None
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setTabsClosable(True)
-        self.setMovable(False)  # We handle moving manually
+        self.setMovable(False)
         self.setAcceptDrops(True)
 
         self.tab_bar = DraggableTabBar(self)
@@ -93,29 +122,80 @@ class EditorTabWidget(QTabWidget):
         self.tabBar().customContextMenuRequested.connect(self.show_context_menu)
 
     def close_tab(self, index):
+        if index in self.tab_bar.selected_indices:
+            self.tab_bar.selected_indices.remove(index)
+
+        new_selection = set()
+        for i in self.tab_bar.selected_indices:
+            if i > index:
+                new_selection.add(i - 1)
+            else:
+                new_selection.add(i)
+        self.tab_bar.selected_indices = new_selection
+        self.tab_bar.update()
+
         widget = self.widget(index)
         if widget:
             self.removeTab(index)
             widget.deleteLater()
+
+    def _close_multiple_tabs(self, indices):
+        for i in sorted(indices, reverse=True):
+            self.close_tab(i)
 
     def show_context_menu(self, point):
         index = self.tabBar().tabAt(point)
         if index < 0:
             return
 
+        if index not in self.tab_bar.selected_indices:
+            self.tab_bar.selected_indices = {index}
+            self.tab_bar.last_clicked_index = index
+            self.tab_bar.update()
+
         menu = QMenu(self)
+        action_close = menu.addAction("Close Tab")
+
+        action_close_selected = None
+        if len(self.tab_bar.selected_indices) > 1:
+            action_close_selected = menu.addAction(f"Close Selected Tabs ({len(self.tab_bar.selected_indices)})")
+
+        menu.addSeparator()
+        action_close_others = menu.addAction("Close Other Tabs")
+        action_close_left = menu.addAction("Close Tabs to the Left")
+        action_close_right = menu.addAction("Close Tabs to the Right")
+        action_close_all = menu.addAction("Close All Tabs")
+        menu.addSeparator()
         action_move = menu.addAction("Move to Other View")
-        action_close = menu.addAction("Close")
 
         action = menu.exec(self.tabBar().mapToGlobal(point))
 
-        if action == action_move:
-            self.moveTabRequested.emit(index)
-        elif action == action_close:
+        if not action:
+            return
+
+        if action == action_close:
             self.close_tab(index)
+        elif action == action_close_selected:
+            self._close_multiple_tabs(self.tab_bar.selected_indices)
+        elif action == action_close_others:
+            to_close = set(range(self.count())) - self.tab_bar.selected_indices
+            self._close_multiple_tabs(to_close)
+        elif action == action_close_left:
+            self._close_multiple_tabs(range(0, index))
+        elif action == action_close_right:
+            self._close_multiple_tabs(range(index + 1, self.count()))
+        elif action == action_close_all:
+            self._close_multiple_tabs(range(self.count()))
+        elif action == action_move:
+            self.moveTabRequested.emit(index)
 
     def on_current_changed(self, index):
         if index >= 0:
+            if not QApplication.keyboardModifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+                self.tab_bar.selected_indices = {index}
+                self.tab_bar.last_clicked_index = index
+                self.tab_bar.update()
+
             widget = self.widget(index)
             if widget:
                 self.tabActivated.emit(widget)
@@ -145,21 +225,17 @@ class EditorTabWidget(QTabWidget):
                     return
 
                 if source_widget == self:
-                    # Reorder within same widget
                     drop_pos = event.position().toPoint()
                     tab_bar_pos = self.tabBar().mapFrom(self, drop_pos)
                     target_index = self.tabBar().tabAt(tab_bar_pos)
 
                     if target_index == -1:
-                        # If dropped on the tab bar but not on a specific tab
                         if self.tabBar().geometry().contains(tab_bar_pos):
-                            target_index = self.count() - 1
+                             target_index = self.count() - 1
                         else:
-                            # Dropped on the content area -> Move to other view
-                            # Используем QTimer для безопасного вызова
-                            QTimer.singleShot(0, lambda: self.moveTabRequested.emit(source_index))
-                            event.accept()
-                            return
+                             QTimer.singleShot(0, lambda: self.moveTabRequested.emit(source_index))
+                             event.accept()
+                             return
 
                     if source_index != target_index:
                         widget = self.widget(source_index)
@@ -173,7 +249,6 @@ class EditorTabWidget(QTabWidget):
 
                         self.tabActivated.emit(widget)
                 else:
-                    # Move from another widget
                     widget = source_widget.widget(source_index)
                     text = source_widget.tabText(source_index)
 
@@ -191,7 +266,6 @@ class EditorTabWidget(QTabWidget):
                 print(f"Drop error: {e}")
                 event.ignore()
 
-
 class SplitManager(QSplitter):
     activeTabChanged = pyqtSignal(object)
 
@@ -206,7 +280,6 @@ class SplitManager(QSplitter):
 
         self.right_tabs.hide()
 
-        # Connect signals
         self.left_tabs.moveTabRequested.connect(self.move_to_right)
         self.right_tabs.moveTabRequested.connect(self.move_to_left)
 
@@ -219,11 +292,9 @@ class SplitManager(QSplitter):
         self.active_group = self.left_tabs
 
     def check_visibility(self):
-        # Hide right tabs if empty
         if self.right_tabs.count() == 0:
             self.right_tabs.hide()
 
-        # Ensure active group is valid
         if self.active_group.count() == 0:
             other = self.right_tabs if self.active_group == self.left_tabs else self.left_tabs
             if other.isVisible() and other.count() > 0:
@@ -288,7 +359,6 @@ class SplitManager(QSplitter):
         was_hidden = not target.isVisible()
         if was_hidden:
             target.show()
-            # Разделяем пространство 50/50
             half_width = self.width() // 2
             self.setSizes([half_width, half_width])
 
