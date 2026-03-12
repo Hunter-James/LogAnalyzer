@@ -1,10 +1,10 @@
-# LogAnalyzerEVOL
+# LogAnalyzer
 
-**LogAnalyzerEVOL** — это современный, высокопроизводительный инструмент для анализа логов, написанный на Python и PyQt6. Разработанный для разработчиков и системных администраторов, он предлагает гибкий многодокументный интерфейс (MDI), аналогичный Notepad++, позволяющий легко анализировать несколько лог-файлов одновременно.
+**LogAnalyzer** — это современный, высокопроизводительный инструмент для анализа логов, написанный на Python и PyQt6. Разработанный для разработчиков и системных администраторов, он предлагает гибкий многодокументный интерфейс (MDI), аналогичный Notepad++, позволяющий легко анализировать несколько лог-файлов одновременно.
 ---
 ## 🇷🇺 Русский
 
-**LogAnalyzerEVOL** — это современный, высокопроизводительный инструмент для анализа логов, написанный на Python и PyQt6. Разработанный для разработчиков и системных администраторов, он предлагает гибкий многодокументный интерфейс (MDI), аналогичный Notepad++, позволяющий легко анализировать несколько лог-файлов одновременно.
+**LogAnalyzer** — это современный, высокопроизводительный инструмент для анализа логов, написанный на Python и PyQt6. Разработанный для разработчиков и системных администраторов, он предлагает гибкий многодокументный интерфейс (MDI), аналогичный Notepad++, позволяющий легко анализировать несколько лог-файлов одновременно.
 
 ### 🚀 Ключевые возможности
 
@@ -80,7 +80,7 @@
 
 ## 🇬🇧 English
 
-**LogAnalyzerEVOL** is a modern, high-performance log analysis tool written in Python and PyQt6. Designed for developers and system administrators, it offers a flexible Multi-Document Interface (MDI) similar to Notepad++, allowing you to analyze multiple log files simultaneously with ease.
+**LogAnalyzer** is a modern, high-performance log analysis tool written in Python and PyQt6. Designed for developers and system administrators, it offers a flexible Multi-Document Interface (MDI) similar to Notepad++, allowing you to analyze multiple log files simultaneously with ease.
 
 ### 🚀 Key Features
 
