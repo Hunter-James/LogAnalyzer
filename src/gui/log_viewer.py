@@ -40,7 +40,8 @@ class LogViewerWidget(QWidget):
             "info": True,
             "debug": True,
             "warn": True,
-            "error": True
+            "error": True,
+            "group_dupes": False,
         }
 
         # Search debounce timer
@@ -212,12 +213,13 @@ class LogViewerWidget(QWidget):
         if hasattr(window, 'on_zoom_request'):
             window.on_zoom_request(delta)
 
-    def set_global_filters(self, info, debug, warn, error):
+    def set_global_filters(self, info, debug, warn, error, group_dupes=False):
         """Called by MainWindow when global checkboxes change"""
         self.global_filters["info"] = info
         self.global_filters["debug"] = debug
         self.global_filters["warn"] = warn
         self.global_filters["error"] = error
+        self.global_filters["group_dupes"] = group_dupes
         self.refresh_view()
 
     def on_search_text_changed(self, text):
@@ -231,7 +233,9 @@ class LogViewerWidget(QWidget):
 
         self.bottom_tabs.setCurrentWidget(self.search_journal_tree)
 
-        filtered_indices = self.model._filtered_indices
+        # Берём _raw_filtered_indices, а не _filtered_indices: при включённой группировке
+        # последний содержит только лидеров групп, а в журнал нужно сохранить все совпадения.
+        filtered_indices = self.model._raw_filtered_indices
         match_count = len(filtered_indices)
         current_time = datetime.now().strftime("%H:%M:%S")
 
@@ -342,7 +346,8 @@ class LogViewerWidget(QWidget):
             self.global_filters["debug"],
             self.global_filters["error"],
             self.global_filters["warn"],
-            self.search_input.text()
+            self.search_input.text(),
+            self.global_filters["group_dupes"],
         )
 
         # Перерисовываем подсветку, если поисковый запрос изменился

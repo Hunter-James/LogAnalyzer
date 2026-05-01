@@ -23,6 +23,9 @@ dist/
 *.swp
 *.swo
 
+# --- Claude Code workspace (settings, worktrees) ---
+.claude/
+
 # --- OS ---
 .DS_Store
 Thumbs.db
