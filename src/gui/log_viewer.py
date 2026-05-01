@@ -11,7 +11,7 @@ from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColo
 
 from core.models import LogModel
 from core.workers import LogLoader
-from gui.custom_widgets import ScalableListView, ScalableTextEdit
+from gui.custom_widgets import ScalableListView, ScalableTextEdit, MarkerScrollBar
 from config import THEMES
 
 
@@ -124,6 +124,8 @@ class LogViewerWidget(QWidget):
         self.log_view.setUniformItemSizes(True)
         self.log_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.log_view.setModel(self.model)
+        # Скроллбар с метками ERROR/WARN
+        self.log_view.setVerticalScrollBar(MarkerScrollBar(Qt.Orientation.Vertical))
 
         # Bottom Tabs (Выделение / Журнал поиска)
         self.bottom_tabs = QTabWidget()
@@ -167,6 +169,7 @@ class LogViewerWidget(QWidget):
         self.log_view.zoomRequest.connect(self.on_zoom_request)
         self.details_view.zoomRequest.connect(self.on_zoom_request)
         self.model.filterFinished.connect(self.on_filter_finished_scroll)
+        self.model.filterFinished.connect(self._update_scrollbar_markers)
 
         # F3 / Shift+F3 - навигация по совпадениям/строкам.
         # WidgetWithChildrenShortcut, чтобы хоткей работал и когда фокус в поле поиска,
@@ -320,6 +323,9 @@ class LogViewerWidget(QWidget):
             QTreeWidget {{ background-color: {t['bg_panel']}; color: {t['text_main']}; border: none; }}
             QTreeWidget::item:selected {{ background-color: {t['selection']}; color: {t['text_main']}; }}
         """)
+
+        # Цвета меток ERROR/WARN на скроллбаре зависят от темы - пересчитываем
+        self._update_scrollbar_markers()
 
     def on_zoom_request(self, delta):
         if delta > 0:
@@ -563,6 +569,46 @@ class LogViewerWidget(QWidget):
         self.log_view.setCurrentIndex(new_index)
         self.log_view.scrollTo(new_index, QAbstractItemView.ScrollHint.PositionAtCenter)
         self.log_view.setFocus()
+
+    def _update_scrollbar_markers(self):
+        """Пересчитывает метки ERROR/WARN на вертикальном скроллбаре после фильтрации.
+        Биннинг по ~200 ячеек, чтобы не плодить тысячи перекрывающихся отметок."""
+        scrollbar = self.log_view.verticalScrollBar()
+        if not isinstance(scrollbar, MarkerScrollBar):
+            return
+
+        indices = self.model._filtered_indices
+        total = len(indices)
+        if total == 0:
+            scrollbar.set_markers([])
+            return
+
+        BINS = 200
+        bin_levels = [None] * BINS  # для каждого бина "наиболее серьёзный" уровень
+        entries = self.model._entries
+
+        for row, real_idx in enumerate(indices):
+            level = entries[real_idx].level
+            if level not in ("ERROR", "WARN"):
+                continue
+            bin_idx = min(BINS - 1, row * BINS // total)
+            if level == "ERROR":
+                bin_levels[bin_idx] = "ERROR"
+            elif bin_levels[bin_idx] != "ERROR":
+                bin_levels[bin_idx] = "WARN"
+
+        t = THEMES[self.current_theme_name]
+        error_color = QColor(t['error'])
+        warn_color = QColor(t['warn'])
+
+        markers = []
+        for i, lvl in enumerate(bin_levels):
+            if lvl is None:
+                continue
+            rel = i / BINS
+            markers.append((rel, error_color if lvl == "ERROR" else warn_color))
+
+        scrollbar.set_markers(markers)
 
     def on_filter_finished_scroll(self):
         if self.preserved_real_index is not None:
