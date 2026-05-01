@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- PyInstaller ---
+build/
+dist/
+*.spec
+
+# --- IDE / Editors ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- App runtime artifacts ---
+# Файл сохраняется при выходе из приложения (тема, размер шрифта, открытые вкладки)
+settings.json
+src/settings.json
+
+# --- Локальные дампы / временные тексты ---
+gui_code.txt
+project_code.txt
+*.log
