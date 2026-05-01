@@ -4,7 +4,8 @@ from datetime import datetime
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QSplitter, QAbstractItemView,
                              QMessageBox, QApplication, QLineEdit, QHBoxLayout, QLabel, QFrame,
                              QPushButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QMenu,
-                             QTreeWidgetItemIterator, QTextEdit)
+                             QTreeWidgetItemIterator, QTextEdit, QToolButton, QCheckBox,
+                             QWidgetAction, QScrollArea)
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColor
 
@@ -34,6 +35,11 @@ class LogViewerWidget(QWidget):
 
         self.stats = {}
         self.preserved_real_index = None
+
+        # Все логгеры, обнаруженные в файле, и подмножество включённых
+        self.all_loggers = []
+        self.active_loggers = set()
+        self.logger_checkboxes = {}
 
         # Filter states (Global filters passed from MainWindow, Search is local)
         self.global_filters = {
@@ -72,6 +78,15 @@ class LogViewerWidget(QWidget):
         self.search_input.setPlaceholderText("Search in this file...")
         self.search_input.textChanged.connect(self.on_search_text_changed)
         search_layout.addWidget(self.search_input)
+
+        # Кнопка-меню для фильтрации по логгеру/компоненту
+        self.btn_loggers = QToolButton()
+        self.btn_loggers.setText("Компоненты")
+        self.btn_loggers.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.btn_loggers.setEnabled(False)  # включится после загрузки файла
+        self.loggers_menu = QMenu(self)
+        self.btn_loggers.setMenu(self.loggers_menu)
+        search_layout.addWidget(self.btn_loggers)
 
         # Кнопка для сохранения результатов поиска в журнал
         self.btn_save_search = QPushButton("Добавить в журнал")
@@ -152,11 +167,85 @@ class LogViewerWidget(QWidget):
         self.statsChanged.emit(stats)
         self.loadingFinished.emit()
 
+        # Собираем уникальные логгеры из файла и наполняем меню "Компоненты"
+        self._collect_loggers(entries)
+
         if self.model.rowCount() > 0:
             self.log_view.scrollToBottom()
 
         # Apply initial filters
         self.refresh_view()
+
+    def _collect_loggers(self, entries):
+        """Собирает уникальные имена логгеров и пересобирает меню фильтра."""
+        loggers = sorted({e.logger for e in entries if e.logger})
+        self.all_loggers = loggers
+        self.active_loggers = set(loggers)
+        self._rebuild_loggers_menu()
+
+    def _rebuild_loggers_menu(self):
+        self.loggers_menu.clear()
+        self.logger_checkboxes = {}
+
+        if not self.all_loggers:
+            self.btn_loggers.setEnabled(False)
+            self.btn_loggers.setText("Компоненты")
+            return
+
+        self.btn_loggers.setEnabled(True)
+
+        # Кнопка "Все / Ни одного" сверху
+        toggle_btn = QPushButton("Все / Ни одного")
+        toggle_btn.setFlat(False)
+        toggle_btn.clicked.connect(self._toggle_all_loggers)
+        toggle_action = QWidgetAction(self.loggers_menu)
+        toggle_action.setDefaultWidget(toggle_btn)
+        self.loggers_menu.addAction(toggle_action)
+        self.loggers_menu.addSeparator()
+
+        # Чекбоксы оборачиваем в QWidgetAction, чтобы клик не закрывал меню
+        for logger in self.all_loggers:
+            cb = QCheckBox(logger)
+            cb.setChecked(logger in self.active_loggers)
+            cb.toggled.connect(lambda checked, lg=logger: self._on_logger_toggled(lg, checked))
+            wa = QWidgetAction(self.loggers_menu)
+            wa.setDefaultWidget(cb)
+            self.loggers_menu.addAction(wa)
+            self.logger_checkboxes[logger] = cb
+
+        self._update_loggers_button_label()
+
+    def _on_logger_toggled(self, logger, checked):
+        if checked:
+            self.active_loggers.add(logger)
+        else:
+            self.active_loggers.discard(logger)
+        self._update_loggers_button_label()
+        self.refresh_view()
+
+    def _toggle_all_loggers(self):
+        # Если включено всё - выключаем всё; иначе включаем всё
+        if len(self.active_loggers) == len(self.all_loggers):
+            self.active_loggers.clear()
+        else:
+            self.active_loggers = set(self.all_loggers)
+
+        for logger, cb in self.logger_checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(logger in self.active_loggers)
+            cb.blockSignals(False)
+
+        self._update_loggers_button_label()
+        self.refresh_view()
+
+    def _update_loggers_button_label(self):
+        total = len(self.all_loggers)
+        if total == 0:
+            self.btn_loggers.setText("Компоненты")
+        elif len(self.active_loggers) == total:
+            self.btn_loggers.setText(f"Компоненты: все ({total})")
+        else:
+            self.btn_loggers.setText(f"Компоненты: {len(self.active_loggers)}/{total}")
 
     def update_stats_text(self):
         total = sum(self.stats.values())
@@ -341,6 +430,12 @@ class LogViewerWidget(QWidget):
         else:
             self.preserved_real_index = None
 
+        # Если включены все логгеры - не передаём ограничение (None = пропускаем все)
+        if self.all_loggers and len(self.active_loggers) < len(self.all_loggers):
+            loggers_filter = set(self.active_loggers)
+        else:
+            loggers_filter = None
+
         self.model.update_filters(
             self.global_filters["info"],
             self.global_filters["debug"],
@@ -348,6 +443,7 @@ class LogViewerWidget(QWidget):
             self.global_filters["warn"],
             self.search_input.text(),
             self.global_filters["group_dupes"],
+            loggers_filter,
         )
 
         # Перерисовываем подсветку, если поисковый запрос изменился

@@ -25,6 +25,7 @@ class LogModel(QAbstractListModel):
         self._show_warn = True
         self._search_text = ""
         self._group_dupes = False
+        self._loggers = None  # None = все, set = только из этого набора
 
         self.current_theme = THEMES["Default"]
         self.font_size = 10
@@ -88,13 +89,15 @@ class LogModel(QAbstractListModel):
         self.endResetModel()
         self.apply_filters_async()
 
-    def update_filters(self, show_info, show_debug, show_error, show_warn, search_text, group_dupes=False):
+    def update_filters(self, show_info, show_debug, show_error, show_warn,
+                       search_text, group_dupes=False, loggers=None):
         self._show_info = show_info
         self._show_debug = show_debug
         self._show_error = show_error
         self._show_warn = show_warn
         self._search_text = search_text
         self._group_dupes = group_dupes
+        self._loggers = loggers
         self.apply_filters_async()
 
     def apply_filters_async(self):
@@ -105,7 +108,8 @@ class LogModel(QAbstractListModel):
         self.filter_worker = FilterWorker(
             self._entries,
             self._show_info, self._show_debug, self._show_error, self._show_warn,
-            self._search_text
+            self._search_text,
+            self._loggers,
         )
         self.filter_worker.finished.connect(self.on_filter_finished)
         self.filter_worker.start()
