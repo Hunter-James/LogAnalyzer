@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QSplitter, QAbstractItemView,
                              QTreeWidgetItemIterator, QTextEdit, QToolButton, QCheckBox,
                              QWidgetAction, QScrollArea)
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColor
+from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColor, QShortcut
 
 from core.models import LogModel
 from core.workers import LogLoader
@@ -147,6 +147,17 @@ class LogViewerWidget(QWidget):
         self.log_view.zoomRequest.connect(self.on_zoom_request)
         self.details_view.zoomRequest.connect(self.on_zoom_request)
         self.model.filterFinished.connect(self.on_filter_finished_scroll)
+
+        # F3 / Shift+F3 - навигация по совпадениям/строкам.
+        # WidgetWithChildrenShortcut, чтобы хоткей работал и когда фокус в поле поиска,
+        # и при этом не конфликтовал между разными вкладками.
+        sc_next = QShortcut(QKeySequence(Qt.Key.Key_F3), self)
+        sc_next.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_next.activated.connect(lambda: self._goto_match(1))
+
+        sc_prev = QShortcut(QKeySequence("Shift+F3"), self)
+        sc_prev.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_prev.activated.connect(lambda: self._goto_match(-1))
 
     def load_file(self):
         self.loader = LogLoader(self.file_path)
@@ -448,6 +459,30 @@ class LogViewerWidget(QWidget):
 
         # Перерисовываем подсветку, если поисковый запрос изменился
         self._highlight_search_matches()
+
+    def _goto_match(self, direction):
+        """F3 / Shift+F3: перейти к следующей/предыдущей строке в отфильтрованном виде.
+        Поскольку фильтр поиска уже отбрасывает несовпадения, "следующая строка" = "следующее совпадение"."""
+        row_count = self.model.rowCount()
+        if row_count == 0:
+            return
+
+        current = self.log_view.currentIndex()
+        if current.isValid():
+            new_row = current.row() + direction
+        else:
+            new_row = 0 if direction > 0 else row_count - 1
+
+        # Закольцовываем
+        if new_row < 0:
+            new_row = row_count - 1
+        elif new_row >= row_count:
+            new_row = 0
+
+        new_index = self.model.index(new_row)
+        self.log_view.setCurrentIndex(new_index)
+        self.log_view.scrollTo(new_index, QAbstractItemView.ScrollHint.PositionAtCenter)
+        self.log_view.setFocus()
 
     def on_filter_finished_scroll(self):
         if self.preserved_real_index is not None:
