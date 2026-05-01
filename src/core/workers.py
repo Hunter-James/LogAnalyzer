@@ -75,7 +75,7 @@ class FilterWorker(QThread):
     finished = pyqtSignal(list)
 
     def __init__(self, entries, show_info, show_debug, show_error, show_warn,
-                 search_text, loggers=None):
+                 search_text, loggers=None, time_from=None, time_to=None):
         super().__init__()
         self.entries = entries
         self.show_info = show_info
@@ -85,6 +85,9 @@ class FilterWorker(QThread):
         self.search_text = search_text
         # loggers=None означает "все" (без ограничения), set означает "только из этого набора"
         self.loggers = loggers
+        # Границы времени в формате HH:MM:SS.mmm (лексикографически = хронологически)
+        self.time_from = time_from
+        self.time_to = time_to
         self._is_cancelled = False
 
     def cancel(self):
@@ -100,18 +103,23 @@ class FilterWorker(QThread):
         search_text = self.search_text
         entries = self.entries
         loggers = self.loggers
+        time_from = self.time_from
+        time_to = self.time_to
 
-        # Базовый фильтр по уровню. UNKNOWN (продолжения многострочных сообщений
-        # без таймстампа) всегда пропускаем, иначе теряем стек-трейсы.
-        if loggers is None:
-            def base_pass(e):
-                return e.level in active_levels or e.level == "UNKNOWN"
-        else:
-            def base_pass(e):
-                if e.level not in active_levels and e.level != "UNKNOWN":
+        # Базовый фильтр: уровень, логгер, диапазон времени.
+        # UNKNOWN (продолжения многострочных сообщений без таймстампа) всегда пропускаем,
+        # иначе теряем стек-трейсы.
+        def base_pass(e):
+            if e.level != "UNKNOWN" and e.level not in active_levels:
+                return False
+            if loggers is not None and e.logger and e.logger not in loggers:
+                return False
+            if e.timestamp:
+                if time_from and e.timestamp < time_from:
                     return False
-                # Записи без логгера (UNKNOWN или служебные) тоже пропускаем
-                return not e.logger or e.logger in loggers
+                if time_to and e.timestamp > time_to:
+                    return False
+            return True
 
         if not search_text:
             new_indices = [i for i, e in enumerate(entries) if base_pass(e)]

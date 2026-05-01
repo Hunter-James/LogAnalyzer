@@ -88,6 +88,26 @@ class LogViewerWidget(QWidget):
         self.btn_loggers.setMenu(self.loggers_menu)
         search_layout.addWidget(self.btn_loggers)
 
+        # Поля диапазона времени. Принимают HH:MM, HH:MM:SS, HH:MM:SS.mmm.
+        # "от" пустые поля заполняются нулями, "до" - девятками (см. _parse_time_input).
+        search_layout.addSpacing(8)
+        search_layout.addWidget(QLabel("Время:"))
+        self.time_from = QLineEdit()
+        self.time_from.setPlaceholderText("c (ЧЧ:ММ:СС)")
+        self.time_from.setFixedWidth(110)
+        self.time_from.setToolTip("Нижняя граница времени (включительно). Пусто = с начала файла.")
+        self.time_from.textChanged.connect(self._on_time_changed)
+        search_layout.addWidget(self.time_from)
+
+        search_layout.addWidget(QLabel("–"))
+
+        self.time_to = QLineEdit()
+        self.time_to.setPlaceholderText("по (ЧЧ:ММ:СС)")
+        self.time_to.setFixedWidth(110)
+        self.time_to.setToolTip("Верхняя граница времени (включительно). Пусто = до конца файла.")
+        self.time_to.textChanged.connect(self._on_time_changed)
+        search_layout.addWidget(self.time_to)
+
         # Кнопка для сохранения результатов поиска в журнал
         self.btn_save_search = QPushButton("Добавить в журнал")
         self.btn_save_search.clicked.connect(self.on_save_search_clicked)
@@ -325,6 +345,61 @@ class LogViewerWidget(QWidget):
     def on_search_text_changed(self, text):
         self.search_timer.start()
 
+    def _on_time_changed(self):
+        # Подкрашиваем поле красноватым, если ввод не парсится (пустое - всегда ОК)
+        for field, is_upper in ((self.time_from, False), (self.time_to, True)):
+            text = field.text().strip()
+            ok = (not text) or (self._parse_time_input(text, is_upper) is not None)
+            field.setStyleSheet("" if ok else "background-color: #5a2a2a; color: #ffdddd;")
+        # Дебаунсим вместе с поиском
+        self.search_timer.start()
+
+    @staticmethod
+    def _parse_time_input(text, is_upper):
+        """Парсит ввод пользователя в строку HH:MM:SS.mmm для лексикографического сравнения.
+        Возвращает None если ввод невалиден.
+        Принимаются HH:MM, HH:MM:SS, HH:MM:SS.mmm. Для is_upper=True недостающие
+        части заполняются 9-ками ("10:00" -> "10:00:59.999"), иначе нулями."""
+        text = text.strip()
+        if not text:
+            return None
+        parts = text.split(':')
+        if len(parts) < 2 or len(parts) > 3:
+            return None
+        try:
+            h = int(parts[0])
+            m = int(parts[1])
+            if not (0 <= h <= 23 and 0 <= m <= 59):
+                return None
+
+            s = 0
+            ms = 0
+            if len(parts) == 3:
+                sec_part = parts[2]
+                if '.' in sec_part:
+                    s_str, ms_str = sec_part.split('.', 1)
+                    s = int(s_str)
+                    # Дополняем дробные мс до 3 знаков справа нулями, потом обрезаем
+                    ms = int((ms_str + '000')[:3])
+                else:
+                    s = int(sec_part)
+                    ms = 999 if is_upper else 0
+            else:
+                # Секунды не указаны
+                if is_upper:
+                    s = 59
+                    ms = 999
+                else:
+                    s = 0
+                    ms = 0
+
+            if not (0 <= s <= 59):
+                return None
+
+            return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+        except ValueError:
+            return None
+
     def on_save_search_clicked(self):
         """Логика добавления текущего поиска в журнал"""
         search_text = self.search_input.text()
@@ -447,6 +522,9 @@ class LogViewerWidget(QWidget):
         else:
             loggers_filter = None
 
+        time_from = self._parse_time_input(self.time_from.text(), is_upper=False)
+        time_to = self._parse_time_input(self.time_to.text(), is_upper=True)
+
         self.model.update_filters(
             self.global_filters["info"],
             self.global_filters["debug"],
@@ -455,6 +533,8 @@ class LogViewerWidget(QWidget):
             self.search_input.text(),
             self.global_filters["group_dupes"],
             loggers_filter,
+            time_from,
+            time_to,
         )
 
         # Перерисовываем подсветку, если поисковый запрос изменился
