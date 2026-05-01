@@ -1,11 +1,12 @@
 import os
+import re
 from datetime import datetime
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QSplitter, QAbstractItemView,
                              QMessageBox, QApplication, QLineEdit, QHBoxLayout, QLabel, QFrame,
                              QPushButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QMenu,
-                             QTreeWidgetItemIterator)
+                             QTreeWidgetItemIterator, QTextEdit)
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QKeySequence
+from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColor
 
 from core.models import LogModel
 from core.workers import LogLoader
@@ -18,6 +19,12 @@ class LogViewerWidget(QWidget):
     statsChanged = pyqtSignal(dict)
     progressChanged = pyqtSignal(int)
     loadingFinished = pyqtSignal()
+
+    # Лимиты, чтобы журнал не приводил к лагам/вылетам
+    MAX_JOURNAL_MATCHES_PER_SEARCH = 1000
+    MAX_JOURNAL_LINE_PREVIEW = 300
+    MAX_JOURNAL_SEARCHES = 50
+    MAX_DETAIL_HIGHLIGHTS = 1000
 
     def __init__(self, file_path, theme_name, font_size, parent=None):
         super().__init__(parent)
@@ -228,22 +235,59 @@ class LogViewerWidget(QWidget):
         match_count = len(filtered_indices)
         current_time = datetime.now().strftime("%H:%M:%S")
 
-        root_text = f'Поиск "{search_text}" (найдено {match_count} совпадений) - {current_time}'
-        root_item = QTreeWidgetItem(self.search_journal_tree, [root_text])
+        max_per_search = self.MAX_JOURNAL_MATCHES_PER_SEARCH
+        max_preview = self.MAX_JOURNAL_LINE_PREVIEW
+        display_count = min(match_count, max_per_search)
+        entries = self.model._entries
 
-        file_item = QTreeWidgetItem(root_item,
-                                    [f"Файл: {os.path.basename(self.file_path)} (совпадений: {match_count})"])
+        # Отключаем перерисовку и сортировку на время массовой вставки -
+        # иначе при больших объёмах журнал лагает.
+        self.search_journal_tree.setUpdatesEnabled(False)
+        was_sorting = self.search_journal_tree.isSortingEnabled()
+        self.search_journal_tree.setSortingEnabled(False)
+        try:
+            # Удаляем старые поиски, чтобы общее количество узлов не росло бесконечно
+            while self.search_journal_tree.topLevelItemCount() >= self.MAX_JOURNAL_SEARCHES:
+                old = self.search_journal_tree.takeTopLevelItem(0)
+                del old
 
-        for row in range(match_count):
-            real_index = filtered_indices[row]
-            entry = self.model._entries[real_index]
+            root_text = f'Поиск "{search_text}" (найдено {match_count} совпадений) - {current_time}'
+            root_item = QTreeWidgetItem(self.search_journal_tree, [root_text])
 
-            item_text = f"Строка {real_index + 1}: {entry.full_line.strip()}"
-            match_item = QTreeWidgetItem(file_item, [item_text])
-            match_item.setData(0, Qt.ItemDataRole.UserRole, real_index)
+            file_item = QTreeWidgetItem(
+                root_item,
+                [f"Файл: {os.path.basename(self.file_path)} (совпадений: {match_count})"]
+            )
 
-        root_item.setExpanded(True)
-        file_item.setExpanded(True)
+            # Готовим items пачкой и добавляем через addChildren - это заметно быстрее,
+            # чем создавать каждый item с указанием родителя.
+            new_items = []
+            for row in range(display_count):
+                real_index = filtered_indices[row]
+                entry = entries[real_index]
+
+                line = entry.full_line.strip()
+                if len(line) > max_preview:
+                    line = line[:max_preview] + '...'
+
+                match_item = QTreeWidgetItem([f"Строка {real_index + 1}: {line}"])
+                match_item.setData(0, Qt.ItemDataRole.UserRole, real_index)
+                new_items.append(match_item)
+
+            file_item.addChildren(new_items)
+
+            if match_count > max_per_search:
+                QTreeWidgetItem(
+                    file_item,
+                    [f"... ещё {match_count - max_per_search} совпадений не показано (для производительности)"]
+                )
+
+            root_item.setExpanded(True)
+            file_item.setExpanded(True)
+        finally:
+            self.search_journal_tree.setSortingEnabled(was_sorting)
+            self.search_journal_tree.setUpdatesEnabled(True)
+
         self.search_journal_tree.scrollToItem(root_item)
 
     def show_journal_context_menu(self, pos):
@@ -301,6 +345,9 @@ class LogViewerWidget(QWidget):
             self.search_input.text()
         )
 
+        # Перерисовываем подсветку, если поисковый запрос изменился
+        self._highlight_search_matches()
+
     def on_filter_finished_scroll(self):
         if self.preserved_real_index is not None:
             new_row = self.model.find_row_by_real_index(self.preserved_real_index)
@@ -313,6 +360,7 @@ class LogViewerWidget(QWidget):
         selected_indexes = self.log_view.selectedIndexes()
         if not selected_indexes:
             self.details_view.clear()
+            self.details_view.setExtraSelections([])
             return
         selected_indexes.sort(key=lambda x: x.row())
         display_indexes = selected_indexes[:50]
@@ -323,6 +371,66 @@ class LogViewerWidget(QWidget):
         if len(selected_indexes) > 50:
             full_text += f"\n... and {len(selected_indexes) - 50} more items selected."
         self.details_view.setPlainText(full_text)
+        self._highlight_search_matches()
+
+    def _highlight_search_matches(self):
+        """Подсвечивает совпадения текущего поискового запроса в окне 'Выделение'
+        и автоматически прокручивает к первому совпадению."""
+        # Очищаем прошлые подсветки в любом случае
+        self.details_view.setExtraSelections([])
+
+        search_text = self.search_input.text()
+        if not search_text:
+            return
+
+        full_text = self.details_view.toPlainText()
+        if not full_text:
+            return
+
+        # Совпадения ищем так же, как FilterWorker: сначала regex, потом literal fallback
+        positions = []
+        try:
+            pattern = re.compile(search_text, re.IGNORECASE)
+            for m in pattern.finditer(full_text):
+                if m.start() != m.end():
+                    positions.append((m.start(), m.end()))
+                if len(positions) >= self.MAX_DETAIL_HIGHLIGHTS:
+                    break
+        except re.error:
+            search_lower = search_text.lower()
+            text_lower = full_text.lower()
+            slen = len(search_text)
+            pos = text_lower.find(search_lower)
+            while pos != -1 and len(positions) < self.MAX_DETAIL_HIGHLIGHTS:
+                positions.append((pos, pos + slen))
+                pos = text_lower.find(search_lower, pos + slen)
+
+        if not positions:
+            return
+
+        document = self.details_view.document()
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor("#FFD400"))
+        fmt.setForeground(QColor("#000000"))
+
+        extra_selections = []
+        for start, end in positions:
+            cursor = QTextCursor(document)
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            sel = QTextEdit.ExtraSelection()
+            sel.cursor = cursor
+            sel.format = fmt
+            extra_selections.append(sel)
+
+        self.details_view.setExtraSelections(extra_selections)
+
+        # Прыгаем к первому совпадению, чтобы при длинной строке не пришлось скроллить вручную
+        first_start = positions[0][0]
+        scroll_cursor = QTextCursor(document)
+        scroll_cursor.setPosition(first_start)
+        self.details_view.setTextCursor(scroll_cursor)
+        self.details_view.ensureCursorVisible()
 
     def keyPressEvent(self, event):
         if event.matches(QKeySequence.StandardKey.Copy):
