@@ -4,13 +4,14 @@ from datetime import datetime
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QSplitter, QAbstractItemView,
                              QMessageBox, QApplication, QLineEdit, QHBoxLayout, QLabel, QFrame,
                              QPushButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QMenu,
-                             QTreeWidgetItemIterator, QTextEdit)
+                             QTreeWidgetItemIterator, QTextEdit, QToolButton, QCheckBox,
+                             QWidgetAction, QScrollArea)
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColor
+from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColor, QShortcut
 
 from core.models import LogModel
 from core.workers import LogLoader
-from gui.custom_widgets import ScalableListView, ScalableTextEdit
+from gui.custom_widgets import ScalableListView, ScalableTextEdit, MarkerScrollBar
 from config import THEMES
 
 
@@ -35,12 +36,18 @@ class LogViewerWidget(QWidget):
         self.stats = {}
         self.preserved_real_index = None
 
+        # Все логгеры, обнаруженные в файле, и подмножество включённых
+        self.all_loggers = []
+        self.active_loggers = set()
+        self.logger_checkboxes = {}
+
         # Filter states (Global filters passed from MainWindow, Search is local)
         self.global_filters = {
             "info": True,
             "debug": True,
             "warn": True,
-            "error": True
+            "error": True,
+            "group_dupes": False,
         }
 
         # Search debounce timer
@@ -72,6 +79,35 @@ class LogViewerWidget(QWidget):
         self.search_input.textChanged.connect(self.on_search_text_changed)
         search_layout.addWidget(self.search_input)
 
+        # Кнопка-меню для фильтрации по логгеру/компоненту
+        self.btn_loggers = QToolButton()
+        self.btn_loggers.setText("Компоненты")
+        self.btn_loggers.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.btn_loggers.setEnabled(False)  # включится после загрузки файла
+        self.loggers_menu = QMenu(self)
+        self.btn_loggers.setMenu(self.loggers_menu)
+        search_layout.addWidget(self.btn_loggers)
+
+        # Поля диапазона времени. Принимают HH:MM, HH:MM:SS, HH:MM:SS.mmm.
+        # "от" пустые поля заполняются нулями, "до" - девятками (см. _parse_time_input).
+        search_layout.addSpacing(8)
+        search_layout.addWidget(QLabel("Время:"))
+        self.time_from = QLineEdit()
+        self.time_from.setPlaceholderText("c (ЧЧ:ММ:СС)")
+        self.time_from.setFixedWidth(110)
+        self.time_from.setToolTip("Нижняя граница времени (включительно). Пусто = с начала файла.")
+        self.time_from.textChanged.connect(self._on_time_changed)
+        search_layout.addWidget(self.time_from)
+
+        search_layout.addWidget(QLabel("–"))
+
+        self.time_to = QLineEdit()
+        self.time_to.setPlaceholderText("по (ЧЧ:ММ:СС)")
+        self.time_to.setFixedWidth(110)
+        self.time_to.setToolTip("Верхняя граница времени (включительно). Пусто = до конца файла.")
+        self.time_to.textChanged.connect(self._on_time_changed)
+        search_layout.addWidget(self.time_to)
+
         # Кнопка для сохранения результатов поиска в журнал
         self.btn_save_search = QPushButton("Добавить в журнал")
         self.btn_save_search.clicked.connect(self.on_save_search_clicked)
@@ -88,6 +124,8 @@ class LogViewerWidget(QWidget):
         self.log_view.setUniformItemSizes(True)
         self.log_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.log_view.setModel(self.model)
+        # Скроллбар с метками ERROR/WARN
+        self.log_view.setVerticalScrollBar(MarkerScrollBar(Qt.Orientation.Vertical))
 
         # Bottom Tabs (Выделение / Журнал поиска)
         self.bottom_tabs = QTabWidget()
@@ -131,6 +169,18 @@ class LogViewerWidget(QWidget):
         self.log_view.zoomRequest.connect(self.on_zoom_request)
         self.details_view.zoomRequest.connect(self.on_zoom_request)
         self.model.filterFinished.connect(self.on_filter_finished_scroll)
+        self.model.filterFinished.connect(self._update_scrollbar_markers)
+
+        # F3 / Shift+F3 - навигация по совпадениям/строкам.
+        # WidgetWithChildrenShortcut, чтобы хоткей работал и когда фокус в поле поиска,
+        # и при этом не конфликтовал между разными вкладками.
+        sc_next = QShortcut(QKeySequence(Qt.Key.Key_F3), self)
+        sc_next.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_next.activated.connect(lambda: self._goto_match(1))
+
+        sc_prev = QShortcut(QKeySequence("Shift+F3"), self)
+        sc_prev.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_prev.activated.connect(lambda: self._goto_match(-1))
 
     def load_file(self):
         self.loader = LogLoader(self.file_path)
@@ -151,11 +201,85 @@ class LogViewerWidget(QWidget):
         self.statsChanged.emit(stats)
         self.loadingFinished.emit()
 
+        # Собираем уникальные логгеры из файла и наполняем меню "Компоненты"
+        self._collect_loggers(entries)
+
         if self.model.rowCount() > 0:
             self.log_view.scrollToBottom()
 
         # Apply initial filters
         self.refresh_view()
+
+    def _collect_loggers(self, entries):
+        """Собирает уникальные имена логгеров и пересобирает меню фильтра."""
+        loggers = sorted({e.logger for e in entries if e.logger})
+        self.all_loggers = loggers
+        self.active_loggers = set(loggers)
+        self._rebuild_loggers_menu()
+
+    def _rebuild_loggers_menu(self):
+        self.loggers_menu.clear()
+        self.logger_checkboxes = {}
+
+        if not self.all_loggers:
+            self.btn_loggers.setEnabled(False)
+            self.btn_loggers.setText("Компоненты")
+            return
+
+        self.btn_loggers.setEnabled(True)
+
+        # Кнопка "Все / Ни одного" сверху
+        toggle_btn = QPushButton("Все / Ни одного")
+        toggle_btn.setFlat(False)
+        toggle_btn.clicked.connect(self._toggle_all_loggers)
+        toggle_action = QWidgetAction(self.loggers_menu)
+        toggle_action.setDefaultWidget(toggle_btn)
+        self.loggers_menu.addAction(toggle_action)
+        self.loggers_menu.addSeparator()
+
+        # Чекбоксы оборачиваем в QWidgetAction, чтобы клик не закрывал меню
+        for logger in self.all_loggers:
+            cb = QCheckBox(logger)
+            cb.setChecked(logger in self.active_loggers)
+            cb.toggled.connect(lambda checked, lg=logger: self._on_logger_toggled(lg, checked))
+            wa = QWidgetAction(self.loggers_menu)
+            wa.setDefaultWidget(cb)
+            self.loggers_menu.addAction(wa)
+            self.logger_checkboxes[logger] = cb
+
+        self._update_loggers_button_label()
+
+    def _on_logger_toggled(self, logger, checked):
+        if checked:
+            self.active_loggers.add(logger)
+        else:
+            self.active_loggers.discard(logger)
+        self._update_loggers_button_label()
+        self.refresh_view()
+
+    def _toggle_all_loggers(self):
+        # Если включено всё - выключаем всё; иначе включаем всё
+        if len(self.active_loggers) == len(self.all_loggers):
+            self.active_loggers.clear()
+        else:
+            self.active_loggers = set(self.all_loggers)
+
+        for logger, cb in self.logger_checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(logger in self.active_loggers)
+            cb.blockSignals(False)
+
+        self._update_loggers_button_label()
+        self.refresh_view()
+
+    def _update_loggers_button_label(self):
+        total = len(self.all_loggers)
+        if total == 0:
+            self.btn_loggers.setText("Компоненты")
+        elif len(self.active_loggers) == total:
+            self.btn_loggers.setText(f"Компоненты: все ({total})")
+        else:
+            self.btn_loggers.setText(f"Компоненты: {len(self.active_loggers)}/{total}")
 
     def update_stats_text(self):
         total = sum(self.stats.values())
@@ -200,6 +324,9 @@ class LogViewerWidget(QWidget):
             QTreeWidget::item:selected {{ background-color: {t['selection']}; color: {t['text_main']}; }}
         """)
 
+        # Цвета меток ERROR/WARN на скроллбаре зависят от темы - пересчитываем
+        self._update_scrollbar_markers()
+
     def on_zoom_request(self, delta):
         if delta > 0:
             self.current_font_size = min(24, self.current_font_size + 1)
@@ -212,16 +339,72 @@ class LogViewerWidget(QWidget):
         if hasattr(window, 'on_zoom_request'):
             window.on_zoom_request(delta)
 
-    def set_global_filters(self, info, debug, warn, error):
+    def set_global_filters(self, info, debug, warn, error, group_dupes=False):
         """Called by MainWindow when global checkboxes change"""
         self.global_filters["info"] = info
         self.global_filters["debug"] = debug
         self.global_filters["warn"] = warn
         self.global_filters["error"] = error
+        self.global_filters["group_dupes"] = group_dupes
         self.refresh_view()
 
     def on_search_text_changed(self, text):
         self.search_timer.start()
+
+    def _on_time_changed(self):
+        # Подкрашиваем поле красноватым, если ввод не парсится (пустое - всегда ОК)
+        for field, is_upper in ((self.time_from, False), (self.time_to, True)):
+            text = field.text().strip()
+            ok = (not text) or (self._parse_time_input(text, is_upper) is not None)
+            field.setStyleSheet("" if ok else "background-color: #5a2a2a; color: #ffdddd;")
+        # Дебаунсим вместе с поиском
+        self.search_timer.start()
+
+    @staticmethod
+    def _parse_time_input(text, is_upper):
+        """Парсит ввод пользователя в строку HH:MM:SS.mmm для лексикографического сравнения.
+        Возвращает None если ввод невалиден.
+        Принимаются HH:MM, HH:MM:SS, HH:MM:SS.mmm. Для is_upper=True недостающие
+        части заполняются 9-ками ("10:00" -> "10:00:59.999"), иначе нулями."""
+        text = text.strip()
+        if not text:
+            return None
+        parts = text.split(':')
+        if len(parts) < 2 or len(parts) > 3:
+            return None
+        try:
+            h = int(parts[0])
+            m = int(parts[1])
+            if not (0 <= h <= 23 and 0 <= m <= 59):
+                return None
+
+            s = 0
+            ms = 0
+            if len(parts) == 3:
+                sec_part = parts[2]
+                if '.' in sec_part:
+                    s_str, ms_str = sec_part.split('.', 1)
+                    s = int(s_str)
+                    # Дополняем дробные мс до 3 знаков справа нулями, потом обрезаем
+                    ms = int((ms_str + '000')[:3])
+                else:
+                    s = int(sec_part)
+                    ms = 999 if is_upper else 0
+            else:
+                # Секунды не указаны
+                if is_upper:
+                    s = 59
+                    ms = 999
+                else:
+                    s = 0
+                    ms = 0
+
+            if not (0 <= s <= 59):
+                return None
+
+            return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+        except ValueError:
+            return None
 
     def on_save_search_clicked(self):
         """Логика добавления текущего поиска в журнал"""
@@ -231,7 +414,9 @@ class LogViewerWidget(QWidget):
 
         self.bottom_tabs.setCurrentWidget(self.search_journal_tree)
 
-        filtered_indices = self.model._filtered_indices
+        # Берём _raw_filtered_indices, а не _filtered_indices: при включённой группировке
+        # последний содержит только лидеров групп, а в журнал нужно сохранить все совпадения.
+        filtered_indices = self.model._raw_filtered_indices
         match_count = len(filtered_indices)
         current_time = datetime.now().strftime("%H:%M:%S")
 
@@ -337,16 +522,93 @@ class LogViewerWidget(QWidget):
         else:
             self.preserved_real_index = None
 
+        # Если включены все логгеры - не передаём ограничение (None = пропускаем все)
+        if self.all_loggers and len(self.active_loggers) < len(self.all_loggers):
+            loggers_filter = set(self.active_loggers)
+        else:
+            loggers_filter = None
+
+        time_from = self._parse_time_input(self.time_from.text(), is_upper=False)
+        time_to = self._parse_time_input(self.time_to.text(), is_upper=True)
+
         self.model.update_filters(
             self.global_filters["info"],
             self.global_filters["debug"],
             self.global_filters["error"],
             self.global_filters["warn"],
-            self.search_input.text()
+            self.search_input.text(),
+            self.global_filters["group_dupes"],
+            loggers_filter,
+            time_from,
+            time_to,
         )
 
         # Перерисовываем подсветку, если поисковый запрос изменился
         self._highlight_search_matches()
+
+    def _goto_match(self, direction):
+        """F3 / Shift+F3: перейти к следующей/предыдущей строке в отфильтрованном виде.
+        Поскольку фильтр поиска уже отбрасывает несовпадения, "следующая строка" = "следующее совпадение"."""
+        row_count = self.model.rowCount()
+        if row_count == 0:
+            return
+
+        current = self.log_view.currentIndex()
+        if current.isValid():
+            new_row = current.row() + direction
+        else:
+            new_row = 0 if direction > 0 else row_count - 1
+
+        # Закольцовываем
+        if new_row < 0:
+            new_row = row_count - 1
+        elif new_row >= row_count:
+            new_row = 0
+
+        new_index = self.model.index(new_row)
+        self.log_view.setCurrentIndex(new_index)
+        self.log_view.scrollTo(new_index, QAbstractItemView.ScrollHint.PositionAtCenter)
+        self.log_view.setFocus()
+
+    def _update_scrollbar_markers(self):
+        """Пересчитывает метки ERROR/WARN на вертикальном скроллбаре после фильтрации.
+        Биннинг по ~200 ячеек, чтобы не плодить тысячи перекрывающихся отметок."""
+        scrollbar = self.log_view.verticalScrollBar()
+        if not isinstance(scrollbar, MarkerScrollBar):
+            return
+
+        indices = self.model._filtered_indices
+        total = len(indices)
+        if total == 0:
+            scrollbar.set_markers([])
+            return
+
+        BINS = 200
+        bin_levels = [None] * BINS  # для каждого бина "наиболее серьёзный" уровень
+        entries = self.model._entries
+
+        for row, real_idx in enumerate(indices):
+            level = entries[real_idx].level
+            if level not in ("ERROR", "WARN"):
+                continue
+            bin_idx = min(BINS - 1, row * BINS // total)
+            if level == "ERROR":
+                bin_levels[bin_idx] = "ERROR"
+            elif bin_levels[bin_idx] != "ERROR":
+                bin_levels[bin_idx] = "WARN"
+
+        t = THEMES[self.current_theme_name]
+        error_color = QColor(t['error'])
+        warn_color = QColor(t['warn'])
+
+        markers = []
+        for i, lvl in enumerate(bin_levels):
+            if lvl is None:
+                continue
+            rel = i / BINS
+            markers.append((rel, error_color if lvl == "ERROR" else warn_color))
+
+        scrollbar.set_markers(markers)
 
     def on_filter_finished_scroll(self):
         if self.preserved_real_index is not None:

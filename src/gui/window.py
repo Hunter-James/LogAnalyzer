@@ -97,6 +97,11 @@ class MainWindow(QMainWindow):
         self.chk_error.setChecked(True)
         self.chk_error.stateChanged.connect(self.on_global_filter_changed)
 
+        self.chk_group = QCheckBox("Свернуть дубли")
+        self.chk_group.setToolTip("Схлопывать подряд идущие одинаковые сообщения в одну строку с префиксом [×N]")
+        self.chk_group.setChecked(False)
+        self.chk_group.stateChanged.connect(self.on_global_filter_changed)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedWidth(150)
         self.progress_bar.setVisible(False)
@@ -105,6 +110,7 @@ class MainWindow(QMainWindow):
         widgets = [
             self.btn_open, self.btn_settings,
             self.chk_info, self.chk_debug, self.chk_warn, self.chk_error,
+            self.chk_group,
             self.progress_bar,
             self.split_manager
         ]
@@ -163,6 +169,8 @@ class MainWindow(QMainWindow):
         tb_layout.addWidget(self.chk_debug)
         tb_layout.addWidget(self.chk_warn)
         tb_layout.addWidget(self.chk_error)
+        tb_layout.addSpacing(15)
+        tb_layout.addWidget(self.chk_group)
         tb_layout.addStretch()
         tb_layout.addWidget(self.progress_bar)
 
@@ -195,6 +203,8 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.chk_debug)
         sb_layout.addWidget(self.chk_warn)
         sb_layout.addWidget(self.chk_error)
+        sb_layout.addSpacing(10)
+        sb_layout.addWidget(self.chk_group)
         sb_layout.addStretch()
         sb_layout.addWidget(self.progress_bar)
 
@@ -303,7 +313,8 @@ class MainWindow(QMainWindow):
             self.chk_info.isChecked(),
             self.chk_debug.isChecked(),
             self.chk_warn.isChecked(),
-            self.chk_error.isChecked()
+            self.chk_error.isChecked(),
+            self.chk_group.isChecked(),
         )
 
         self.split_manager.add_tab(viewer, os.path.basename(file_path), side)
@@ -327,12 +338,13 @@ class MainWindow(QMainWindow):
         debug = self.chk_debug.isChecked()
         warn = self.chk_warn.isChecked()
         error = self.chk_error.isChecked()
+        group_dupes = self.chk_group.isChecked()
 
         for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
             for i in range(group.count()):
                 viewer = group.widget(i)
                 if isinstance(viewer, LogViewerWidget):
-                    viewer.set_global_filters(info, debug, warn, error)
+                    viewer.set_global_filters(info, debug, warn, error, group_dupes)
 
     def keyPressEvent(self, event):
         viewer = self.split_manager.get_current_viewer()
