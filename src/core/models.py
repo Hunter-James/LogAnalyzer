@@ -33,8 +33,21 @@ BATCH_EVENT_RULES = [
         lambda e, l: e.logger == 'HIKROBOT' and '.run' in l),
     ('scan_image', 'Изображений обработано (FileWatcher.processImageFile)',
         lambda e, l: e.logger == 'FileWatcher' and '.processImageFile' in l),
-    ('scan_not_found', 'Отсканированных кодов "не найден в базе"',
+    # --- Проблемы / ошибки ---
+    ('err_not_found', 'Кодов «не найден в базе»',
         lambda e, l: 'не найден в базе' in l),
+    ('err_dup_in_groups', 'Дублей: код «уже находится в одной из агрегационных групп»',
+        lambda e, l: 'уже находится в одной из агрегационных групп' in l),
+    ('err_dup_in_current', 'Дублей: «уже добавлен в агрегационную группу»',
+        lambda e, l: 'уже добавлен в агрегационную группу' in l),
+    ('err_processor_busy', 'Агрегационный процессор занят / не найден',
+        lambda e, l: 'процессор для заданного уровня не найден или занят' in l),
+    ('err_jwt_expired', 'JWT-токен истёк (нужна повторная авторизация)',
+        lambda e, l: 'JWT expired' in l),
+    ('err_empty_image', 'Пустое изображение со сканера',
+        lambda e, l: 'пустое изображение' in l.lower()),
+    ('err_scanner_read', 'Ошибки чтения со сканера HIKROBOT',
+        lambda e, l: 'ошибка во время чтения кодов со сканера' in l.lower()),
     # --- Сериализация / обмен ---
     ('exchange_sgtin', 'Синхронизаций с Л2 (exchangeSgtinEvents)',
         lambda e, l: e.logger == 'ExchangeService' and '.exchangeSgtinEvents' in l),
@@ -44,6 +57,38 @@ BATCH_EVENT_RULES = [
     ('http_request', 'HTTP-запросов (CustomLogFilter.beforeRequest)',
         lambda e, l: e.logger == 'CustomLogFilter' and '.beforeRequest' in l),
 ]
+
+
+# SGTIN (серийный код единицы продукта): 01 + GTIN(14) + serial.
+# В DataMatrix-стандарте поля разделяются control-символами (GS = \x1d, FS=\x1c, RS=\x1e, US=\x1f),
+# которые Python считает "\s" (whitespace) - поэтому НЕ используем \s, а явно перечисляем
+# пробельные char'ы которые надо исключить. Также исключаем скобки - после кода в HIKROBOT
+# идут координаты типа (2398,1325).
+_SCAN_CODE_CHAR = r"[^ \t\n\r\f\v()\[\]{}]"
+SGTIN_CODE_RE = re.compile(r"\b01\d{14}" + _SCAN_CODE_CHAR + "{6,40}")
+
+# Агрегационный (групповой) код упаковки: 18 цифр начинающихся с 04.
+# Это "груповой код" - наклейка на короб/упаковку. По одному коду на короб.
+GROUP_CODE_RE = re.compile(r'\b04\d{16}\b')
+
+# Нормализация ERROR-сообщений для группировки одинаковых по смыслу:
+# заменяем коды на <CODE>, длинные числа на <N>, GUID на <UUID>.
+# Здесь регекс мягче чем для извлечения SGTIN: разрешаем () и [], потому что
+# в ERROR-сообщениях иногда такие символы попадаются в самом коде. Координат
+# (как в HIKROBOT.run) тут не бывает, так что лимит длины 30 chars держит безопасно.
+_NORMALIZE_CODE = re.compile(r"\b01\d{14}[^ \t\n\r\f\v]{6,30}")
+_NORMALIZE_GUID = re.compile(r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', re.I)
+_NORMALIZE_GROUP = re.compile(r'L2_[0-9a-f-]+_LEVEL_\d+_GROUP_ID_\d+', re.I)
+_NORMALIZE_LONG_NUM = re.compile(r'\b\d{6,}\b')
+
+def _normalize_error_message(msg):
+    """Заменяет переменные части (коды, числа, UUID) на плейсхолдеры,
+    чтобы похожие ошибки группировались."""
+    s = _NORMALIZE_CODE.sub('<CODE>', msg)
+    s = _NORMALIZE_GROUP.sub('<GROUP>', s)
+    s = _NORMALIZE_GUID.sub('<UUID>', s)
+    s = _NORMALIZE_LONG_NUM.sub('<N>', s)
+    return s.strip()
 
 # Партии: события, по которым мы режем лог.
 # Открытие/переключение партии: setCurrentBatch?batchId=N (N может быть -1 -> вне партии)
@@ -273,26 +318,34 @@ class LogModel(QAbstractListModel):
         return NO_BATCH
 
     def analyze_batch(self, batch_id):
-        """Подробная аналитика по конкретной партии:
-        - длительность и throughput
-        - распределение по уровням
-        - счётчики ключевых событий (печать, агрегация, сканирование)
-        - топ ошибок и компонентов
-        - самые активные минуты
-        - паузы (разрывы > 5 мин - возможные простои)
-        - среднее Δt между сканированиями"""
+        """Подробная аналитика по конкретной партии."""
         entries = self._entries
         bfi = self._batch_for_index
         total = 0
         levels = {'INFO': 0, 'DEBUG': 0, 'ERROR': 0, 'WARN': 0, 'UNKNOWN': 0}
         loggers = collections.Counter()
-        error_messages = collections.Counter()
+        error_categories = collections.Counter()  # нормализованные ERROR (группировка похожих)
         events = {key: 0 for key, _, _ in BATCH_EVENT_RULES}
-        per_minute = collections.Counter()  # 'HH:MM' -> count
-        scan_timestamps_ms = []  # для среднего Δt между сканированиями
-        all_timestamps_ms = []  # для поиска пауз
+        per_minute = collections.Counter()
+        errors_per_hour = collections.Counter()  # 'HH' -> count ERROR
+        scan_timestamps_ms = []
+        all_timestamps_ms = []
         first_ts = ''
         last_ts = ''
+
+        # Серийные коды (SGTIN): на единицах продукта. Сканируются HIKROBOT-ом.
+        sgtin_scanned = set()           # уникальные SGTIN отсканированные
+        sgtin_dup_in_groups = set()     # SGTIN с ошибкой "уже находится в одной из групп"
+        sgtin_dup_in_current = set()    # SGTIN с ошибкой "уже добавлен в группу"
+        sgtin_not_found = set()         # SGTIN "не найден в базе"
+
+        # Групповые коды (агрегационные): на коробах. Печатаются на принтере.
+        group_codes_received = set()    # коды агрегата которые сгенерировались для групп
+        group_codes_printed = set()     # коды отправленные через PrintService.sendData
+
+        # Подсчёт всех "событий печати" с кодами (даже повторных) - для объяснения расхождений
+        sgtin_scan_events = 0           # Кол-во ВСЕХ срабатываний HIKROBOT с кодом
+        sgtin_unique_per_scan_event = collections.Counter()  # сколько раз каждый код встретился
 
         def ts_to_ms(ts):
             try:
@@ -314,17 +367,52 @@ class LogModel(QAbstractListModel):
                 ms = ts_to_ms(e.timestamp)
                 if ms is not None:
                     all_timestamps_ms.append(ms)
-                per_minute[e.timestamp[:5]] += 1  # 'HH:MM'
+                per_minute[e.timestamp[:5]] += 1
             levels[e.level] = levels.get(e.level, 0) + 1
             if e.logger:
                 loggers[e.logger] += 1
+
+            line = e.full_line
+
+            # ERROR: извлекаем чистое сообщение и НОРМАЛИЗУЕМ для группировки
             if e.level == 'ERROR':
-                # Извлекаем только полезную часть (после "]: ") - без timestamp/level/logger
                 first_line = e.message.split('\n', 1)[0]
                 m = re.search(r'\]:\s*(.*)', first_line)
                 clean = m.group(1).strip() if m else first_line
-                error_messages[clean[:140]] += 1
-            line = e.full_line
+                normalized = _normalize_error_message(clean)
+                error_categories[normalized[:160]] += 1
+                if e.timestamp:
+                    errors_per_hour[e.timestamp[:2]] += 1
+
+            # SGTIN-коды (серийные на единицах продукта): извлекаем из всех строк
+            sgtin_in_line = SGTIN_CODE_RE.findall(line)
+            if sgtin_in_line:
+                # HIKROBOT - реальное сканирование сканером
+                if e.logger == 'HIKROBOT' and '.run' in line and 'Получены данные' in line:
+                    sgtin_scan_events += 1
+                    for code in sgtin_in_line:
+                        sgtin_scanned.add(code)
+                        sgtin_unique_per_scan_event[code] += 1
+                # Дубли в других группах
+                if 'уже находится в одной из агрегационных групп' in line:
+                    sgtin_dup_in_groups.update(sgtin_in_line)
+                # Дубли в текущей группе
+                if 'уже добавлен в агрегационную группу' in line:
+                    sgtin_dup_in_current.update(sgtin_in_line)
+                # Не найден в базе
+                if 'не найден в базе' in line:
+                    sgtin_not_found.update(sgtin_in_line)
+
+            # Групповые (агрегационные) коды упаковок
+            group_in_line = GROUP_CODE_RE.findall(line)
+            if group_in_line:
+                if e.logger == 'AggregationBase' and (
+                        '.getAndPrintAggregationCode' in line
+                        and 'Получен код агрегата' in line):
+                    group_codes_received.update(group_in_line)
+                if e.logger == 'PrintService' and '.sendData' in line:
+                    group_codes_printed.update(group_in_line)
+
             for key, _label, predicate in BATCH_EVENT_RULES:
                 try:
                     if predicate(e, line):
@@ -334,7 +422,7 @@ class LogModel(QAbstractListModel):
                             if ms is not None:
                                 scan_timestamps_ms.append(ms)
                 except Exception:
-                    pass  # некорректный predicate - игнорируем
+                    pass
 
         # Длительность
         duration_ms = 0
@@ -344,12 +432,10 @@ class LogModel(QAbstractListModel):
             if f is not None and l is not None:
                 duration_ms = max(0, l - f)
 
-        # Throughput: записей в минуту/час
         per_hour = 0
         if duration_ms > 0:
             per_hour = round(total / (duration_ms / 3_600_000), 1)
 
-        # Среднее Δt между сканированиями
         avg_scan_delta_ms = None
         if len(scan_timestamps_ms) >= 2:
             scan_timestamps_ms.sort()
@@ -357,15 +443,31 @@ class LogModel(QAbstractListModel):
                       for i in range(1, len(scan_timestamps_ms))]
             avg_scan_delta_ms = sum(deltas) / len(deltas)
 
-        # Паузы > 5 минут между соседними записями
         PAUSE_THRESHOLD_MS = 5 * 60 * 1000
         pauses = []
         if len(all_timestamps_ms) >= 2:
-            all_timestamps_ms.sort()
-            for j in range(1, len(all_timestamps_ms)):
-                diff = all_timestamps_ms[j] - all_timestamps_ms[j-1]
+            all_timestamps_ms_sorted = sorted(all_timestamps_ms)
+            for j in range(1, len(all_timestamps_ms_sorted)):
+                diff = all_timestamps_ms_sorted[j] - all_timestamps_ms_sorted[j-1]
                 if diff > PAUSE_THRESHOLD_MS:
-                    pauses.append((all_timestamps_ms[j-1], all_timestamps_ms[j], diff))
+                    pauses.append(
+                        (all_timestamps_ms_sorted[j-1], all_timestamps_ms_sorted[j], diff)
+                    )
+        # Топ-5 самых длинных пауз
+        pauses.sort(key=lambda x: x[2], reverse=True)
+        pauses = pauses[:5]
+
+        # Эффективность агрегации: % от попыток что завершились успешно
+        agg_efficiency = None
+        if events['agg_attempted'] > 0:
+            agg_efficiency = round(events['agg_finished'] / events['agg_attempted'] * 100, 1)
+
+        # Сколько SGTIN-кодов сканировались более 1 раза (потенциальные дубли)
+        repeated_scans = sum(1 for c, n in sgtin_unique_per_scan_event.items() if n > 1)
+        # Топ-3 кода которые сканировались чаще всего (часто-сканируемые)
+        most_repeated = sorted(sgtin_unique_per_scan_event.items(),
+                               key=lambda x: x[1], reverse=True)[:3]
+        most_repeated = [(c, n) for c, n in most_repeated if n > 1]
 
         return {
             'batch_id': batch_id,
@@ -377,11 +479,25 @@ class LogModel(QAbstractListModel):
             'levels': levels,
             'events': events,
             'event_labels': {key: label for key, label, _ in BATCH_EVENT_RULES},
-            'top_errors': error_messages.most_common(5),
+            'top_error_categories': error_categories.most_common(10),
             'top_loggers': loggers.most_common(5),
             'top_minutes': per_minute.most_common(5),
             'avg_scan_delta_ms': avg_scan_delta_ms,
-            'pauses': pauses[:5],  # топ-5 самых длинных
+            'pauses': pauses,
+            'agg_efficiency_pct': agg_efficiency,
+            'errors_per_hour': sorted(errors_per_hour.items()),
+            # Серийные коды (продукт)
+            'sgtin_scanned_unique': len(sgtin_scanned),
+            'sgtin_scan_events': sgtin_scan_events,
+            'sgtin_repeated_scans': repeated_scans,  # сколько SGTIN сканировалось >1 раза
+            'sgtin_most_repeated': most_repeated,    # топ-3 чаще всего сканированные
+            'sgtin_dup_in_groups': len(sgtin_dup_in_groups),
+            'sgtin_dup_in_current': len(sgtin_dup_in_current),
+            'sgtin_not_found': len(sgtin_not_found),
+            # Групповые коды (упаковки)
+            'group_codes_received': len(group_codes_received),  # сгенерированных
+            'group_codes_printed': len(group_codes_printed),    # отправленных в принтер
+            'group_codes_lost': len(group_codes_received - group_codes_printed),
         }
 
     def update_filters(self, show_info, show_debug, show_error, show_warn,

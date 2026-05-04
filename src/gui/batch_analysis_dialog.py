@@ -2,6 +2,7 @@ from html import escape
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QTextBrowser, QPushButton
 
 from config import THEMES
+from core.models import BATCH_EVENT_RULES
 
 
 def _adjust_color(hex_color, delta):
@@ -127,22 +128,84 @@ def _build_analysis_html(analysis, theme_name):
         out.append("</table>")
         return "".join(out)
 
+    # --- Баланс кодов: SGTIN (продукт) ---
+    sgtin_scanned = analysis['sgtin_scanned_unique']
+    if sgtin_scanned > 0 or analysis['sgtin_dup_in_groups'] > 0:
+        parts.append("<h2>Серийные коды (SGTIN — единицы продукта)</h2>")
+        parts.append("<table>")
+        parts.append(f"<tr><td class='k'>Уникальных кодов отсканировано</td>"
+                     f"<td class='v'>{sgtin_scanned:,}</td></tr>")
+        parts.append(f"<tr><td class='k'>Всего срабатываний сканера (HIKROBOT)</td>"
+                     f"<td class='v'>{analysis['sgtin_scan_events']:,}</td></tr>")
+        if analysis['sgtin_repeated_scans']:
+            parts.append(f"<tr><td class='k'>Кодов отсканировано <b>повторно</b> "
+                         f"(больше 1 раза)</td>"
+                         f"<td class='v lvl-warn'>{analysis['sgtin_repeated_scans']:,}</td></tr>")
+        if analysis['sgtin_dup_in_groups']:
+            parts.append(f"<tr><td class='k'>Дублей: код «уже находится в одной из групп»</td>"
+                         f"<td class='v lvl-error'>{analysis['sgtin_dup_in_groups']:,}</td></tr>")
+        if analysis['sgtin_dup_in_current']:
+            parts.append(f"<tr><td class='k'>Дублей: код «уже добавлен в текущую группу»</td>"
+                         f"<td class='v lvl-error'>{analysis['sgtin_dup_in_current']:,}</td></tr>")
+        if analysis['sgtin_not_found']:
+            parts.append(f"<tr><td class='k'>Кодов «не найден в базе»</td>"
+                         f"<td class='v lvl-error'>{analysis['sgtin_not_found']:,}</td></tr>")
+        parts.append("</table>")
+
+        if analysis['sgtin_most_repeated']:
+            parts.append("<div class='panel muted'>Чаще всего пере-сканированные коды:<br>")
+            for code, n in analysis['sgtin_most_repeated']:
+                parts.append(f"&nbsp;&nbsp;• <code>{escape(code[:40])}</code> "
+                             f"— <b>{n}×</b><br>")
+            parts.append("</div>")
+
+    # --- Баланс кодов: групповые (упаковки) ---
+    grp_recv = analysis['group_codes_received']
+    grp_print = analysis['group_codes_printed']
+    if grp_recv > 0 or grp_print > 0:
+        parts.append("<h2>Групповые коды (агрегации — наклейки на коробах)</h2>")
+        parts.append("<table>")
+        parts.append(f"<tr><td class='k'>Получено код-агрегата (сгенерировано для групп)</td>"
+                     f"<td class='v'>{grp_recv:,}</td></tr>")
+        parts.append(f"<tr><td class='k'>Отправлено в принтер (PrintService.sendData)</td>"
+                     f"<td class='v'>{grp_print:,}</td></tr>")
+        if analysis['group_codes_lost']:
+            parts.append(f"<tr><td class='k'>⚠ Получено, но <b>не</b> ушло в принтер</td>"
+                         f"<td class='v lvl-error'>{analysis['group_codes_lost']:,}</td></tr>")
+        elif grp_recv == grp_print and grp_recv > 0:
+            parts.append(f"<tr><td class='k' colspan='2' "
+                         f"style='color:{t['info']};'>✓ Все агрегаты ушли на печать</td></tr>")
+        parts.append("</table>")
+
     parts.append(render_event_group(
-        "Печать кодов",
+        "Печать кодов (события)",
         ['print_request', 'print_sent', 'print_sato', 'print_data']
     ))
-    parts.append(render_event_group(
-        "Агрегация",
+    agg_html = render_event_group(
+        "Агрегация (события)",
         ['agg_attempted', 'agg_finished', 'agg_finish_response', 'agg_cleared']
-    ))
+    )
+    if agg_html and analysis['agg_efficiency_pct'] is not None:
+        # Дополним эффективностью
+        eff = analysis['agg_efficiency_pct']
+        eff_color = t['info'] if eff >= 95 else (t['warn'] if eff >= 50 else t['error'])
+        agg_html = agg_html.replace(
+            "</table>",
+            f"<tr><td class='k'><b>Эффективность агрегации</b></td>"
+            f"<td class='v' style='color:{eff_color};'><b>{eff}%</b></td></tr></table>"
+        )
+    parts.append(agg_html)
     parts.append(render_event_group(
-        "Сканирование и верификация",
-        ['scan_hikrobot', 'scan_image', 'scan_not_found']
+        "Сканирование (события)",
+        ['scan_hikrobot', 'scan_image']
     ))
     parts.append(render_event_group(
         "Обмен с Л2 / Сериализация / HTTP",
         ['exchange_sgtin', 'serialization', 'http_request']
     ))
+    # --- Все ошибки в одной секции (event-rules вида err_*) ---
+    err_keys = [k for k, _, _ in BATCH_EVENT_RULES if k.startswith('err_')]
+    parts.append(render_event_group("Проблемы и ошибки (счётчики)", err_keys))
 
     # --- Ритм работы ---
     parts.append("<h2>Ритм работы</h2><table>")
@@ -193,10 +256,31 @@ def _build_analysis_html(analysis, theme_name):
             )
         parts.append("</table>")
 
-    # --- Топ ошибок ---
-    if analysis['top_errors']:
-        parts.append("<h2>Топ ошибок</h2><table>")
-        for msg, c in analysis['top_errors']:
+    # --- Распределение ERROR по часам (мини-гистограмма) ---
+    eph = analysis.get('errors_per_hour') or []
+    if eph:
+        parts.append("<h2>Распределение ERROR по часам</h2><table>")
+        max_e = max(c for _, c in eph)
+        for hour, c in eph:
+            bar_w = int(200 * c / max_e) if max_e else 0
+            bar_html = (f"<div style='background:{t['error']};height:8px;"
+                        f"width:{bar_w}px;border-radius:2px;'></div>")
+            parts.append(
+                f"<tr><td class='k'><b>{escape(hour)}:00</b></td>"
+                f"<td class='v lvl-error'>{c:,}</td>"
+                f"<td class='bar'>{bar_html}</td></tr>"
+            )
+        parts.append("</table>")
+
+    # --- Категории ошибок (нормализованные, сгруппированные по смыслу) ---
+    if analysis['top_error_categories']:
+        parts.append("<h2>Категории ошибок (похожие сгруппированы)</h2>")
+        parts.append("<div class='muted' style='font-size:11px;margin-bottom:4px;'>"
+                     "Переменные части (коды, числа, UUID, ID групп) заменены на "
+                     "<code>&lt;CODE&gt;</code>/<code>&lt;N&gt;</code>/<code>&lt;UUID&gt;</code>/"
+                     "<code>&lt;GROUP&gt;</code> чтобы похожие ошибки попали в одну строку."
+                     "</div><table>")
+        for msg, c in analysis['top_error_categories']:
             parts.append(
                 f"<tr class='err-row'>"
                 f"<td class='err-count'>{c}×</td>"
