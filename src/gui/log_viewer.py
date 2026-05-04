@@ -13,6 +13,7 @@ from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColo
 from core.models import LogModel
 from core.workers import LogLoader, IncrementalLogParser
 from gui.custom_widgets import ScalableListView, ScalableTextEdit, MarkerScrollBar
+from gui.batch_analysis_dialog import BatchAnalysisDialog
 from config import THEMES
 
 
@@ -708,11 +709,14 @@ class LogViewerWidget(QWidget):
         item = self.batches_tree.itemAt(pos)
         menu = QMenu(self)
         act_only = None
+        act_analyze = None
         act_show_all = menu.addAction("Показать все партии")
         if item is not None:
             data = item.data(0, Qt.ItemDataRole.UserRole)
             if data and data[0] == 'batch':
                 act_only = menu.addAction("Показать только эту партию")
+                menu.addSeparator()
+                act_analyze = menu.addAction("📊 Анализ партии…")
         menu.addSeparator()
         act_expand_all = menu.addAction("Раскрыть всё")
         act_collapse_all = menu.addAction("Свернуть всё")
@@ -732,10 +736,20 @@ class LogViewerWidget(QWidget):
             data = item.data(0, Qt.ItemDataRole.UserRole)
             if data and data[0] == 'batch':
                 self._filter_to_single_batch(data[1])
+        elif action == act_analyze and item is not None:
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data and data[0] == 'batch':
+                self._open_batch_analysis(data[1])
         elif action == act_expand_all:
             self.batches_tree.expandAll()
         elif action == act_collapse_all:
             self.batches_tree.collapseAll()
+
+    def _open_batch_analysis(self, batch_id):
+        """Запускает подсчёт метрик и открывает диалог BatchAnalysisDialog."""
+        analysis = self.model.analyze_batch(batch_id)
+        dlg = BatchAnalysisDialog(analysis, self.current_theme_name, self)
+        dlg.exec()
 
     def update_stats_text(self):
         total = sum(self.stats.values())

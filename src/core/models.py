@@ -1,8 +1,49 @@
 import re
+import collections
 from PyQt6.QtCore import QAbstractListModel, QModelIndex, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from config import THEMES
 from core.workers import FilterWorker
+
+
+# Декларативный список метрик для анализа партии.
+# Каждое правило: (key, label, predicate(entry, full_line) -> bool).
+# Запись засчитывается во ВСЕ совпавшие правила (одна запись может попасть в несколько метрик).
+BATCH_EVENT_RULES = [
+    # --- Печать ---
+    ('print_request', 'Запросов на печать кода (getAndPrintAggregationCode)',
+        lambda e, l: e.logger == 'AggregationBase' and '.getAndPrintAggregationCode' in l),
+    ('print_sent', 'Отправлено в принтер (printAggregationCode)',
+        lambda e, l: e.logger == 'AggregationBase' and '.printAggregationCode' in l),
+    ('print_sato', 'Через SATO.sendCode',
+        lambda e, l: e.logger == 'SATO' and '.sendCode' in l),
+    ('print_data', 'PrintService.sendData',
+        lambda e, l: e.logger == 'PrintService' and '.sendData' in l),
+    # --- Агрегация ---
+    ('agg_attempted', 'Попыток агрегации (manageAggregationCode)',
+        lambda e, l: e.logger == 'LinearAggregation' and '.manageAggregationCode' in l),
+    ('agg_finished', 'Завершено агрегаций (finishAggregation)',
+        lambda e, l: e.logger == 'AggregationBase' and '.finishAggregation' in l),
+    ('agg_finish_response', 'Ответов на завершение (manageFinishAggregationResponse)',
+        lambda e, l: e.logger == 'AggregationBase' and '.manageFinishAggregationResponse' in l),
+    ('agg_cleared', 'Очищено групп (clearAggGroup)',
+        lambda e, l: e.logger == 'AggregationBase' and '.clearAggGroup' in l),
+    # --- Сканирование / верификация ---
+    ('scan_hikrobot', 'Сканирований HIKROBOT',
+        lambda e, l: e.logger == 'HIKROBOT' and '.run' in l),
+    ('scan_image', 'Изображений обработано (FileWatcher.processImageFile)',
+        lambda e, l: e.logger == 'FileWatcher' and '.processImageFile' in l),
+    ('scan_not_found', 'Отсканированных кодов "не найден в базе"',
+        lambda e, l: 'не найден в базе' in l),
+    # --- Сериализация / обмен ---
+    ('exchange_sgtin', 'Синхронизаций с Л2 (exchangeSgtinEvents)',
+        lambda e, l: e.logger == 'ExchangeService' and '.exchangeSgtinEvents' in l),
+    ('serialization', 'Подтверждений печати (manageNextConfirmedPrint)',
+        lambda e, l: e.logger == 'SerializationService' and '.manageNextConfirmedPrint' in l),
+    # --- HTTP API ---
+    ('http_request', 'HTTP-запросов (CustomLogFilter.beforeRequest)',
+        lambda e, l: e.logger == 'CustomLogFilter' and '.beforeRequest' in l),
+]
 
 # Партии: события, по которым мы режем лог.
 # Открытие/переключение партии: setCurrentBatch?batchId=N (N может быть -1 -> вне партии)
@@ -230,6 +271,118 @@ class LogModel(QAbstractListModel):
         if 0 <= real_index < len(self._batch_for_index):
             return self._batch_for_index[real_index]
         return NO_BATCH
+
+    def analyze_batch(self, batch_id):
+        """Подробная аналитика по конкретной партии:
+        - длительность и throughput
+        - распределение по уровням
+        - счётчики ключевых событий (печать, агрегация, сканирование)
+        - топ ошибок и компонентов
+        - самые активные минуты
+        - паузы (разрывы > 5 мин - возможные простои)
+        - среднее Δt между сканированиями"""
+        entries = self._entries
+        bfi = self._batch_for_index
+        total = 0
+        levels = {'INFO': 0, 'DEBUG': 0, 'ERROR': 0, 'WARN': 0, 'UNKNOWN': 0}
+        loggers = collections.Counter()
+        error_messages = collections.Counter()
+        events = {key: 0 for key, _, _ in BATCH_EVENT_RULES}
+        per_minute = collections.Counter()  # 'HH:MM' -> count
+        scan_timestamps_ms = []  # для среднего Δt между сканированиями
+        all_timestamps_ms = []  # для поиска пауз
+        first_ts = ''
+        last_ts = ''
+
+        def ts_to_ms(ts):
+            try:
+                h, m, s_ms = ts.split(':')
+                s, ms = s_ms.split('.')
+                return ((int(h) * 3600 + int(m) * 60 + int(s)) * 1000 + int(ms))
+            except (ValueError, IndexError):
+                return None
+
+        for i in range(len(bfi)):
+            if bfi[i] != batch_id:
+                continue
+            e = entries[i]
+            total += 1
+            if e.timestamp:
+                if not first_ts:
+                    first_ts = e.timestamp
+                last_ts = e.timestamp
+                ms = ts_to_ms(e.timestamp)
+                if ms is not None:
+                    all_timestamps_ms.append(ms)
+                per_minute[e.timestamp[:5]] += 1  # 'HH:MM'
+            levels[e.level] = levels.get(e.level, 0) + 1
+            if e.logger:
+                loggers[e.logger] += 1
+            if e.level == 'ERROR':
+                # Извлекаем только полезную часть (после "]: ") - без timestamp/level/logger
+                first_line = e.message.split('\n', 1)[0]
+                m = re.search(r'\]:\s*(.*)', first_line)
+                clean = m.group(1).strip() if m else first_line
+                error_messages[clean[:140]] += 1
+            line = e.full_line
+            for key, _label, predicate in BATCH_EVENT_RULES:
+                try:
+                    if predicate(e, line):
+                        events[key] += 1
+                        if key == 'scan_hikrobot' and e.timestamp:
+                            ms = ts_to_ms(e.timestamp)
+                            if ms is not None:
+                                scan_timestamps_ms.append(ms)
+                except Exception:
+                    pass  # некорректный predicate - игнорируем
+
+        # Длительность
+        duration_ms = 0
+        if first_ts and last_ts:
+            f = ts_to_ms(first_ts)
+            l = ts_to_ms(last_ts)
+            if f is not None and l is not None:
+                duration_ms = max(0, l - f)
+
+        # Throughput: записей в минуту/час
+        per_hour = 0
+        if duration_ms > 0:
+            per_hour = round(total / (duration_ms / 3_600_000), 1)
+
+        # Среднее Δt между сканированиями
+        avg_scan_delta_ms = None
+        if len(scan_timestamps_ms) >= 2:
+            scan_timestamps_ms.sort()
+            deltas = [scan_timestamps_ms[i] - scan_timestamps_ms[i-1]
+                      for i in range(1, len(scan_timestamps_ms))]
+            avg_scan_delta_ms = sum(deltas) / len(deltas)
+
+        # Паузы > 5 минут между соседними записями
+        PAUSE_THRESHOLD_MS = 5 * 60 * 1000
+        pauses = []
+        if len(all_timestamps_ms) >= 2:
+            all_timestamps_ms.sort()
+            for j in range(1, len(all_timestamps_ms)):
+                diff = all_timestamps_ms[j] - all_timestamps_ms[j-1]
+                if diff > PAUSE_THRESHOLD_MS:
+                    pauses.append((all_timestamps_ms[j-1], all_timestamps_ms[j], diff))
+
+        return {
+            'batch_id': batch_id,
+            'total': total,
+            'first_ts': first_ts,
+            'last_ts': last_ts,
+            'duration_ms': duration_ms,
+            'per_hour': per_hour,
+            'levels': levels,
+            'events': events,
+            'event_labels': {key: label for key, label, _ in BATCH_EVENT_RULES},
+            'top_errors': error_messages.most_common(5),
+            'top_loggers': loggers.most_common(5),
+            'top_minutes': per_minute.most_common(5),
+            'avg_scan_delta_ms': avg_scan_delta_ms,
+            'pauses': pauses[:5],  # топ-5 самых длинных
+        }
 
     def update_filters(self, show_info, show_debug, show_error, show_warn,
                        search_text, group_dupes=False, loggers=None,
