@@ -12,6 +12,7 @@ GITHUB_REPO = "Hunter-James/LogAnalyzerEVOL"
 DEFAULT_UI_FEATURES = {
     "match_case": True,
     "loggers_filter": True,
+    "batches_filter": True,
     "time_range": True,
     "tail_mode": True,
     "save_to_journal": True,
@@ -24,6 +25,7 @@ DEFAULT_UI_FEATURES = {
 UI_FEATURE_LABELS = {
     "match_case": "Кнопка «Aa» (учитывать регистр поиска)",
     "loggers_filter": "Кнопка «Компоненты» (фильтр по логгеру)",
+    "batches_filter": "Кнопка «Партии» (фильтр по setCurrentBatch / api/close)",
     "time_range": "Поля диапазона времени (Время: с – по)",
     "tail_mode": "Кнопка «Следить» (tail / follow mode)",
     "save_to_journal": "Кнопка «Добавить в журнал»",

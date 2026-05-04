@@ -1,7 +1,16 @@
+import re
 from PyQt6.QtCore import QAbstractListModel, QModelIndex, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from config import THEMES
 from core.workers import FilterWorker
+
+# Партии: события, по которым мы режем лог.
+# Открытие/переключение партии: setCurrentBatch?batchId=N (N может быть -1 -> вне партии)
+# Закрытие партии: /api/close (от CustomLogFilter, чтобы не зацепить случайные совпадения)
+_BATCH_OPEN_RE = re.compile(r'setCurrentBatch\?batchId=(-?\d+)')
+
+# Маркер "вне партии" - пустая строка (None плохо сериализуется в JSON и Qt-сигналах)
+NO_BATCH = ""
 
 # --- Model ---
 class LogModel(QAbstractListModel):
@@ -30,6 +39,14 @@ class LogModel(QAbstractListModel):
         self._time_to = None
         self._case_sensitive = False
         self._bookmarks = set()  # real_indices помеченных строк
+
+        # Партии: сегменты файла + параллельный массив batch_id для каждой записи.
+        # _batch_segments: list of dicts {batch_id, start, end, first_ts, last_ts}.
+        # _batch_for_index: parallel list - для real_index какой batch_id (str или NO_BATCH).
+        # _batch_filter: set of batch_id или None (None = все партии).
+        self._batch_segments = []
+        self._batch_for_index = []
+        self._batch_filter = None
 
         self.current_theme = THEMES["Default"]
         self.font_size = 10
@@ -92,6 +109,7 @@ class LogModel(QAbstractListModel):
         self._filtered_indices = list(self._raw_filtered_indices)
         self._filtered_counts = []
         self._member_to_row = {}
+        self._parse_batches(start_from=0)
         self.endResetModel()
         self.apply_filters_async()
 
@@ -99,14 +117,124 @@ class LogModel(QAbstractListModel):
         """Добавляет записи в конец без полного reset модели. Используется в tail-режиме."""
         if not new_entries:
             return
+        prev_len = len(self._entries)
         self._entries.extend(new_entries)
+        # Парсим только новые - открытый сегмент продолжается с прошлого раза
+        self._parse_batches(start_from=prev_len)
         # Полный фильтр - проще и корректнее, чем инкрементально вычислять что показывать.
         # FilterWorker крутится в отдельном потоке, так что UI не повиснет.
         self.apply_filters_async()
 
+    # ----- Парсинг партий -----
+
+    def _parse_batches(self, start_from=0):
+        """Делит entries на сегменты по setCurrentBatch и /api/close.
+        start_from > 0 для tail-режима: продолжаем с последнего открытого сегмента."""
+        entries = self._entries
+
+        if start_from == 0:
+            # Полный re-parse
+            self._batch_segments = []
+            self._batch_for_index = [NO_BATCH] * len(entries)
+            current_batch = NO_BATCH
+            segment_start = 0
+        else:
+            # Догоняем хвост. Восстанавливаем состояние с последнего сегмента.
+            self._batch_for_index.extend([NO_BATCH] * (len(entries) - start_from))
+            if self._batch_segments:
+                last_seg = self._batch_segments[-1]
+                # Если последний сегмент был "открыт до конца предыдущего парсинга",
+                # продолжаем его - удалим и пересоздадим с расширенным концом.
+                current_batch = last_seg['batch_id']
+                segment_start = last_seg['start']
+                self._batch_segments.pop()
+            else:
+                current_batch = NO_BATCH
+                segment_start = 0
+
+        def close_segment(end_idx):
+            """Закрывает текущий сегмент [segment_start..end_idx] включительно."""
+            if end_idx < segment_start:
+                return
+            first_ts = ""
+            last_ts = ""
+            for k in range(segment_start, end_idx + 1):
+                if entries[k].timestamp:
+                    if not first_ts:
+                        first_ts = entries[k].timestamp
+                    last_ts = entries[k].timestamp
+            self._batch_segments.append({
+                'batch_id': current_batch,
+                'start': segment_start,
+                'end': end_idx,
+                'first_ts': first_ts,
+                'last_ts': last_ts,
+            })
+
+        for i in range(start_from, len(entries)):
+            line = entries[i].full_line
+
+            # Открытие/переключение партии: эта запись начинает НОВЫЙ сегмент,
+            # поэтому current_batch обновляем ДО присваивания _batch_for_index[i].
+            if 'setCurrentBatch' in line:
+                m = _BATCH_OPEN_RE.search(line)
+                if m:
+                    close_segment(i - 1)
+                    new_id = m.group(1)
+                    current_batch = NO_BATCH if new_id == '-1' else new_id
+                    segment_start = i
+
+            # Эта запись принадлежит ТЕКУЩЕЙ партии (для /api/close - закрывающейся,
+            # для setCurrentBatch - уже новой)
+            self._batch_for_index[i] = current_batch
+
+            # Закрытие через /api/close: запись i относится к закрывшейся партии,
+            # дальше переходим в "вне партии". Делаем ПОСЛЕ присваивания массива.
+            if (current_batch != NO_BATCH
+                    and '/api/close' in line
+                    and 'CustomLogFilter' in line):
+                close_segment(i)
+                current_batch = NO_BATCH
+                segment_start = i + 1
+
+        # Финальный открытый сегмент - закрываем по концу файла
+        if segment_start < len(entries):
+            close_segment(len(entries) - 1)
+
+    def get_batch_summary(self):
+        """Возвращает [(batch_id, count, first_ts, last_ts), ...] отсортированный по first_ts.
+        Несколько сегментов с одним batch_id (партию открывали-закрывали несколько раз)
+        агрегируются в один пункт."""
+        agg = {}
+        for seg in self._batch_segments:
+            bid = seg['batch_id']
+            if bid not in agg:
+                agg[bid] = {
+                    'count': 0,
+                    'first_ts': seg['first_ts'],
+                    'last_ts': seg['last_ts'],
+                }
+            agg[bid]['count'] += seg['end'] - seg['start'] + 1
+            # first_ts - минимальный по времени, last_ts - максимальный
+            if seg['first_ts'] and (not agg[bid]['first_ts'] or seg['first_ts'] < agg[bid]['first_ts']):
+                agg[bid]['first_ts'] = seg['first_ts']
+            if seg['last_ts'] and seg['last_ts'] > agg[bid]['last_ts']:
+                agg[bid]['last_ts'] = seg['last_ts']
+        # Сортируем по first_ts (партии в хронологическом порядке)
+        return sorted(
+            [(bid, info['count'], info['first_ts'], info['last_ts']) for bid, info in agg.items()],
+            key=lambda x: (x[2] or "")
+        )
+
+    def get_batch_for_index(self, real_index):
+        if 0 <= real_index < len(self._batch_for_index):
+            return self._batch_for_index[real_index]
+        return NO_BATCH
+
     def update_filters(self, show_info, show_debug, show_error, show_warn,
                        search_text, group_dupes=False, loggers=None,
-                       time_from=None, time_to=None, case_sensitive=False):
+                       time_from=None, time_to=None, case_sensitive=False,
+                       batch_filter=None):
         self._show_info = show_info
         self._show_debug = show_debug
         self._show_error = show_error
@@ -117,6 +245,7 @@ class LogModel(QAbstractListModel):
         self._time_from = time_from
         self._time_to = time_to
         self._case_sensitive = case_sensitive
+        self._batch_filter = batch_filter
         self.apply_filters_async()
 
     def apply_filters_async(self):
@@ -132,6 +261,8 @@ class LogModel(QAbstractListModel):
             self._time_from,
             self._time_to,
             self._case_sensitive,
+            self._batch_filter,
+            self._batch_for_index,
         )
         self.filter_worker.finished.connect(self.on_filter_finished)
         self.filter_worker.start()

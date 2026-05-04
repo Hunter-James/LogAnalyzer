@@ -40,3 +40,6 @@ src/settings.json
 gui_code.txt
 project_code.txt
 *.log
+
+# --- Тестовые логи (для разработки, не для коммита) ---
+LogExample/

@@ -137,6 +137,19 @@ class LogViewerWidget(QWidget):
         self.btn_loggers.setMenu(self.loggers_menu)
         search_layout.addWidget(self.btn_loggers)
 
+        # Кнопка-меню для фильтрации по партиям (setCurrentBatch / api/close)
+        self.btn_batches = QToolButton()
+        self.btn_batches.setText("Партии")
+        self.btn_batches.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.btn_batches.setEnabled(False)
+        self.batches_menu = QMenu(self)
+        self.btn_batches.setMenu(self.batches_menu)
+        search_layout.addWidget(self.btn_batches)
+        # Активные партии (set из batch_id или "" для "вне партии")
+        self.all_batches = []  # list of (batch_id, count, first_ts, last_ts)
+        self.active_batches = set()
+        self.batch_checkboxes = {}
+
         # Поля диапазона времени. Принимают HH:MM, HH:MM:SS, HH:MM:SS.mmm.
         # "от" пустые поля заполняются нулями, "до" - девятками (см. _parse_time_input).
         # Сохраняем ссылки на лейблы и spacer чтобы их можно было скрывать вместе с полями.
@@ -322,6 +335,8 @@ class LogViewerWidget(QWidget):
 
         # Собираем уникальные логгеры из файла и наполняем меню "Компоненты"
         self._collect_loggers(entries)
+        # Собираем партии из распарсенных сегментов и наполняем меню "Партии"
+        self._collect_batches()
 
         if self.model.rowCount() > 0:
             self.log_view.scrollToBottom()
@@ -496,6 +511,76 @@ class LogViewerWidget(QWidget):
         else:
             self.btn_loggers.setText(f"Компоненты: {len(self.active_loggers)}/{total}")
 
+    # ----- Партии (сегментация по setCurrentBatch / api/close) -----
+
+    def _collect_batches(self):
+        """Подбирает summary партий из модели и пересобирает меню фильтра."""
+        self.all_batches = self.model.get_batch_summary()
+        self.active_batches = {bid for (bid, _c, _f, _l) in self.all_batches}
+        self._rebuild_batches_menu()
+
+    def _rebuild_batches_menu(self):
+        self.batches_menu.clear()
+        self.batch_checkboxes = {}
+
+        if not self.all_batches:
+            self.btn_batches.setEnabled(False)
+            self.btn_batches.setText("Партии")
+            return
+
+        self.btn_batches.setEnabled(True)
+
+        toggle_btn = QPushButton("Все / Ни одного")
+        toggle_btn.clicked.connect(self._toggle_all_batches)
+        toggle_action = QWidgetAction(self.batches_menu)
+        toggle_action.setDefaultWidget(toggle_btn)
+        self.batches_menu.addAction(toggle_action)
+        self.batches_menu.addSeparator()
+
+        for bid, count, first_ts, last_ts in self.all_batches:
+            label = f"Вне партии  ({count} строк)" if not bid else f"Партия {bid}  ({count} строк)"
+            cb = QCheckBox(label)
+            cb.setChecked(bid in self.active_batches)
+            tooltip = f"Время: {first_ts} → {last_ts}" if first_ts else "Время: —"
+            cb.setToolTip(tooltip)
+            cb.toggled.connect(lambda checked, b=bid: self._on_batch_toggled(b, checked))
+            wa = QWidgetAction(self.batches_menu)
+            wa.setDefaultWidget(cb)
+            self.batches_menu.addAction(wa)
+            self.batch_checkboxes[bid] = cb
+
+        self._update_batches_button_label()
+
+    def _on_batch_toggled(self, bid, checked):
+        if checked:
+            self.active_batches.add(bid)
+        else:
+            self.active_batches.discard(bid)
+        self._update_batches_button_label()
+        self.refresh_view()
+
+    def _toggle_all_batches(self):
+        all_ids = {bid for (bid, _c, _f, _l) in self.all_batches}
+        if self.active_batches == all_ids:
+            self.active_batches.clear()
+        else:
+            self.active_batches = set(all_ids)
+        for bid, cb in self.batch_checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(bid in self.active_batches)
+            cb.blockSignals(False)
+        self._update_batches_button_label()
+        self.refresh_view()
+
+    def _update_batches_button_label(self):
+        total = len(self.all_batches)
+        if total == 0:
+            self.btn_batches.setText("Партии")
+        elif len(self.active_batches) == total:
+            self.btn_batches.setText(f"Партии: все ({total})")
+        else:
+            self.btn_batches.setText(f"Партии: {len(self.active_batches)}/{total}")
+
     def update_stats_text(self):
         total = sum(self.stats.values())
         text = (
@@ -557,6 +642,7 @@ class LogViewerWidget(QWidget):
         # Опциональные элементы поисковой панели
         self.btn_match_case.setVisible(self._ui_features["match_case"])
         self.btn_loggers.setVisible(self._ui_features["loggers_filter"])
+        self.btn_batches.setVisible(self._ui_features["batches_filter"])
         self.lbl_time.setVisible(self._ui_features["time_range"])
         self.time_from.setVisible(self._ui_features["time_range"])
         self.lbl_time_dash.setVisible(self._ui_features["time_range"])
@@ -816,6 +902,14 @@ class LogViewerWidget(QWidget):
             self._ui_features.get("match_case", True) and self.btn_match_case.isChecked()
         )
 
+        # Фильтр партий: если все включены или фича скрыта - не передаём ограничения
+        if (self._ui_features.get("batches_filter", True)
+                and self.all_batches
+                and len(self.active_batches) < len(self.all_batches)):
+            batch_filter = set(self.active_batches)
+        else:
+            batch_filter = None
+
         self.model.update_filters(
             self.global_filters["info"],
             self.global_filters["debug"],
@@ -827,6 +921,7 @@ class LogViewerWidget(QWidget):
             time_from,
             time_to,
             case_sensitive,
+            batch_filter,
         )
 
         # Перерисовываем подсветку, если поисковый запрос изменился

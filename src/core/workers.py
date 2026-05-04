@@ -159,7 +159,7 @@ class FilterWorker(QThread):
 
     def __init__(self, entries, show_info, show_debug, show_error, show_warn,
                  search_text, loggers=None, time_from=None, time_to=None,
-                 case_sensitive=False):
+                 case_sensitive=False, batch_filter=None, batch_for_index=None):
         super().__init__()
         self.entries = entries
         self.show_info = show_info
@@ -174,6 +174,10 @@ class FilterWorker(QThread):
         self.time_to = time_to
         # Match case как в Notepad++: по умолчанию off (re.IGNORECASE), при on - регистрозависимо
         self.case_sensitive = case_sensitive
+        # Партии: batch_filter=None означает "все", set означает "только batch_id из этого набора".
+        # batch_for_index - параллельный entries массив str (id партии или "" для "вне партии").
+        self.batch_filter = batch_filter
+        self.batch_for_index = batch_for_index or []
         self._is_cancelled = False
 
     def cancel(self):
@@ -191,11 +195,13 @@ class FilterWorker(QThread):
         loggers = self.loggers
         time_from = self.time_from
         time_to = self.time_to
+        batch_filter = self.batch_filter
+        batch_for_index = self.batch_for_index
 
-        # Базовый фильтр: уровень, логгер, диапазон времени.
+        # Базовый фильтр: уровень, логгер, диапазон времени, партия.
         # UNKNOWN (продолжения многострочных сообщений без таймстампа) всегда пропускаем,
         # иначе теряем стек-трейсы.
-        def base_pass(e):
+        def base_pass(i, e):
             if e.level != "UNKNOWN" and e.level not in active_levels:
                 return False
             if loggers is not None and e.logger and e.logger not in loggers:
@@ -205,10 +211,14 @@ class FilterWorker(QThread):
                     return False
                 if time_to and e.timestamp > time_to:
                     return False
+            if batch_filter is not None:
+                bid = batch_for_index[i] if i < len(batch_for_index) else ""
+                if bid not in batch_filter:
+                    return False
             return True
 
         if not search_text:
-            new_indices = [i for i, e in enumerate(entries) if base_pass(e)]
+            new_indices = [i for i, e in enumerate(entries) if base_pass(i, e)]
         else:
             regex_flags = 0 if self.case_sensitive else re.IGNORECASE
             search_regex = None
@@ -221,19 +231,19 @@ class FilterWorker(QThread):
                 match = search_regex.search
                 new_indices = [
                     i for i, e in enumerate(entries)
-                    if base_pass(e) and match(e.full_line)
+                    if base_pass(i, e) and match(e.full_line)
                 ]
             elif self.case_sensitive:
                 # literal fallback, регистр учитываем
                 new_indices = [
                     i for i, e in enumerate(entries)
-                    if base_pass(e) and search_text in e.full_line
+                    if base_pass(i, e) and search_text in e.full_line
                 ]
             else:
                 search_lower = search_text.lower()
                 new_indices = [
                     i for i, e in enumerate(entries)
-                    if base_pass(e) and search_lower in e.full_line.lower()
+                    if base_pass(i, e) and search_lower in e.full_line.lower()
                 ]
 
         if not self._is_cancelled:
