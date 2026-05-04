@@ -28,7 +28,7 @@ class LogViewerWidget(QWidget):
     MAX_JOURNAL_SEARCHES = 50
     MAX_DETAIL_HIGHLIGHTS = 1000
 
-    def __init__(self, file_path, theme_name, font_size, parent=None):
+    def __init__(self, file_path, theme_name, font_size, bookmarks=None, parent=None):
         super().__init__(parent)
         self.file_path = file_path
         self.current_theme_name = theme_name
@@ -36,6 +36,8 @@ class LogViewerWidget(QWidget):
 
         self.stats = {}
         self.preserved_real_index = None
+        # Закладки восстанавливаемые из settings (применяются после загрузки модели)
+        self._initial_bookmarks = list(bookmarks or [])
         # Позиция в исходном файле в байтах (нужна для tail-режима)
         self._tail_position = 0
         # Парсер для tail - хранит open_entry между порциями новых строк
@@ -262,6 +264,19 @@ class LogViewerWidget(QWidget):
         sc_prev.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         sc_prev.activated.connect(lambda: self._goto_match(-1))
 
+        # Закладки: Ctrl+B - toggle, F2 - следующая, Shift+F2 - предыдущая
+        sc_bm_toggle = QShortcut(QKeySequence("Ctrl+B"), self)
+        sc_bm_toggle.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_bm_toggle.activated.connect(self._toggle_bookmark_current)
+
+        sc_bm_next = QShortcut(QKeySequence(Qt.Key.Key_F2), self)
+        sc_bm_next.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_bm_next.activated.connect(lambda: self._goto_bookmark(1))
+
+        sc_bm_prev = QShortcut(QKeySequence("Shift+F2"), self)
+        sc_bm_prev.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_bm_prev.activated.connect(lambda: self._goto_bookmark(-1))
+
     def load_file(self):
         self.loader = LogLoader(self.file_path)
         self.loader.progress.connect(self.progressChanged.emit)
@@ -277,6 +292,11 @@ class LogViewerWidget(QWidget):
 
         self.model.set_entries(entries)
         self._tail_position = last_pos  # для tail-режима
+        # Восстанавливаем закладки если были сохранены в сессии
+        if self._initial_bookmarks:
+            valid = [b for b in self._initial_bookmarks if 0 <= b < len(entries)]
+            self.model.set_bookmarks(valid)
+            self._initial_bookmarks = []
         self.stats = stats
         self.update_stats_text()
         self.statsChanged.emit(stats)
@@ -766,6 +786,46 @@ class LogViewerWidget(QWidget):
         new_index = self.model.index(new_row)
         self.log_view.setCurrentIndex(new_index)
         self.log_view.scrollTo(new_index, QAbstractItemView.ScrollHint.PositionAtCenter)
+        self.log_view.setFocus()
+
+    # ----- Закладки -----
+
+    def _toggle_bookmark_current(self):
+        """Ctrl+B: ставит/снимает закладку на текущей строке."""
+        current = self.log_view.currentIndex()
+        if not current.isValid():
+            return
+        real_index = self.model.get_real_index(current.row())
+        if real_index is None:
+            return
+        self.model.toggle_bookmark(real_index)
+
+    def _goto_bookmark(self, direction):
+        """F2 / Shift+F2: следующая / предыдущая закладка относительно текущей строки.
+        Закольцовано. Учитываются только закладки, строки которых видны после фильтра."""
+        bookmarks = self.model.get_bookmarks_sorted()
+        if not bookmarks:
+            return
+        # Превращаем real_indices закладок в видимые row через find_row_by_real_index
+        visible_rows = sorted(
+            r for r in (self.model.find_row_by_real_index(b) for b in bookmarks) if r != -1
+        )
+        if not visible_rows:
+            return
+
+        current = self.log_view.currentIndex()
+        cur_row = current.row() if current.isValid() else -1
+
+        if direction > 0:
+            # Следующая закладка > cur_row, иначе первая
+            next_row = next((r for r in visible_rows if r > cur_row), visible_rows[0])
+        else:
+            # Предыдущая < cur_row, иначе последняя
+            next_row = next((r for r in reversed(visible_rows) if r < cur_row), visible_rows[-1])
+
+        idx = self.model.index(next_row)
+        self.log_view.setCurrentIndex(idx)
+        self.log_view.scrollTo(idx, QAbstractItemView.ScrollHint.PositionAtCenter)
         self.log_view.setFocus()
 
     def _update_scrollbar_markers(self):

@@ -321,7 +321,12 @@ class MainWindow(QMainWindow):
             self.load_file(file_name)
 
     def load_file(self, file_path, side="active"):
-        viewer = LogViewerWidget(file_path, self.current_theme_name, self.current_font_size)
+        # Достаём сохранённые закладки для этого файла (если были)
+        bookmarks = self.settings.get("bookmarks", {}).get(file_path, [])
+        viewer = LogViewerWidget(
+            file_path, self.current_theme_name, self.current_font_size,
+            bookmarks=bookmarks,
+        )
         viewer.progressChanged.connect(self.progress_bar.setValue)
         viewer.loadingFinished.connect(self.on_loading_finished)
 
@@ -418,13 +423,33 @@ class MainWindow(QMainWindow):
     def save_current_settings(self):
         files_left, files_right = self.split_manager.get_open_files()
 
+        # Собираем закладки со всех открытых вкладок
+        bookmarks = {}
+        for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
+            for i in range(group.count()):
+                viewer = group.widget(i)
+                if isinstance(viewer, LogViewerWidget):
+                    bm = viewer.model.get_bookmarks_sorted()
+                    if bm:
+                        bookmarks[viewer.file_path] = bm
+
+        # Подмешиваем закладки для НЕ открытых сейчас файлов из старых настроек -
+        # чтобы не терять их если файл закрыли и больше не открывали в этой сессии
+        old_bm = self.settings.get("bookmarks", {})
+        for path, bm in old_bm.items():
+            if path not in bookmarks and bm:
+                bookmarks[path] = bm
+
         data = {
             "theme": self.current_theme_name,
             "font_size": self.current_font_size,
             "files_left": files_left,
-            "files_right": files_right
+            "files_right": files_right,
+            "bookmarks": bookmarks,
         }
         save_settings(data)
+        # Обновляем кеш в self.settings, чтобы load_file тут же увидел свежие закладки
+        self.settings = data
 
     def closeEvent(self, event: QCloseEvent):
         self.save_current_settings()

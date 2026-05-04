@@ -29,6 +29,7 @@ class LogModel(QAbstractListModel):
         self._time_from = None
         self._time_to = None
         self._case_sensitive = False
+        self._bookmarks = set()  # real_indices помеченных строк
 
         self.current_theme = THEMES["Default"]
         self.font_size = 10
@@ -59,13 +60,15 @@ class LogModel(QAbstractListModel):
 
         real_index = self._filtered_indices[index.row()]
         entry = self._entries[real_index]
+        is_bookmarked = real_index in self._bookmarks
 
         if role == Qt.ItemDataRole.DisplayRole:
+            bm_prefix = "🔖 " if is_bookmarked else ""
             if self._filtered_counts:
                 count = self._filtered_counts[index.row()]
                 if count > 1:
-                    return f"[×{count}] {entry.preview}"
-            return entry.preview
+                    return f"{bm_prefix}[×{count}] {entry.preview}"
+            return f"{bm_prefix}{entry.preview}"
         if role == Qt.ItemDataRole.UserRole:
             if self._filtered_counts:
                 count = self._filtered_counts[index.row()]
@@ -178,3 +181,30 @@ class LogModel(QAbstractListModel):
             return self._filtered_indices.index(real_index)
         except ValueError:
             return -1
+
+    # ----- Закладки -----
+
+    def toggle_bookmark(self, real_index):
+        """Переключает закладку для записи. Возвращает True если закладка ВКЛЮЧЕНА после операции."""
+        if real_index in self._bookmarks:
+            self._bookmarks.discard(real_index)
+            now_on = False
+        else:
+            self._bookmarks.add(real_index)
+            now_on = True
+        # Перерисовываем строку если она видна
+        row = self.find_row_by_real_index(real_index)
+        if row != -1:
+            idx = self.index(row)
+            self.dataChanged.emit(idx, idx)
+        return now_on
+
+    def set_bookmarks(self, real_indices):
+        """Устанавливает набор закладок целиком (используется при восстановлении сессии)."""
+        self._bookmarks = set(real_indices)
+        # Полная перерисовка
+        if self.rowCount() > 0:
+            self.dataChanged.emit(self.index(0), self.index(self.rowCount() - 1))
+
+    def get_bookmarks_sorted(self):
+        return sorted(self._bookmarks)
