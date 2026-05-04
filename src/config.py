@@ -6,6 +6,33 @@ APP_VERSION = "1.0.0"
 
 GITHUB_REPO = "Hunter-James/LogAnalyzerEVOL"
 
+# --- UI Feature Toggles ---
+# Какие необязательные элементы UI можно скрыть через Настройки.
+# Базовые вещи (поиск, фильтры по уровню, открытие файла) не отключаются.
+DEFAULT_UI_FEATURES = {
+    "match_case": True,
+    "loggers_filter": True,
+    "time_range": True,
+    "tail_mode": True,
+    "save_to_journal": True,
+    "group_dupes": True,
+    "json_format": True,
+    "selection_info": True,
+    "scrollbar_markers": True,
+}
+
+UI_FEATURE_LABELS = {
+    "match_case": "Кнопка «Aa» (учитывать регистр поиска)",
+    "loggers_filter": "Кнопка «Компоненты» (фильтр по логгеру)",
+    "time_range": "Поля диапазона времени (Время: с – по)",
+    "tail_mode": "Кнопка «Следить» (tail / follow mode)",
+    "save_to_journal": "Кнопка «Добавить в журнал»",
+    "group_dupes": "Чекбокс «Свернуть дубли» в тулбаре",
+    "json_format": "Кнопка «{ } JSON» (форматирование JSON)",
+    "selection_info": "Δt и информация о выделении в статус-баре",
+    "scrollbar_markers": "Метки ERROR/WARN на скроллбаре",
+}
+
 # --- Settings Management ---
 SETTINGS_FILENAME = "settings.json"
 
@@ -19,20 +46,27 @@ def get_settings_path():
 def load_settings():
     path = get_settings_path()
     defaults = {
-        "theme": "Default", 
+        "theme": "Default",
         "font_size": 10,
         "files_left": [],
-        "files_right": []
+        "files_right": [],
+        "ui_features": dict(DEFAULT_UI_FEATURES),
     }
-    
+
     if os.path.exists(path):
         try:
             with open(path, 'r') as f:
                 saved = json.load(f)
                 defaults.update(saved)
-                return defaults
         except Exception:
             return defaults
+
+    # Мерджим ui_features с дефолтами - если в settings.json нет нового флага,
+    # подставляем True (включено), чтобы не скрывать новые фичи у старых пользователей.
+    user_features = defaults.get("ui_features", {}) or {}
+    merged_features = dict(DEFAULT_UI_FEATURES)
+    merged_features.update({k: bool(v) for k, v in user_features.items() if k in DEFAULT_UI_FEATURES})
+    defaults["ui_features"] = merged_features
     return defaults
 
 def save_settings(data):

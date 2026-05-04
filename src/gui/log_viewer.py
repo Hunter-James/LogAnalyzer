@@ -28,11 +28,19 @@ class LogViewerWidget(QWidget):
     MAX_JOURNAL_SEARCHES = 50
     MAX_DETAIL_HIGHLIGHTS = 1000
 
-    def __init__(self, file_path, theme_name, font_size, bookmarks=None, parent=None):
+    def __init__(self, file_path, theme_name, font_size, bookmarks=None,
+                 ui_features=None, parent=None):
         super().__init__(parent)
         self.file_path = file_path
         self.current_theme_name = theme_name
         self.current_font_size = font_size
+
+        # Флаги видимости опциональных элементов UI - применяются в apply_ui_features.
+        # По умолчанию все включены, иначе подхватываем переданный словарь.
+        from config import DEFAULT_UI_FEATURES
+        self._ui_features = dict(DEFAULT_UI_FEATURES)
+        if ui_features:
+            self._ui_features.update({k: bool(v) for k, v in ui_features.items() if k in DEFAULT_UI_FEATURES})
 
         self.stats = {}
         self.preserved_real_index = None
@@ -131,8 +139,11 @@ class LogViewerWidget(QWidget):
 
         # Поля диапазона времени. Принимают HH:MM, HH:MM:SS, HH:MM:SS.mmm.
         # "от" пустые поля заполняются нулями, "до" - девятками (см. _parse_time_input).
+        # Сохраняем ссылки на лейблы и spacer чтобы их можно было скрывать вместе с полями.
+        self._time_spacer_idx = search_layout.count()
         search_layout.addSpacing(8)
-        search_layout.addWidget(QLabel("Время:"))
+        self.lbl_time = QLabel("Время:")
+        search_layout.addWidget(self.lbl_time)
         self.time_from = QLineEdit()
         self.time_from.setPlaceholderText("c (ЧЧ:ММ:СС)")
         self.time_from.setFixedWidth(110)
@@ -140,7 +151,8 @@ class LogViewerWidget(QWidget):
         self.time_from.textChanged.connect(self._on_time_changed)
         search_layout.addWidget(self.time_from)
 
-        search_layout.addWidget(QLabel("–"))
+        self.lbl_time_dash = QLabel("–")
+        search_layout.addWidget(self.lbl_time_dash)
 
         self.time_to = QLineEdit()
         self.time_to.setPlaceholderText("по (ЧЧ:ММ:СС)")
@@ -279,6 +291,9 @@ class LogViewerWidget(QWidget):
         sc_bm_prev = QShortcut(QKeySequence("Shift+F2"), self)
         sc_bm_prev.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         sc_bm_prev.activated.connect(lambda: self._goto_bookmark(-1))
+
+        # Применяем стартовую видимость UI согласно настройкам
+        self.apply_ui_features(self._ui_features)
 
     def load_file(self):
         self.loader = LogLoader(self.file_path)
@@ -533,6 +548,44 @@ class LogViewerWidget(QWidget):
         # Цвета меток ERROR/WARN на скроллбаре зависят от темы - пересчитываем
         self._update_scrollbar_markers()
 
+    def apply_ui_features(self, features):
+        """Применяет настройки видимости элементов UI.
+        Скрытые виджеты не теряют состояние - можно вернуть в Настройках."""
+        self._ui_features = dict(self._ui_features)
+        self._ui_features.update({k: bool(v) for k, v in features.items() if k in self._ui_features})
+
+        # Опциональные элементы поисковой панели
+        self.btn_match_case.setVisible(self._ui_features["match_case"])
+        self.btn_loggers.setVisible(self._ui_features["loggers_filter"])
+        self.lbl_time.setVisible(self._ui_features["time_range"])
+        self.time_from.setVisible(self._ui_features["time_range"])
+        self.lbl_time_dash.setVisible(self._ui_features["time_range"])
+        self.time_to.setVisible(self._ui_features["time_range"])
+        self.btn_follow.setVisible(self._ui_features["tail_mode"])
+        self.btn_save_search.setVisible(self._ui_features["save_to_journal"])
+
+        # Tail с скрытой кнопки нельзя контролировать - принудительно останавливаем
+        if not self._ui_features["tail_mode"] and self.btn_follow.isChecked():
+            self.btn_follow.setChecked(False)
+
+        # Кнопка JSON в углу tab-бара
+        self.btn_format_json.setVisible(self._ui_features["json_format"])
+
+        # Δt и информация о выделении в статус-баре
+        self.lbl_selection_info.setVisible(self._ui_features["selection_info"])
+
+        # Скроллбар-метки: при выключении гасим текущие
+        sb = self.log_view.verticalScrollBar()
+        if isinstance(sb, MarkerScrollBar):
+            if self._ui_features["scrollbar_markers"]:
+                self._update_scrollbar_markers()
+            else:
+                sb.set_markers([])
+
+        # Если фильтр времени скрыт, при следующем refresh_view применим как None
+        # (само поле остаётся, но refresh_view проверяет видимость - см. ниже).
+        self.refresh_view()
+
     def on_zoom_request(self, delta):
         if delta > 0:
             self.current_font_size = min(24, self.current_font_size + 1)
@@ -742,14 +795,26 @@ class LogViewerWidget(QWidget):
         else:
             self.preserved_real_index = None
 
-        # Если включены все логгеры - не передаём ограничение (None = пропускаем все)
-        if self.all_loggers and len(self.active_loggers) < len(self.all_loggers):
+        # Если фильтр логгеров скрыт через настройки - игнорируем его состояние
+        if (self._ui_features.get("loggers_filter", True)
+                and self.all_loggers
+                and len(self.active_loggers) < len(self.all_loggers)):
             loggers_filter = set(self.active_loggers)
         else:
             loggers_filter = None
 
-        time_from = self._parse_time_input(self.time_from.text(), is_upper=False)
-        time_to = self._parse_time_input(self.time_to.text(), is_upper=True)
+        # Аналогично для диапазона времени
+        if self._ui_features.get("time_range", True):
+            time_from = self._parse_time_input(self.time_from.text(), is_upper=False)
+            time_to = self._parse_time_input(self.time_to.text(), is_upper=True)
+        else:
+            time_from = None
+            time_to = None
+
+        # Match case учитываем только если кнопка Aa включена в настройках
+        case_sensitive = (
+            self._ui_features.get("match_case", True) and self.btn_match_case.isChecked()
+        )
 
         self.model.update_filters(
             self.global_filters["info"],
@@ -761,7 +826,7 @@ class LogViewerWidget(QWidget):
             loggers_filter,
             time_from,
             time_to,
-            self.btn_match_case.isChecked(),
+            case_sensitive,
         )
 
         # Перерисовываем подсветку, если поисковый запрос изменился
@@ -893,7 +958,10 @@ class LogViewerWidget(QWidget):
             return
         selected_indexes.sort(key=lambda x: x.row())
         display_indexes = selected_indexes[:50]
-        format_json = self.btn_format_json.isChecked()
+        # Форматировать JSON только если фича включена в настройках И кнопка нажата
+        format_json = (
+            self._ui_features.get("json_format", True) and self.btn_format_json.isChecked()
+        )
         full_text = ""
         for idx in display_indexes:
             text = self.model.data(idx, Qt.ItemDataRole.UserRole)

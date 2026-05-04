@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPu
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QIcon, QKeySequence, QCloseEvent, QShortcut
 
-from config import THEMES, APP_VERSION, load_settings, save_settings
+from config import THEMES, APP_VERSION, DEFAULT_UI_FEATURES, load_settings, save_settings
 from gui.log_viewer import LogViewerWidget
 from gui.tab_manager import SplitManager
 from gui.settings import SettingsDialog
@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self.settings = load_settings()
         self.current_theme_name = self.settings.get("theme", "Default")
         self.current_font_size = self.settings.get("font_size", 10)
+        self.ui_features = self.settings.get("ui_features", dict(DEFAULT_UI_FEATURES))
 
 
 
@@ -63,6 +64,9 @@ class MainWindow(QMainWindow):
         sc_help = QShortcut(QKeySequence(Qt.Key.Key_F1), self)
         sc_help.setContext(Qt.ShortcutContext.WindowShortcut)
         sc_help.activated.connect(self.open_help)
+
+        # Применяем стартовые UI-фичи (для chk_group в главном окне)
+        self.chk_group.setVisible(self.ui_features.get("group_dupes", True))
 
         # Restore session
         self.restore_session()
@@ -293,12 +297,30 @@ class MainWindow(QMainWindow):
             self.chk_error.setStyleSheet("")
 
     def open_settings(self):
-        dlg = SettingsDialog(self.current_theme_name, self.current_font_size, self)
+        dlg = SettingsDialog(
+            self.current_theme_name, self.current_font_size, self.ui_features, self
+        )
         if dlg.exec():
-            theme, size = dlg.get_settings()
+            theme, size, features = dlg.get_settings()
             self.current_font_size = size
+            self.ui_features = features
             self.apply_theme(theme)
+            self._apply_ui_features_everywhere()
             self.save_current_settings()
+
+    def _apply_ui_features_everywhere(self):
+        """Распространяет настройки видимости на главное окно и все открытые вьюверы."""
+        # chk_group в главном тулбаре - часть фичи "group_dupes"
+        self.chk_group.setVisible(self.ui_features.get("group_dupes", True))
+        # При скрытии глобально снимаем галочку, иначе фильтр продолжит группировать
+        if not self.ui_features.get("group_dupes", True) and self.chk_group.isChecked():
+            self.chk_group.setChecked(False)
+
+        for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
+            for i in range(group.count()):
+                viewer = group.widget(i)
+                if isinstance(viewer, LogViewerWidget):
+                    viewer.apply_ui_features(self.ui_features)
 
     def open_help(self):
         dlg = HelpDialog(self.current_theme_name, self)
@@ -326,6 +348,7 @@ class MainWindow(QMainWindow):
         viewer = LogViewerWidget(
             file_path, self.current_theme_name, self.current_font_size,
             bookmarks=bookmarks,
+            ui_features=self.ui_features,
         )
         viewer.progressChanged.connect(self.progress_bar.setValue)
         viewer.loadingFinished.connect(self.on_loading_finished)
@@ -446,6 +469,7 @@ class MainWindow(QMainWindow):
             "files_left": files_left,
             "files_right": files_right,
             "bookmarks": bookmarks,
+            "ui_features": self.ui_features,
         }
         save_settings(data)
         # Обновляем кеш в self.settings, чтобы load_file тут же увидел свежие закладки
