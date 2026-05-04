@@ -35,6 +35,8 @@ class LogViewerWidget(QWidget):
 
         self.stats = {}
         self.preserved_real_index = None
+        # Позиция в исходном файле в байтах (нужна для tail-режима)
+        self._tail_position = 0
 
         # Все логгеры, обнаруженные в файле, и подмножество включённых
         self.all_loggers = []
@@ -219,7 +221,7 @@ class LogViewerWidget(QWidget):
         self.loader.finished.connect(self.on_load_finished)
         self.loader.start()
 
-    def on_load_finished(self, entries, stats, error_msg):
+    def on_load_finished(self, entries, stats, error_msg, last_pos):
         if error_msg:
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить файл:\n{error_msg}")
             self.lbl_stats.setText("Ошибка загрузки файла")
@@ -227,6 +229,7 @@ class LogViewerWidget(QWidget):
             return
 
         self.model.set_entries(entries)
+        self._tail_position = last_pos  # для tail-режима
         self.stats = stats
         self.update_stats_text()
         self.statsChanged.emit(stats)

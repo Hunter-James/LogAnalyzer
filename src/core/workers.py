@@ -1,73 +1,156 @@
 import re
 import os
+import io
 import time
+import gzip
+import zipfile
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.entities import LogEntry
+
+
+# Шаблон строки лога: ВРЕМЯ [УРОВЕНЬ] [Логгер.метод]: ...
+# Захватываем имя логгера (часть до первой точки во втором [])
+LINE_PATTERN = re.compile(
+    r'^(\d{2}:\d{2}:\d{2}\.\d{3})\s+'
+    r'\[\s*(INFO|DEBUG|ERROR|WARN)\s*\]\s+'
+    r'\[\s*([^\s.\]]+)'
+)
+
+
+class IncrementalLogParser:
+    """Парсер с состоянием: можно скармливать строки порциями.
+    Используется и LogLoader (целый файл за раз), и tail-режимом (новые строки)."""
+
+    def __init__(self):
+        self.open_entry = None  # незакрытая запись (ждёт продолжений)
+        self.stats = {"INFO": 0, "DEBUG": 0, "ERROR": 0, "WARN": 0}
+
+    def feed_lines(self, lines):
+        """Скармливает строки парсеру, возвращает список ЗАКРЫТЫХ записей.
+        Открытая запись остаётся в self.open_entry до прихода следующего таймстампа."""
+        new_closed = []
+        for line in lines:
+            m = LINE_PATTERN.match(line)
+            if m:
+                if self.open_entry is not None:
+                    new_closed.append(self.open_entry)
+                ts, lvl, lg = m.group(1), m.group(2), m.group(3)
+                if lvl in self.stats:
+                    self.stats[lvl] += 1
+                self.open_entry = LogEntry(ts, lvl, lg, line.strip(), line)
+            else:
+                if self.open_entry is not None:
+                    if len(self.open_entry.message) < 50000:
+                        self.open_entry.message += "\n" + line.strip()
+                    self.open_entry.full_line += line
+                else:
+                    # Файл начинается с продолжения - заворачиваем в UNKNOWN
+                    self.open_entry = LogEntry("", "UNKNOWN", "", line.strip(), line)
+        return new_closed
+
+    def take_open(self):
+        """Забирает текущую открытую запись (в конце файла)."""
+        e = self.open_entry
+        self.open_entry = None
+        return e
+
+
+def _open_log_stream(file_path):
+    """Открывает .log/.txt/.gz/.zip и возвращает (text-stream, total_bytes_for_progress).
+    Для .zip берём первый файл с расширением .log/.txt; если таких нет — кидаем ошибку.
+    total_bytes для .gz/.zip — это РАСПАКОВАННЫЙ размер (для расчёта прогресса)."""
+    low = file_path.lower()
+    if low.endswith('.gz'):
+        # Размер несжатого: читаем последние 4 байта (ISIZE в gzip-трейлере) — это размер mod 2^32
+        try:
+            with open(file_path, 'rb') as f:
+                f.seek(-4, os.SEEK_END)
+                uncompressed = int.from_bytes(f.read(4), 'little')
+            if uncompressed <= 0:
+                uncompressed = os.path.getsize(file_path) * 6  # грубая оценка
+        except Exception:
+            uncompressed = os.path.getsize(file_path) * 6
+        stream = gzip.open(file_path, 'rt', encoding='utf-8', errors='replace')
+        return stream, uncompressed
+
+    if low.endswith('.zip'):
+        zf = zipfile.ZipFile(file_path, 'r')
+        candidates = [n for n in zf.namelist()
+                      if n.lower().endswith(('.log', '.txt'))
+                      and not n.endswith('/')]
+        if not candidates:
+            zf.close()
+            raise ValueError("В архиве нет .log или .txt файлов")
+        name = candidates[0]
+        info = zf.getinfo(name)
+        raw = zf.open(name, 'r')
+        # ZipExtFile в режиме 'r' даёт байты; обернём в TextIOWrapper для построчного чтения
+        text = io.TextIOWrapper(raw, encoding='utf-8', errors='replace')
+        # Закрытие zf при закрытии text не происходит автоматически - привяжем
+        original_close = text.close
+        def _close():
+            try:
+                original_close()
+            finally:
+                zf.close()
+        text.close = _close
+        return text, info.file_size
+
+    # Обычный .log/.txt
+    return open(file_path, 'r', encoding='utf-8', errors='replace'), os.path.getsize(file_path)
+
 
 # --- Worker Thread for Loading Files ---
 class LogLoader(QThread):
     progress = pyqtSignal(int)
-    finished = pyqtSignal(list, dict, str)
+    finished = pyqtSignal(list, dict, str, int)  # entries, stats, error_msg, last_byte_position
 
-    # Шаблон строки лога: ВРЕМЯ [УРОВЕНЬ] [Логгер.метод]: ...
-    # Захватываем имя логгера (часть до первой точки во втором [])
-    LINE_PATTERN = re.compile(
-        r'^(\d{2}:\d{2}:\d{2}\.\d{3})\s+'
-        r'\[\s*(INFO|DEBUG|ERROR|WARN)\s*\]\s+'
-        r'\[\s*([^\s.\]]+)'
-    )
+    # Сохраняем ссылку для обратной совместимости
+    LINE_PATTERN = LINE_PATTERN
 
     def __init__(self, file_path):
         super().__init__()
         self.file_path = file_path
 
     def run(self):
+        parser = IncrementalLogParser()
         entries = []
-        stats = {"INFO": 0, "DEBUG": 0, "ERROR": 0, "WARN": 0}
-        log_pattern = self.LINE_PATTERN
+        last_pos = 0  # для tail: позиция в исходном (не распакованном) файле
 
         try:
-            file_size = os.path.getsize(self.file_path)
+            stream, total_bytes = _open_log_stream(self.file_path)
+            # Для tail удобнее знать позицию в исходном файле, а не в распакованном.
+            # Для plain .log это совпадает. Для .gz/.zip — tail отключим в UI.
+            is_plain = not self.file_path.lower().endswith(('.gz', '.zip'))
+
             bytes_read = 0
-            last_emit_time = 0
+            last_emit_time = 0.0
+            try:
+                for line in stream:
+                    bytes_read += len(line.encode('utf-8'))
+                    now = time.time()
+                    if total_bytes > 0 and now - last_emit_time > 0.1:
+                        pct = max(0, min(100, int(bytes_read / total_bytes * 100)))
+                        self.progress.emit(pct)
+                        last_emit_time = now
 
-            with open(self.file_path, 'r', encoding='utf-8', errors='replace') as f:
-                current_entry = None
-                for line in f:
-                    line_len = len(line.encode('utf-8'))
-                    bytes_read += line_len
+                    closed = parser.feed_lines([line])
+                    if closed:
+                        entries.extend(closed)
+            finally:
+                stream.close()
 
-                    current_time = time.time()
-                    if current_time - last_emit_time > 0.1:
-                        progress_pct = int((bytes_read / file_size) * 100)
-                        self.progress.emit(progress_pct)
-                        last_emit_time = current_time
+            tail = parser.take_open()
+            if tail is not None:
+                entries.append(tail)
 
-                    match = log_pattern.match(line)
-                    if match:
-                        if current_entry:
-                            entries.append(current_entry)
-                        timestamp_str = match.group(1)
-                        level_str = match.group(2)
-                        logger_str = match.group(3)
-                        if level_str in stats:
-                            stats[level_str] += 1
-                        current_entry = LogEntry(timestamp_str, level_str, logger_str, line.strip(), line)
-                    else:
-                        if current_entry:
-                            if len(current_entry.message) < 50000:
-                                current_entry.message += "\n" + line.strip()
-                            current_entry.full_line += line
-                        else:
-                            current_entry = LogEntry("", "UNKNOWN", "", line.strip(), line)
-
-                if current_entry:
-                    entries.append(current_entry)
+            if is_plain:
+                last_pos = os.path.getsize(self.file_path)
 
             self.progress.emit(100)
-            self.finished.emit(entries, stats, "")
+            self.finished.emit(entries, parser.stats, "", last_pos)
         except Exception as e:
-            self.finished.emit([], {}, str(e))
+            self.finished.emit([], {}, str(e), 0)
 
 
 # --- Worker Thread for Filtering ---

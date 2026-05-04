@@ -315,7 +315,7 @@ class MainWindow(QMainWindow):
     def open_file_dialog(self):
         file_names, _ = QFileDialog.getOpenFileNames(
             self, "Открыть лог-файл", "",
-            "Лог-файлы (*.log *.txt);;Все файлы (*)"
+            "Лог-файлы (*.log *.txt *.gz *.zip);;Все файлы (*)"
         )
         for file_name in file_names:
             self.load_file(file_name)
