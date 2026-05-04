@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from datetime import datetime
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QSplitter, QAbstractItemView,
                              QMessageBox, QApplication, QLineEdit, QHBoxLayout, QLabel, QFrame,
@@ -190,6 +191,24 @@ class LogViewerWidget(QWidget):
 
         # Bottom Tabs (Выделение / Журнал поиска)
         self.bottom_tabs = QTabWidget()
+
+        # Кнопка-toggle "Форматировать JSON" в углу tab-бара
+        self.btn_format_json = QToolButton()
+        self.btn_format_json.setText("{ } JSON")
+        self.btn_format_json.setCheckable(True)
+        self.btn_format_json.setStyleSheet("""
+            QToolButton { padding: 3px 10px; border: 1px solid #888; border-radius: 3px; }
+            QToolButton:hover { border-color: #bbb; }
+            QToolButton:checked {
+                background-color: #2A82DA; color: #FFFFFF; border: 1px solid #1858A0;
+            }
+        """)
+        self.btn_format_json.setToolTip(
+            "Форматировать JSON-фрагменты в окне 'Выделение' с отступами.\n"
+            "Полезно для длинных HTTP-боди и подписанных запросов."
+        )
+        self.btn_format_json.toggled.connect(lambda _: self._refresh_details_view())
+        self.bottom_tabs.setCornerWidget(self.btn_format_json, Qt.Corner.TopRightCorner)
 
         # Details View
         self.details_view = ScalableTextEdit()
@@ -798,6 +817,11 @@ class LogViewerWidget(QWidget):
                 self.log_view.scrollTo(new_index, QAbstractItemView.ScrollHint.PositionAtCenter)
 
     def on_selection_changed(self, selected, deselected):
+        self._refresh_details_view()
+
+    def _refresh_details_view(self):
+        """Перестраивает содержимое окна 'Выделение' на основе текущего выделения.
+        Учитывает кнопку 'Форматировать JSON'."""
         selected_indexes = self.log_view.selectedIndexes()
         if not selected_indexes:
             self.details_view.clear()
@@ -805,14 +829,43 @@ class LogViewerWidget(QWidget):
             return
         selected_indexes.sort(key=lambda x: x.row())
         display_indexes = selected_indexes[:50]
+        format_json = self.btn_format_json.isChecked()
         full_text = ""
         for idx in display_indexes:
             text = self.model.data(idx, Qt.ItemDataRole.UserRole)
+            if format_json:
+                text = self._prettify_json_in_text(text)
             full_text += text + "\n" + "=" * 80 + "\n"
         if len(selected_indexes) > 50:
             full_text += f"\n... и ещё {len(selected_indexes) - 50} выделенных строк не показано."
         self.details_view.setPlainText(full_text)
         self._highlight_search_matches()
+
+    @staticmethod
+    def _prettify_json_in_text(text):
+        """В каждой строке ищет JSON-фрагмент (начиная с { или [) и заменяет на
+        форматированный с отступами. Если в строке нет валидного JSON - возвращается как есть."""
+        result_lines = []
+        decoder = json.JSONDecoder()
+        for line in text.split('\n'):
+            # Ищем самое раннее { или [ в строке
+            best_idx = -1
+            for ch in '{[':
+                pos = line.find(ch)
+                if pos != -1 and (best_idx == -1 or pos < best_idx):
+                    best_idx = pos
+            if best_idx == -1:
+                result_lines.append(line)
+                continue
+            try:
+                obj, end = decoder.raw_decode(line[best_idx:])
+                pretty = json.dumps(obj, indent=2, ensure_ascii=False)
+                # prefix + отформатированный JSON + suffix (хвост строки после JSON)
+                rebuilt = line[:best_idx] + pretty + line[best_idx + end:]
+                result_lines.append(rebuilt)
+            except (json.JSONDecodeError, ValueError):
+                result_lines.append(line)
+        return '\n'.join(result_lines)
 
     def _highlight_search_matches(self):
         """Подсвечивает совпадения текущего поискового запроса в окне 'Выделение'
