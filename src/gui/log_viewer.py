@@ -79,6 +79,14 @@ class LogViewerWidget(QWidget):
         self.search_input.textChanged.connect(self.on_search_text_changed)
         search_layout.addWidget(self.search_input)
 
+        # Match case (Aa) - точно как в Notepad++. По умолчанию off (регистронезависимо).
+        self.btn_match_case = QToolButton()
+        self.btn_match_case.setText("Aa")
+        self.btn_match_case.setCheckable(True)
+        self.btn_match_case.setToolTip("Учитывать регистр (Match case)")
+        self.btn_match_case.toggled.connect(lambda _: self.search_timer.start())
+        search_layout.addWidget(self.btn_match_case)
+
         # Кнопка-меню для фильтрации по логгеру/компоненту
         self.btn_loggers = QToolButton()
         self.btn_loggers.setText("Компоненты")
@@ -541,6 +549,7 @@ class LogViewerWidget(QWidget):
             loggers_filter,
             time_from,
             time_to,
+            self.btn_match_case.isChecked(),
         )
 
         # Перерисовываем подсветку, если поисковый запрос изменился
@@ -649,23 +658,31 @@ class LogViewerWidget(QWidget):
         if not full_text:
             return
 
-        # Совпадения ищем так же, как FilterWorker: сначала regex, потом literal fallback
+        # Совпадения ищем так же, как FilterWorker: сначала regex, потом literal fallback.
+        # Match case учитываем согласно состоянию кнопки "Aa".
+        case_sensitive = self.btn_match_case.isChecked()
         positions = []
         try:
-            pattern = re.compile(search_text, re.IGNORECASE)
+            pattern = re.compile(search_text, 0 if case_sensitive else re.IGNORECASE)
             for m in pattern.finditer(full_text):
                 if m.start() != m.end():
                     positions.append((m.start(), m.end()))
                 if len(positions) >= self.MAX_DETAIL_HIGHLIGHTS:
                     break
         except re.error:
-            search_lower = search_text.lower()
-            text_lower = full_text.lower()
             slen = len(search_text)
-            pos = text_lower.find(search_lower)
-            while pos != -1 and len(positions) < self.MAX_DETAIL_HIGHLIGHTS:
-                positions.append((pos, pos + slen))
-                pos = text_lower.find(search_lower, pos + slen)
+            if case_sensitive:
+                pos = full_text.find(search_text)
+                while pos != -1 and len(positions) < self.MAX_DETAIL_HIGHLIGHTS:
+                    positions.append((pos, pos + slen))
+                    pos = full_text.find(search_text, pos + slen)
+            else:
+                search_lower = search_text.lower()
+                text_lower = full_text.lower()
+                pos = text_lower.find(search_lower)
+                while pos != -1 and len(positions) < self.MAX_DETAIL_HIGHLIGHTS:
+                    positions.append((pos, pos + slen))
+                    pos = text_lower.find(search_lower, pos + slen)
 
         if not positions:
             return

@@ -75,7 +75,8 @@ class FilterWorker(QThread):
     finished = pyqtSignal(list)
 
     def __init__(self, entries, show_info, show_debug, show_error, show_warn,
-                 search_text, loggers=None, time_from=None, time_to=None):
+                 search_text, loggers=None, time_from=None, time_to=None,
+                 case_sensitive=False):
         super().__init__()
         self.entries = entries
         self.show_info = show_info
@@ -88,6 +89,8 @@ class FilterWorker(QThread):
         # Границы времени в формате HH:MM:SS.mmm (лексикографически = хронологически)
         self.time_from = time_from
         self.time_to = time_to
+        # Match case как в Notepad++: по умолчанию off (re.IGNORECASE), при on - регистрозависимо
+        self.case_sensitive = case_sensitive
         self._is_cancelled = False
 
     def cancel(self):
@@ -124,9 +127,10 @@ class FilterWorker(QThread):
         if not search_text:
             new_indices = [i for i, e in enumerate(entries) if base_pass(e)]
         else:
+            regex_flags = 0 if self.case_sensitive else re.IGNORECASE
             search_regex = None
             try:
-                search_regex = re.compile(search_text, re.IGNORECASE)
+                search_regex = re.compile(search_text, regex_flags)
             except re.error:
                 search_regex = None
 
@@ -135,6 +139,12 @@ class FilterWorker(QThread):
                 new_indices = [
                     i for i, e in enumerate(entries)
                     if base_pass(e) and match(e.full_line)
+                ]
+            elif self.case_sensitive:
+                # literal fallback, регистр учитываем
+                new_indices = [
+                    i for i, e in enumerate(entries)
+                    if base_pass(e) and search_text in e.full_line
                 ]
             else:
                 search_lower = search_text.lower()
