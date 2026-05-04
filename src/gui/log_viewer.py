@@ -243,6 +243,9 @@ class LogViewerWidget(QWidget):
         self.lbl_stats = QLabel("Загрузка...")
         stats_layout.addWidget(self.lbl_stats)
         stats_layout.addStretch()
+        # Информация о выделении: строка, время, Δt от предыдущей
+        self.lbl_selection_info = QLabel("")
+        stats_layout.addWidget(self.lbl_selection_info)
 
         layout.addWidget(self.stats_frame)
 
@@ -886,6 +889,7 @@ class LogViewerWidget(QWidget):
         if not selected_indexes:
             self.details_view.clear()
             self.details_view.setExtraSelections([])
+            self._update_selection_info([])
             return
         selected_indexes.sort(key=lambda x: x.row())
         display_indexes = selected_indexes[:50]
@@ -900,6 +904,69 @@ class LogViewerWidget(QWidget):
             full_text += f"\n... и ещё {len(selected_indexes) - 50} выделенных строк не показано."
         self.details_view.setPlainText(full_text)
         self._highlight_search_matches()
+        self._update_selection_info(selected_indexes)
+
+    def _update_selection_info(self, selected_indexes):
+        """Показывает в правой части статус-бара: строка #N, время, Δt от предыдущей строки."""
+        if not selected_indexes:
+            self.lbl_selection_info.setText("")
+            return
+
+        if len(selected_indexes) > 1:
+            self.lbl_selection_info.setText(f"Выделено строк: {len(selected_indexes)}")
+            return
+
+        idx = selected_indexes[0]
+        real_index = self.model.get_real_index(idx.row())
+        if real_index is None:
+            self.lbl_selection_info.setText("")
+            return
+        entries = self.model._entries
+        if not (0 <= real_index < len(entries)):
+            self.lbl_selection_info.setText("")
+            return
+        entry = entries[real_index]
+
+        parts = [f"Строка #{real_index + 1}"]
+        if entry.timestamp:
+            parts.append(f"время {entry.timestamp}")
+            # Δt от предыдущей записи с непустым timestamp
+            prev_ts = None
+            for i in range(real_index - 1, -1, -1):
+                if entries[i].timestamp:
+                    prev_ts = entries[i].timestamp
+                    break
+            if prev_ts:
+                delta_ms = self._timestamp_delta_ms(prev_ts, entry.timestamp)
+                if delta_ms is not None:
+                    parts.append(f"Δt = {self._format_delta_ms(delta_ms)} от пред.")
+
+        self.lbl_selection_info.setText(" | ".join(parts))
+
+    @staticmethod
+    def _timestamp_delta_ms(ts_from, ts_to):
+        """ts в формате HH:MM:SS.mmm. Возвращает разницу в миллисекундах (может быть отрицательной)."""
+        try:
+            def to_ms(ts):
+                h, m, s_ms = ts.split(':')
+                s, ms = s_ms.split('.')
+                return ((int(h) * 3600 + int(m) * 60 + int(s)) * 1000 + int(ms))
+            return to_ms(ts_to) - to_ms(ts_from)
+        except (ValueError, IndexError):
+            return None
+
+    @staticmethod
+    def _format_delta_ms(ms):
+        """Форматирует мс в человеко-читаемый вид: +15ms / +1.2s / +3m / +1.05h."""
+        sign = '+' if ms >= 0 else '-'
+        a = abs(ms)
+        if a < 1000:
+            return f"{sign}{a}ms"
+        if a < 60_000:
+            return f"{sign}{a/1000:.2f}s"
+        if a < 3_600_000:
+            return f"{sign}{a/60_000:.1f}m"
+        return f"{sign}{a/3_600_000:.2f}h"
 
     @staticmethod
     def _prettify_json_in_text(text):
