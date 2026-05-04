@@ -6,12 +6,13 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPu
                              QLineEdit, QLabel, QFileDialog, QProgressBar,
                              QMessageBox, QStyle, QFrame, QCheckBox, QApplication)
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QIcon, QKeySequence, QCloseEvent
+from PyQt6.QtGui import QFont, QIcon, QKeySequence, QCloseEvent, QShortcut
 
 from config import THEMES, APP_VERSION, load_settings, save_settings
 from gui.log_viewer import LogViewerWidget
 from gui.tab_manager import SplitManager
 from gui.settings import SettingsDialog
+from gui.help_dialog import HelpDialog
 
 
 def resource_path(relative_path):
@@ -58,6 +59,11 @@ class MainWindow(QMainWindow):
         # Flag to prevent recursive updates when syncing UI
         self.updating_ui = False
 
+        # F1 - открыть справку (стандартный шорткат)
+        sc_help = QShortcut(QKeySequence(Qt.Key.Key_F1), self)
+        sc_help.setContext(Qt.ShortcutContext.WindowShortcut)
+        sc_help.activated.connect(self.open_help)
+
         # Restore session
         self.restore_session()
 
@@ -83,6 +89,9 @@ class MainWindow(QMainWindow):
         self.btn_open.clicked.connect(self.open_file_dialog)
         self.btn_settings = QPushButton("Settings")
         self.btn_settings.clicked.connect(self.open_settings)
+        self.btn_help = QPushButton("Справка")
+        self.btn_help.setToolTip("Открыть окно со справкой по функционалу (F1)")
+        self.btn_help.clicked.connect(self.open_help)
 
         self.chk_info = QCheckBox("INFO")
         self.chk_info.setChecked(True)
@@ -108,7 +117,7 @@ class MainWindow(QMainWindow):
 
     def detach_widgets(self):
         widgets = [
-            self.btn_open, self.btn_settings,
+            self.btn_open, self.btn_settings, self.btn_help,
             self.chk_info, self.chk_debug, self.chk_warn, self.chk_error,
             self.chk_group,
             self.progress_bar,
@@ -164,6 +173,7 @@ class MainWindow(QMainWindow):
 
         tb_layout.addWidget(self.btn_open)
         tb_layout.addWidget(self.btn_settings)
+        tb_layout.addWidget(self.btn_help)
         tb_layout.addSpacing(20)
         tb_layout.addWidget(self.chk_info)
         tb_layout.addWidget(self.chk_debug)
@@ -197,6 +207,7 @@ class MainWindow(QMainWindow):
         sb_layout.addSpacing(10)
         sb_layout.addWidget(self.btn_open)
         sb_layout.addWidget(self.btn_settings)
+        sb_layout.addWidget(self.btn_help)
         sb_layout.addSpacing(10)
         sb_layout.addWidget(QLabel("FILTERS"))
         sb_layout.addWidget(self.chk_info)
@@ -289,6 +300,10 @@ class MainWindow(QMainWindow):
             self.apply_theme(theme)
             self.save_current_settings()
 
+    def open_help(self):
+        dlg = HelpDialog(self)
+        dlg.exec()
+
     def on_zoom_request(self, delta):
         if delta > 0:
             self.current_font_size = min(24, self.current_font_size + 1)
@@ -326,8 +341,11 @@ class MainWindow(QMainWindow):
         self.btn_open.setEnabled(True)
 
     def on_active_tab_changed(self, viewer):
-        # UI updates if needed
-        pass
+        # Показываем полный путь активного файла в заголовке окна (стиль Notepad++)
+        if viewer is not None and hasattr(viewer, 'file_path'):
+            self.setWindowTitle(f"{viewer.file_path} - Log Analyzer v{APP_VERSION}")
+        else:
+            self.setWindowTitle(f"Log Analyzer v{APP_VERSION}")
 
     def on_global_filter_changed(self):
         if self.updating_ui:
