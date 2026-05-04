@@ -7,7 +7,7 @@ from config import THEMES, APP_VERSION
 class SettingsDialog(QDialog):
     def __init__(self, current_theme, current_font_size, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Settings")
+        self.setWindowTitle("Настройки")
         self.resize(350, 200)
 
         # Apply Theme to Dialog
@@ -47,8 +47,8 @@ class SettingsDialog(QDialog):
         self.font_spin.setRange(8, 24)
         self.font_spin.setValue(current_font_size)
 
-        form.addRow("Theme:", self.theme_combo)
-        form.addRow("Font Size:", self.font_spin)
+        form.addRow("Тема:", self.theme_combo)
+        form.addRow("Размер шрифта:", self.font_spin)
 
         layout.addLayout(form)
 
@@ -57,14 +57,14 @@ class SettingsDialog(QDialog):
         version_frame.setFrameShape(QFrame.Shape.StyledPanel)
         version_layout = QVBoxLayout(version_frame)
 
-        self.lbl_version = QLabel(f"Current Version: {APP_VERSION}")
+        self.lbl_version = QLabel(f"Текущая версия: {APP_VERSION}")
         version_layout.addWidget(self.lbl_version)
         layout.addWidget(version_frame)
 
         btn_box = QHBoxLayout()
-        btn_ok = QPushButton("OK")
+        btn_ok = QPushButton("ОК")
         btn_ok.clicked.connect(self.accept)
-        btn_cancel = QPushButton("Cancel")
+        btn_cancel = QPushButton("Отмена")
         btn_cancel.clicked.connect(self.reject)
 
         btn_box.addWidget(btn_ok)

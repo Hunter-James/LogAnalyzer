@@ -85,9 +85,9 @@ class MainWindow(QMainWindow):
         self.split_manager.activeTabChanged.connect(self.on_active_tab_changed)
 
     def create_widgets(self):
-        self.btn_open = QPushButton("Open File")
+        self.btn_open = QPushButton("Открыть файл")
         self.btn_open.clicked.connect(self.open_file_dialog)
-        self.btn_settings = QPushButton("Settings")
+        self.btn_settings = QPushButton("Настройки")
         self.btn_settings.clicked.connect(self.open_settings)
         self.btn_help = QPushButton("Справка")
         self.btn_help.setToolTip("Открыть окно со справкой по функционалу (F1)")
@@ -209,7 +209,7 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.btn_settings)
         sb_layout.addWidget(self.btn_help)
         sb_layout.addSpacing(10)
-        sb_layout.addWidget(QLabel("FILTERS"))
+        sb_layout.addWidget(QLabel("ФИЛЬТРЫ"))
         sb_layout.addWidget(self.chk_info)
         sb_layout.addWidget(self.chk_debug)
         sb_layout.addWidget(self.chk_warn)
@@ -313,8 +313,10 @@ class MainWindow(QMainWindow):
         self.save_current_settings()
 
     def open_file_dialog(self):
-        file_names, _ = QFileDialog.getOpenFileNames(self, "Open Log File", "",
-                                                     "Log Files (*.log *.txt);;All Files (*)")
+        file_names, _ = QFileDialog.getOpenFileNames(
+            self, "Открыть лог-файл", "",
+            "Лог-файлы (*.log *.txt);;Все файлы (*)"
+        )
         for file_name in file_names:
             self.load_file(file_name)
 

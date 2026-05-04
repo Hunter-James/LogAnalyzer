@@ -1,5 +1,7 @@
 import os
+import sys
 import ctypes
+import subprocess
 from PyQt6.QtWidgets import (QTabWidget, QSplitter, QWidget, QVBoxLayout, QMenu,
                              QTabBar, QApplication)
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QTimer
@@ -154,19 +156,31 @@ class EditorTabWidget(QTabWidget):
             self.tab_bar.update()
 
         menu = QMenu(self)
-        action_close = menu.addAction("Close Tab")
+        action_close = menu.addAction("Закрыть вкладку")
 
         action_close_selected = None
         if len(self.tab_bar.selected_indices) > 1:
-            action_close_selected = menu.addAction(f"Close Selected Tabs ({len(self.tab_bar.selected_indices)})")
+            action_close_selected = menu.addAction(
+                f"Закрыть выделенные ({len(self.tab_bar.selected_indices)})"
+            )
 
         menu.addSeparator()
-        action_close_others = menu.addAction("Close Other Tabs")
-        action_close_left = menu.addAction("Close Tabs to the Left")
-        action_close_right = menu.addAction("Close Tabs to the Right")
-        action_close_all = menu.addAction("Close All Tabs")
+        action_close_others = menu.addAction("Закрыть остальные")
+        action_close_left = menu.addAction("Закрыть слева")
+        action_close_right = menu.addAction("Закрыть справа")
+        action_close_all = menu.addAction("Закрыть все")
         menu.addSeparator()
-        action_move = menu.addAction("Move to Other View")
+        action_move = menu.addAction("Переместить в другую панель")
+
+        # Пункты для конкретного файла - только если у вкладки есть file_path
+        action_open_in_explorer = None
+        action_copy_path = None
+        widget = self.widget(index)
+        file_path = getattr(widget, 'file_path', None)
+        if file_path:
+            menu.addSeparator()
+            action_open_in_explorer = menu.addAction("Открыть в проводнике")
+            action_copy_path = menu.addAction("Копировать полный путь")
 
         action = menu.exec(self.tabBar().mapToGlobal(point))
 
@@ -188,6 +202,21 @@ class EditorTabWidget(QTabWidget):
             self._close_multiple_tabs(range(self.count()))
         elif action == action_move:
             self.moveTabRequested.emit(index)
+        elif action == action_open_in_explorer and file_path:
+            self._open_in_explorer(file_path)
+        elif action == action_copy_path and file_path:
+            QApplication.clipboard().setText(file_path)
+
+    def _open_in_explorer(self, file_path):
+        """Открывает Проводник Windows с выделенным файлом (как в VS Code 'Reveal in Explorer')."""
+        normalized = os.path.normpath(file_path)
+        if sys.platform == 'win32':
+            # /select, выделит файл в открывшемся окне Проводника
+            subprocess.Popen(['explorer', f'/select,{normalized}'])
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', '-R', normalized])
+        else:
+            subprocess.Popen(['xdg-open', os.path.dirname(normalized)])
 
     def on_current_changed(self, index):
         if index >= 0:

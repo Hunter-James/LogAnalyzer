@@ -73,9 +73,9 @@ class LogViewerWidget(QWidget):
         search_layout = QHBoxLayout(self.search_frame)
         search_layout.setContentsMargins(5, 5, 5, 5)
 
-        search_layout.addWidget(QLabel("Search:"))
+        search_layout.addWidget(QLabel("Поиск:"))
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search in this file...")
+        self.search_input.setPlaceholderText("Поиск по этому файлу...")
         self.search_input.textChanged.connect(self.on_search_text_changed)
         search_layout.addWidget(self.search_input)
 
@@ -189,7 +189,7 @@ class LogViewerWidget(QWidget):
         stats_layout = QHBoxLayout(self.stats_frame)
         stats_layout.setContentsMargins(5, 2, 5, 2)
 
-        self.lbl_stats = QLabel("Loading...")
+        self.lbl_stats = QLabel("Загрузка...")
         stats_layout.addWidget(self.lbl_stats)
         stats_layout.addStretch()
 
@@ -221,8 +221,8 @@ class LogViewerWidget(QWidget):
 
     def on_load_finished(self, entries, stats, error_msg):
         if error_msg:
-            QMessageBox.critical(self, "Error", f"Failed to load file:\n{error_msg}")
-            self.lbl_stats.setText("Error loading file")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить файл:\n{error_msg}")
+            self.lbl_stats.setText("Ошибка загрузки файла")
             self.loadingFinished.emit()
             return
 
@@ -314,7 +314,13 @@ class LogViewerWidget(QWidget):
 
     def update_stats_text(self):
         total = sum(self.stats.values())
-        text = f"Total: {total:,} | Info: {self.stats.get('INFO', 0):,} | Error: {self.stats.get('ERROR', 0):,} | Debug: {self.stats.get('DEBUG', 0):,} | Warn: {self.stats.get('WARN', 0):,}"
+        text = (
+            f"Всего: {total:,} | "
+            f"INFO: {self.stats.get('INFO', 0):,} | "
+            f"ERROR: {self.stats.get('ERROR', 0):,} | "
+            f"DEBUG: {self.stats.get('DEBUG', 0):,} | "
+            f"WARN: {self.stats.get('WARN', 0):,}"
+        )
         self.lbl_stats.setText(text)
 
     def apply_theme(self, theme_name, font_size):
@@ -677,7 +683,7 @@ class LogViewerWidget(QWidget):
             text = self.model.data(idx, Qt.ItemDataRole.UserRole)
             full_text += text + "\n" + "=" * 80 + "\n"
         if len(selected_indexes) > 50:
-            full_text += f"\n... and {len(selected_indexes) - 50} more items selected."
+            full_text += f"\n... и ещё {len(selected_indexes) - 50} выделенных строк не показано."
         self.details_view.setPlainText(full_text)
         self._highlight_search_matches()
 
