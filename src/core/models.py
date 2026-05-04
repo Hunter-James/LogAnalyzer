@@ -92,6 +92,15 @@ class LogModel(QAbstractListModel):
         self.endResetModel()
         self.apply_filters_async()
 
+    def append_entries(self, new_entries):
+        """Добавляет записи в конец без полного reset модели. Используется в tail-режиме."""
+        if not new_entries:
+            return
+        self._entries.extend(new_entries)
+        # Полный фильтр - проще и корректнее, чем инкрементально вычислять что показывать.
+        # FilterWorker крутится в отдельном потоке, так что UI не повиснет.
+        self.apply_filters_async()
+
     def update_filters(self, show_info, show_debug, show_error, show_warn,
                        search_text, group_dupes=False, loggers=None,
                        time_from=None, time_to=None, case_sensitive=False):

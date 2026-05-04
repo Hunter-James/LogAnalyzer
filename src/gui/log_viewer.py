@@ -10,7 +10,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColor, QShortcut
 
 from core.models import LogModel
-from core.workers import LogLoader
+from core.workers import LogLoader, IncrementalLogParser
 from gui.custom_widgets import ScalableListView, ScalableTextEdit, MarkerScrollBar
 from config import THEMES
 
@@ -37,6 +37,11 @@ class LogViewerWidget(QWidget):
         self.preserved_real_index = None
         # Позиция в исходном файле в байтах (нужна для tail-режима)
         self._tail_position = 0
+        # Парсер для tail - хранит open_entry между порциями новых строк
+        self._tail_parser = None
+        self._tail_timer = None
+        # Файл архивирован - tail для него не имеет смысла
+        self._is_archive = file_path.lower().endswith(('.gz', '.zip'))
 
         # Все логгеры, обнаруженные в файле, и подмножество включённых
         self.all_loggers = []
@@ -141,6 +146,29 @@ class LogViewerWidget(QWidget):
         self.time_to.textChanged.connect(self._on_time_changed)
         search_layout.addWidget(self.time_to)
 
+        # Tail-режим: следим за дописанием файла. Для архивов отключаем.
+        self.btn_follow = QToolButton()
+        self.btn_follow.setText("⏵ Следить")
+        self.btn_follow.setCheckable(True)
+        self.btn_follow.setStyleSheet("""
+            QToolButton { padding: 4px 10px; border: 1px solid #888; border-radius: 3px; }
+            QToolButton:hover { border-color: #bbb; }
+            QToolButton:checked {
+                background-color: #2E8B57; color: #FFFFFF; border: 1px solid #1E5C3A;
+            }
+            QToolButton:checked:hover { background-color: #3FA068; }
+            QToolButton:disabled { color: #888; }
+        """)
+        self.btn_follow.setToolTip(
+            "Следить за дописыванием файла (tail -f).\n"
+            "Новые строки автоматически подгружаются и появляются в конце."
+        )
+        if self._is_archive:
+            self.btn_follow.setEnabled(False)
+            self.btn_follow.setToolTip("Tail-режим недоступен для архивов (.gz, .zip)")
+        self.btn_follow.toggled.connect(self._on_follow_toggled)
+        search_layout.addWidget(self.btn_follow)
+
         # Кнопка для сохранения результатов поиска в журнал
         self.btn_save_search = QPushButton("Добавить в журнал")
         self.btn_save_search.clicked.connect(self.on_save_search_clicked)
@@ -243,6 +271,102 @@ class LogViewerWidget(QWidget):
 
         # Apply initial filters
         self.refresh_view()
+
+    # ----- Tail / follow mode -----
+
+    def _on_follow_toggled(self, checked):
+        if checked:
+            self._start_following()
+        else:
+            self._stop_following()
+
+    def _start_following(self):
+        """Запускает периодический опрос файла на предмет дописывания."""
+        if self._is_archive:
+            return
+        # Парсер с пустым open_entry - последняя запись из исходного загрузка уже закрыта
+        self._tail_parser = IncrementalLogParser()
+        if self._tail_timer is None:
+            self._tail_timer = QTimer(self)
+            self._tail_timer.setInterval(1000)  # опрос раз в секунду
+            self._tail_timer.timeout.connect(self._tail_check)
+        self._tail_timer.start()
+        self.btn_follow.setText("⏸ Остановить")
+
+    def _stop_following(self):
+        if self._tail_timer is not None:
+            self._tail_timer.stop()
+        self._tail_parser = None
+        self.btn_follow.setText("⏵ Следить")
+
+    def _tail_check(self):
+        """Опрос файла. Если размер вырос - дочитываем новые байты, парсим, добавляем в модель.
+        Если файл не рос с прошлого тика, закрываем "висящую" запись чтобы она показалась."""
+        if self._is_archive:
+            return
+        try:
+            current_size = os.path.getsize(self.file_path)
+        except OSError:
+            return  # файл удалён/недоступен
+
+        if current_size < self._tail_position:
+            # Файл "укоротили" (rotate, truncate) - читаем заново с начала
+            self._tail_position = 0
+            self._tail_parser = IncrementalLogParser()
+
+        if current_size == self._tail_position:
+            # Ничего нового - закрываем висящую запись чтобы она появилась в списке
+            quiet_entry = self._tail_parser.take_open()
+            if quiet_entry is not None:
+                self._append_tail_entries([quiet_entry])
+            return
+
+        try:
+            with open(self.file_path, 'rb') as f:
+                f.seek(self._tail_position)
+                chunk = f.read(current_size - self._tail_position)
+        except OSError:
+            return
+
+        self._tail_position = current_size
+        text = chunk.decode('utf-8', errors='replace')
+        # split, сохраняя \n чтобы не сломать last_position при лишних/недостающих байтах
+        lines = text.splitlines(keepends=True)
+        if not lines:
+            return
+
+        new_closed = self._tail_parser.feed_lines(lines)
+        if new_closed:
+            self._append_tail_entries(new_closed)
+
+    def _append_tail_entries(self, new_entries):
+        """Общая логика добавления tail-записей: stats, model, новые логгеры, auto-scroll."""
+        if not new_entries:
+            return
+        for e in new_entries:
+            if e.level in self.stats:
+                self.stats[e.level] = self.stats.get(e.level, 0) + 1
+
+        # Был ли пользователь у нижнего края - тогда auto-scroll после фильтра
+        sb = self.log_view.verticalScrollBar()
+        was_at_bottom = sb.value() >= sb.maximum() - 5
+
+        self.model.append_entries(new_entries)
+
+        # Новые компоненты - подбираем их в меню "Компоненты"
+        new_loggers = {e.logger for e in new_entries if e.logger} - set(self.all_loggers)
+        if new_loggers:
+            for lg in sorted(new_loggers):
+                self.all_loggers.append(lg)
+                self.active_loggers.add(lg)
+            self.all_loggers.sort()
+            self._rebuild_loggers_menu()
+
+        self.update_stats_text()
+        self.statsChanged.emit(self.stats)
+
+        if was_at_bottom:
+            QTimer.singleShot(50, self.log_view.scrollToBottom)
 
     def _collect_loggers(self, entries):
         """Собирает уникальные имена логгеров и пересобирает меню фильтра."""
