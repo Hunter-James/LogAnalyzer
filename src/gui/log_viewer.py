@@ -27,6 +27,8 @@ class LogViewerWidget(QWidget):
     MAX_JOURNAL_LINE_PREVIEW = 300
     MAX_JOURNAL_SEARCHES = 50
     MAX_DETAIL_HIGHLIGHTS = 1000
+    # Сколько строк показывать под каждой партией в дереве (lazy)
+    MAX_BATCH_TREE_ROWS = 1000
 
     def __init__(self, file_path, theme_name, font_size, bookmarks=None,
                  ui_features=None, parent=None):
@@ -252,6 +254,16 @@ class LogViewerWidget(QWidget):
         self.search_journal_tree.customContextMenuRequested.connect(self.show_journal_context_menu)
         self.search_journal_tree.itemDoubleClicked.connect(self.on_journal_item_double_clicked)
         self.bottom_tabs.addTab(self.search_journal_tree, "Поиск")
+
+        # Batches Tree - дерево партий с lazy-load дочерних строк
+        self.batches_tree = QTreeWidget()
+        self.batches_tree.setHeaderHidden(True)
+        self.batches_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.batches_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.batches_tree.customContextMenuRequested.connect(self._show_batches_context_menu)
+        self.batches_tree.itemDoubleClicked.connect(self._on_batches_tree_item_double_clicked)
+        self.batches_tree.itemExpanded.connect(self._on_batches_tree_item_expanded)
+        self.bottom_tabs.addTab(self.batches_tree, "Партии")
 
         self.splitter.addWidget(self.log_view)
         self.splitter.addWidget(self.bottom_tabs)
@@ -514,10 +526,11 @@ class LogViewerWidget(QWidget):
     # ----- Партии (сегментация по setCurrentBatch / api/close) -----
 
     def _collect_batches(self):
-        """Подбирает summary партий из модели и пересобирает меню фильтра."""
+        """Подбирает summary партий из модели и пересобирает меню + дерево фильтра."""
         self.all_batches = self.model.get_batch_summary()
         self.active_batches = {bid for (bid, _c, _f, _l) in self.all_batches}
         self._rebuild_batches_menu()
+        self._rebuild_batches_tree()
 
     def _rebuild_batches_menu(self):
         self.batches_menu.clear()
@@ -581,6 +594,149 @@ class LogViewerWidget(QWidget):
         else:
             self.btn_batches.setText(f"Партии: {len(self.active_batches)}/{total}")
 
+    # ----- Дерево партий во вкладке "Партии" -----
+
+    def _rebuild_batches_tree(self):
+        """Перестраивает дерево партий: только заголовки, дочерние строки lazy-load."""
+        self.batches_tree.clear()
+        if not self.all_batches:
+            return
+
+        self.batches_tree.setUpdatesEnabled(False)
+        try:
+            for bid, count, first_ts, last_ts in self.all_batches:
+                if not bid:
+                    label = f"Вне партии  —  {count:,} строк  ({first_ts} → {last_ts})"
+                else:
+                    label = f"Партия {bid}  —  {count:,} строк  ({first_ts} → {last_ts})"
+                root = QTreeWidgetItem(self.batches_tree, [label])
+                # Помечаем тип узла для обработчиков
+                root.setData(0, Qt.ItemDataRole.UserRole, ('batch', bid))
+                # Фейк-чайлд - чтобы появился треугольник раскрытия. Заменим на реальные при expand.
+                if count > 0:
+                    placeholder = QTreeWidgetItem(root, ["…"])
+                    placeholder.setData(0, Qt.ItemDataRole.UserRole, ('placeholder', None))
+        finally:
+            self.batches_tree.setUpdatesEnabled(True)
+
+    def _on_batches_tree_item_expanded(self, item):
+        """Lazy-load: заполняем строки партии только когда юзер раскрывает её узел."""
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data or data[0] != 'batch':
+            return
+        # Уже наполнено реальными children? (placeholder только один и пустой)
+        if item.childCount() != 1:
+            return
+        first = item.child(0)
+        first_data = first.data(0, Qt.ItemDataRole.UserRole)
+        if not first_data or first_data[0] != 'placeholder':
+            return  # уже реальные дети
+
+        # Удаляем placeholder и собираем реальные строки
+        item.takeChildren()
+
+        bid = data[1]
+        entries = self.model._entries
+        bfi = self.model._batch_for_index
+        max_rows = self.MAX_BATCH_TREE_ROWS
+        max_preview = self.MAX_JOURNAL_LINE_PREVIEW
+
+        new_items = []
+        total_in_batch = 0
+        for ri in range(len(bfi)):
+            if bfi[ri] != bid:
+                continue
+            total_in_batch += 1
+            if len(new_items) >= max_rows:
+                continue  # дальше только считаем для финальной пометки
+            e = entries[ri]
+            line = e.full_line.strip()
+            if len(line) > max_preview:
+                line = line[:max_preview] + '...'
+            text = f"Строка {ri + 1}: {line}"
+            ci = QTreeWidgetItem([text])
+            ci.setData(0, Qt.ItemDataRole.UserRole, ('row', ri))
+            new_items.append(ci)
+
+        self.batches_tree.setUpdatesEnabled(False)
+        try:
+            item.addChildren(new_items)
+            if total_in_batch > max_rows:
+                hidden = total_in_batch - max_rows
+                note = QTreeWidgetItem(
+                    item, [f"… ещё {hidden:,} строк не показано (лимит {max_rows} для производительности)"]
+                )
+                note.setData(0, Qt.ItemDataRole.UserRole, ('note', None))
+        finally:
+            self.batches_tree.setUpdatesEnabled(True)
+
+    def _on_batches_tree_item_double_clicked(self, item, column):
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        kind, payload = data
+        if kind == 'batch':
+            # Двойной клик по партии = "показать только эту партию"
+            self._filter_to_single_batch(payload)
+        elif kind == 'row':
+            # Двойной клик по строке = переход к ней (как в журнале поиска)
+            real_index = payload
+            row = self.model.find_row_by_real_index(real_index)
+            if row != -1:
+                idx = self.model.index(row)
+                self.log_view.setCurrentIndex(idx)
+                self.log_view.scrollTo(idx, QAbstractItemView.ScrollHint.PositionAtCenter)
+                self.log_view.setFocus()
+            else:
+                QMessageBox.information(
+                    self, "Информация",
+                    "Эта строка скрыта текущими фильтрами (уровни / поиск / время).\n"
+                    "Очистите фильтры или включите соответствующую партию для перехода к ней."
+                )
+
+    def _filter_to_single_batch(self, bid):
+        """Оставляет видимой только указанную партию. Синхронизирует чекбоксы меню."""
+        self.active_batches = {bid}
+        for b, cb in self.batch_checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(b == bid)
+            cb.blockSignals(False)
+        self._update_batches_button_label()
+        self.refresh_view()
+
+    def _show_batches_context_menu(self, pos):
+        item = self.batches_tree.itemAt(pos)
+        menu = QMenu(self)
+        act_only = None
+        act_show_all = menu.addAction("Показать все партии")
+        if item is not None:
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data and data[0] == 'batch':
+                act_only = menu.addAction("Показать только эту партию")
+        menu.addSeparator()
+        act_expand_all = menu.addAction("Раскрыть всё")
+        act_collapse_all = menu.addAction("Свернуть всё")
+
+        action = menu.exec(self.batches_tree.mapToGlobal(pos))
+        if action is None:
+            return
+        if action == act_show_all:
+            self.active_batches = {bid for (bid, _c, _f, _l) in self.all_batches}
+            for b, cb in self.batch_checkboxes.items():
+                cb.blockSignals(True)
+                cb.setChecked(True)
+                cb.blockSignals(False)
+            self._update_batches_button_label()
+            self.refresh_view()
+        elif action == act_only and item is not None:
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data and data[0] == 'batch':
+                self._filter_to_single_batch(data[1])
+        elif action == act_expand_all:
+            self.batches_tree.expandAll()
+        elif action == act_collapse_all:
+            self.batches_tree.collapseAll()
+
     def update_stats_text(self):
         total = sum(self.stats.values())
         text = (
@@ -643,6 +799,11 @@ class LogViewerWidget(QWidget):
         self.btn_match_case.setVisible(self._ui_features["match_case"])
         self.btn_loggers.setVisible(self._ui_features["loggers_filter"])
         self.btn_batches.setVisible(self._ui_features["batches_filter"])
+
+        # Tab "Партии" - скрываем через тот же ui_features.batches_filter
+        batches_tab_idx = self.bottom_tabs.indexOf(self.batches_tree)
+        if batches_tab_idx != -1:
+            self.bottom_tabs.setTabVisible(batches_tab_idx, self._ui_features["batches_filter"])
         self.lbl_time.setVisible(self._ui_features["time_range"])
         self.time_from.setVisible(self._ui_features["time_range"])
         self.lbl_time_dash.setVisible(self._ui_features["time_range"])
