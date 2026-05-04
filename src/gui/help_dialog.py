@@ -1,19 +1,11 @@
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QTextBrowser, QPushButton
 from PyQt6.QtCore import Qt
 
-from config import APP_VERSION
+from config import APP_VERSION, THEMES
 
 
-HELP_HTML = r"""
-<style>
-    h1 { color: #4ec9b0; }
-    h2 { color: #569cd6; margin-top: 18px; border-bottom: 1px solid #444; padding-bottom: 3px; }
-    code, kbd { background: #2a2a2a; padding: 1px 5px; border-radius: 3px; font-family: Consolas, monospace; }
-    kbd { border: 1px solid #555; }
-    li { margin: 4px 0; }
-    .tip { color: #888; font-size: 11px; }
-</style>
-
+# HTML без <style> - стиль строится динамически из текущей темы (см. _build_help_css)
+HELP_BODY = r"""
 <h1>Log Analyzer — справка</h1>
 <p>Краткое руководство по функционалу. Версия приложения: {version}.</p>
 
@@ -50,7 +42,7 @@ HELP_HTML = r"""
 <ul>
   <li>Поле <b>Search</b> в каждой вкладке — локальный поиск по содержимому именно этого файла.</li>
   <li>Поддерживается обычный текст и <b>регулярные выражения</b>. Если ввод не парсится как regex, автоматически используется обычный поиск подстроки.</li>
-  <li>Кнопка <b>Aa</b> рядом с полем — переключатель <b>Match case</b> (учитывать регистр), как в Notepad++. По умолчанию выключен — поиск регистронезависимый.</li>
+  <li>Кнопка <b>Aa</b> рядом с полем — переключатель <b>Match case</b> (учитывать регистр), как в Notepad++. По умолчанию выключен — поиск регистронезависимый. <b>Активное состояние выделено синим фоном.</b></li>
   <li>Результаты фильтруют список — показываются только строки с совпадением.</li>
   <li>В нижнем окне <b>Выделение</b> совпадения подсвечиваются жёлтым; вид автоматически прокручивается к первому совпадению — удобно при длинных строках с агрегационными кодами.</li>
 </ul>
@@ -149,13 +141,92 @@ HELP_HTML = r"""
 """.replace("{version}", APP_VERSION)
 
 
-class HelpDialog(QDialog):
-    """Модальное окно со справкой по функционалу приложения."""
+def _adjust_color(hex_color, delta):
+    """Делает цвет светлее (+) или темнее (-) на delta (0-255)."""
+    h = hex_color.lstrip('#')
+    rgb = [int(h[i:i+2], 16) for i in (0, 2, 4)]
+    rgb = [max(0, min(255, c + delta)) for c in rgb]
+    return '#{:02x}{:02x}{:02x}'.format(*rgb)
 
-    def __init__(self, parent=None):
+
+def _is_light_bg(hex_color):
+    """True если фоновый цвет светлый (по человеческой формуле luminance)."""
+    h = hex_color.lstrip('#')
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 128
+
+
+def _build_help_html(theme_name):
+    """Собирает финальный HTML с CSS под текущую тему - чтобы текст и блоки code
+    были читаемы на любом фоне (тёмном/светлом/Windows 95/Hacker)."""
+    t = THEMES.get(theme_name, THEMES["Default"])
+    is_light = _is_light_bg(t['bg_main'])
+
+    # Фон code/kbd должен контрастировать с основным фоном:
+    # на светлой теме - чуть темнее, на тёмной - чуть светлее.
+    code_bg = _adjust_color(t['bg_main'], -25 if is_light else +30)
+    code_border = _adjust_color(t['bg_main'], -50 if is_light else +60)
+
+    style = f"""
+    <style>
+        body {{
+            color: {t['text_main']};
+            background-color: {t['bg_main']};
+            font-family: '{t['font_family']}', sans-serif;
+        }}
+        h1 {{ color: {t['accent']}; }}
+        h2 {{
+            color: {t['accent']};
+            margin-top: 18px;
+            border-bottom: 1px solid {t['border']};
+            padding-bottom: 3px;
+        }}
+        h3 {{ color: {t['accent']}; margin-top: 12px; }}
+        p, li {{ color: {t['text_main']}; }}
+        code, kbd {{
+            background-color: {code_bg};
+            color: {t['text_main']};
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-family: '{t['mono_font']}', Consolas, monospace;
+        }}
+        kbd {{ border: 1px solid {code_border}; }}
+        li {{ margin: 4px 0; }}
+        .tip {{ color: {t['text_muted']}; font-size: 11px; }}
+        a {{ color: {t['accent']}; }}
+    </style>
+    """
+    return style + HELP_BODY
+
+
+class HelpDialog(QDialog):
+    """Модальное окно со справкой по функционалу приложения.
+    Принимает текущую тему, чтобы корректно выглядеть и на светлых, и на тёмных схемах."""
+
+    def __init__(self, theme_name="Default", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Справка — Log Analyzer")
         self.resize(820, 720)
+
+        t = THEMES.get(theme_name, THEMES["Default"])
+
+        # Стилизуем сам диалог и кнопку Закрыть под тему - иначе на белой/Windows 95
+        # темах окно остаётся системно-серым и контрастирует с основным окном.
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {t['bg_main']};
+                color: {t['text_main']};
+            }}
+            QPushButton {{
+                background-color: {t['bg_panel']};
+                color: {t['text_main']};
+                border: 1px solid {t['border']};
+                padding: 6px 14px;
+                border-radius: 3px;
+            }}
+            QPushButton:hover {{ background-color: {t['selection']}; }}
+            QPushButton:default {{ border: 1px solid {t['accent']}; }}
+        """)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -163,7 +234,15 @@ class HelpDialog(QDialog):
 
         self.browser = QTextBrowser()
         self.browser.setOpenExternalLinks(True)
-        self.browser.setHtml(HELP_HTML)
+        self.browser.setStyleSheet(f"""
+            QTextBrowser {{
+                background-color: {t['bg_main']};
+                color: {t['text_main']};
+                border: none;
+                padding: 6px 12px;
+            }}
+        """)
+        self.browser.setHtml(_build_help_html(theme_name))
         layout.addWidget(self.browser, 1)
 
         btn_row = QHBoxLayout()

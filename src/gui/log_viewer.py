@@ -80,11 +80,34 @@ class LogViewerWidget(QWidget):
         search_layout.addWidget(self.search_input)
 
         # Match case (Aa) - точно как в Notepad++. По умолчанию off (регистронезависимо).
+        # Явный стиль: при включённом состоянии синий фон + белый текст -
+        # сразу видно, активна кнопка или нет, на любой теме.
         self.btn_match_case = QToolButton()
         self.btn_match_case.setText("Aa")
         self.btn_match_case.setCheckable(True)
-        self.btn_match_case.setToolTip("Учитывать регистр (Match case)")
-        self.btn_match_case.toggled.connect(lambda _: self.search_timer.start())
+        self.btn_match_case.setStyleSheet("""
+            QToolButton {
+                padding: 4px 10px;
+                font-weight: bold;
+                font-family: Consolas, 'Courier New', monospace;
+                border: 1px solid #888;
+                border-radius: 3px;
+                min-width: 24px;
+            }
+            QToolButton:hover {
+                border-color: #bbb;
+            }
+            QToolButton:checked {
+                background-color: #2A82DA;
+                color: #FFFFFF;
+                border: 1px solid #1858A0;
+            }
+            QToolButton:checked:hover {
+                background-color: #3A92EA;
+            }
+        """)
+        self._update_match_case_tooltip()
+        self.btn_match_case.toggled.connect(self._on_match_case_toggled)
         search_layout.addWidget(self.btn_match_case)
 
         # Кнопка-меню для фильтрации по логгеру/компоненту
@@ -358,6 +381,20 @@ class LogViewerWidget(QWidget):
 
     def on_search_text_changed(self, text):
         self.search_timer.start()
+
+    def _on_match_case_toggled(self, _checked):
+        self._update_match_case_tooltip()
+        self.search_timer.start()
+
+    def _update_match_case_tooltip(self):
+        if self.btn_match_case.isChecked():
+            self.btn_match_case.setToolTip(
+                "Match case: ВКЛ — регистр учитывается.\nНажмите чтобы выключить."
+            )
+        else:
+            self.btn_match_case.setToolTip(
+                "Match case: ВЫКЛ — регистр игнорируется.\nНажмите чтобы включить."
+            )
 
     def _on_time_changed(self):
         # Подкрашиваем поле красноватым, если ввод не парсится (пустое - всегда ОК)

@@ -301,7 +301,7 @@ class MainWindow(QMainWindow):
             self.save_current_settings()
 
     def open_help(self):
-        dlg = HelpDialog(self)
+        dlg = HelpDialog(self.current_theme_name, self)
         dlg.exec()
 
     def on_zoom_request(self, delta):
