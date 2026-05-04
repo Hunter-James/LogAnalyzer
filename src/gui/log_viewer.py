@@ -907,7 +907,9 @@ class LogViewerWidget(QWidget):
         self._update_selection_info(selected_indexes)
 
     def _update_selection_info(self, selected_indexes):
-        """Показывает в правой части статус-бара: строка #N, время, Δt от предыдущей строки."""
+        """Показывает в правой части статус-бара: строка #N, время, Δt от предыдущей видимой строки.
+        Δt считается между ВИДИМЫМИ записями (учитывая фильтры) - так пользователь видит
+        ту же дельту, что между двумя строками в списке, а не до скрытой DEBUG/ERROR."""
         if not selected_indexes:
             self.lbl_selection_info.setText("")
             return
@@ -917,7 +919,8 @@ class LogViewerWidget(QWidget):
             return
 
         idx = selected_indexes[0]
-        real_index = self.model.get_real_index(idx.row())
+        row = idx.row()
+        real_index = self.model.get_real_index(row)
         if real_index is None:
             self.lbl_selection_info.setText("")
             return
@@ -930,16 +933,22 @@ class LogViewerWidget(QWidget):
         parts = [f"Строка #{real_index + 1}"]
         if entry.timestamp:
             parts.append(f"время {entry.timestamp}")
-            # Δt от предыдущей записи с непустым timestamp
+            # Идём вверх по ВИДИМЫМ строкам (filtered_indices) до записи с timestamp
             prev_ts = None
-            for i in range(real_index - 1, -1, -1):
-                if entries[i].timestamp:
-                    prev_ts = entries[i].timestamp
+            for prev_row in range(row - 1, -1, -1):
+                prev_real = self.model.get_real_index(prev_row)
+                if prev_real is None:
+                    continue
+                prev_e = entries[prev_real]
+                if prev_e.timestamp:
+                    prev_ts = prev_e.timestamp
                     break
             if prev_ts:
                 delta_ms = self._timestamp_delta_ms(prev_ts, entry.timestamp)
                 if delta_ms is not None:
                     parts.append(f"Δt = {self._format_delta_ms(delta_ms)} от пред.")
+            else:
+                parts.append("Δt = — (первая видимая)")
 
         self.lbl_selection_info.setText(" | ".join(parts))
 
@@ -970,28 +979,35 @@ class LogViewerWidget(QWidget):
 
     @staticmethod
     def _prettify_json_in_text(text):
-        """В каждой строке ищет JSON-фрагмент (начиная с { или [) и заменяет на
-        форматированный с отступами. Если в строке нет валидного JSON - возвращается как есть."""
+        """В каждой строке ищет JSON-фрагмент (объект или массив) и заменяет на
+        форматированный с отступами. Перебирает ВСЕ позиции '{' и '[' пока не найдёт
+        валидный JSON - нужно потому что в типичной строке лога много '['
+        (`[INFO]`, `[Logger]`), и наивный поиск первого `[` всегда падает."""
         result_lines = []
         decoder = json.JSONDecoder()
         for line in text.split('\n'):
-            # Ищем самое раннее { или [ в строке
-            best_idx = -1
-            for ch in '{[':
-                pos = line.find(ch)
-                if pos != -1 and (best_idx == -1 or pos < best_idx):
-                    best_idx = pos
-            if best_idx == -1:
-                result_lines.append(line)
-                continue
-            try:
-                obj, end = decoder.raw_decode(line[best_idx:])
+            # Все позиции { и [ слева направо
+            positions = [i for i, ch in enumerate(line) if ch in '{[']
+            rebuilt = None
+            for pos in positions:
+                try:
+                    obj, end = decoder.raw_decode(line[pos:])
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                # Принимаем только объекты и массивы - чтобы не "форматировать"
+                # случайные числа/строки/true/null которые тоже валидный JSON
+                if not isinstance(obj, (dict, list)):
+                    continue
+                # Желательно нетривиальный размер - иначе [INFO] (если когда-нибудь
+                # станет валидным JSON-массивом) тоже пойдёт в форматирование
+                if isinstance(obj, dict) and len(obj) == 0:
+                    continue
+                if isinstance(obj, list) and len(obj) == 0:
+                    continue
                 pretty = json.dumps(obj, indent=2, ensure_ascii=False)
-                # prefix + отформатированный JSON + suffix (хвост строки после JSON)
-                rebuilt = line[:best_idx] + pretty + line[best_idx + end:]
-                result_lines.append(rebuilt)
-            except (json.JSONDecodeError, ValueError):
-                result_lines.append(line)
+                rebuilt = line[:pos] + pretty + line[pos + end:]
+                break
+            result_lines.append(rebuilt if rebuilt is not None else line)
         return '\n'.join(result_lines)
 
     def _highlight_search_matches(self):
