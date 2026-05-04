@@ -907,25 +907,40 @@ class LogViewerWidget(QWidget):
         self._update_selection_info(selected_indexes)
 
     def _update_selection_info(self, selected_indexes):
-        """Показывает в правой части статус-бара: строка #N, время, Δt от предыдущей видимой строки.
-        Δt считается между ВИДИМЫМИ записями (учитывая фильтры) - так пользователь видит
-        ту же дельту, что между двумя строками в списке, а не до скрытой DEBUG/ERROR."""
+        """Показывает в правой части статус-бара информацию о выделении:
+        - одна строка: '#N | время HH:MM:SS.mmm | Δt = +Xms от пред. с другим временем'.
+          Если есть подряд видимые строки с тем же timestamp - они НЕ считаются "пред.",
+          иначе Δt всегда был бы 0ms на цепочках логов внутри одного миллисекунда.
+        - несколько строк: длительность диапазона от первой выделенной до последней."""
         if not selected_indexes:
             self.lbl_selection_info.setText("")
             return
 
+        entries = self.model._entries
+
+        # Множественное выделение: показываем длительность диапазона
         if len(selected_indexes) > 1:
-            self.lbl_selection_info.setText(f"Выделено строк: {len(selected_indexes)}")
+            first_real = self.model.get_real_index(selected_indexes[0].row())
+            last_real = self.model.get_real_index(selected_indexes[-1].row())
+            text = f"Выделено строк: {len(selected_indexes)}"
+            if first_real is not None and last_real is not None:
+                first_ts = entries[first_real].timestamp
+                last_ts = entries[last_real].timestamp
+                if first_ts and last_ts:
+                    delta = self._timestamp_delta_ms(first_ts, last_ts)
+                    if delta is not None:
+                        text += (
+                            f" | диапазон {first_ts} → {last_ts}"
+                            f" | Δt = {self._format_delta_ms(delta)}"
+                        )
+            self.lbl_selection_info.setText(text)
             return
 
+        # Одна строка
         idx = selected_indexes[0]
         row = idx.row()
         real_index = self.model.get_real_index(row)
-        if real_index is None:
-            self.lbl_selection_info.setText("")
-            return
-        entries = self.model._entries
-        if not (0 <= real_index < len(entries)):
+        if real_index is None or not (0 <= real_index < len(entries)):
             self.lbl_selection_info.setText("")
             return
         entry = entries[real_index]
@@ -933,22 +948,36 @@ class LogViewerWidget(QWidget):
         parts = [f"Строка #{real_index + 1}"]
         if entry.timestamp:
             parts.append(f"время {entry.timestamp}")
-            # Идём вверх по ВИДИМЫМ строкам (filtered_indices) до записи с timestamp
+            # Идём вверх по ВИДИМЫМ строкам, пропуская такие же timestamp -
+            # ищем первую с ДРУГИМ временем (в одном миллисекунде может быть много строк).
             prev_ts = None
+            same_ts_count = 0
             for prev_row in range(row - 1, -1, -1):
                 prev_real = self.model.get_real_index(prev_row)
                 if prev_real is None:
                     continue
                 prev_e = entries[prev_real]
-                if prev_e.timestamp:
-                    prev_ts = prev_e.timestamp
-                    break
+                if not prev_e.timestamp:
+                    continue
+                if prev_e.timestamp == entry.timestamp:
+                    same_ts_count += 1
+                    continue
+                prev_ts = prev_e.timestamp
+                break
+
             if prev_ts:
                 delta_ms = self._timestamp_delta_ms(prev_ts, entry.timestamp)
                 if delta_ms is not None:
-                    parts.append(f"Δt = {self._format_delta_ms(delta_ms)} от пред.")
+                    label = f"Δt = {self._format_delta_ms(delta_ms)} от {prev_ts}"
+                    if same_ts_count > 0:
+                        label += f" (через {same_ts_count} с тем же временем)"
+                    parts.append(label)
+            elif same_ts_count > 0:
+                parts.append(
+                    f"Δt = 0ms (в этот же миллисекунду уже было {same_ts_count} строк выше)"
+                )
             else:
-                parts.append("Δt = — (первая видимая)")
+                parts.append("Δt = — (первая видимая с временем)")
 
         self.lbl_selection_info.setText(" | ".join(parts))
 
