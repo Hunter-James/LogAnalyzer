@@ -10,9 +10,10 @@ from core.entities import LogEntry
 
 # Шаблон строки лога: ВРЕМЯ [УРОВЕНЬ] [Логгер.метод]: ...
 # Захватываем имя логгера (часть до первой точки во втором [])
+# Между ]_и_[ может НЕ быть пробела (формат "[ERROR ][t.e.s.Foo]"), поэтому \s* а не \s+.
 LINE_PATTERN = re.compile(
     r'^(\d{2}:\d{2}:\d{2}\.\d{3})\s+'
-    r'\[\s*(INFO|DEBUG|ERROR|WARN)\s*\]\s+'
+    r'\[\s*(INFO|DEBUG|ERROR|WARN)\s*\]\s*'
     r'\[\s*([^\s.\]]+)'
 )
 
