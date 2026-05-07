@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QSplitter, QAbstractItemView,
                              QMessageBox, QApplication, QLineEdit, QHBoxLayout, QLabel, QFrame,
                              QPushButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QMenu,
                              QTreeWidgetItemIterator, QTextEdit, QToolButton, QCheckBox,
-                             QWidgetAction, QScrollArea)
+                             QWidgetAction, QScrollArea, QStackedWidget)
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColor, QShortcut
 
@@ -222,28 +222,63 @@ class LogViewerWidget(QWidget):
         # Bottom Tabs (Выделение / Журнал поиска)
         self.bottom_tabs = QTabWidget()
 
-        # Кнопка-toggle "Форматировать JSON" в углу tab-бара
-        self.btn_format_json = QToolButton()
-        self.btn_format_json.setText("{ } JSON")
-        self.btn_format_json.setCheckable(True)
-        self.btn_format_json.setStyleSheet("""
+        # Контейнер для кнопок в углу tab-бара (setCornerWidget берёт ровно один виджет)
+        corner_widget = QWidget()
+        corner_layout = QHBoxLayout(corner_widget)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.setSpacing(4)
+
+        toolbtn_qss = """
             QToolButton { padding: 3px 10px; border: 1px solid #888; border-radius: 3px; }
             QToolButton:hover { border-color: #bbb; }
             QToolButton:checked {
                 background-color: #2A82DA; color: #FFFFFF; border: 1px solid #1858A0;
             }
-        """)
+        """
+
+        # Кнопка-toggle "Форматировать JSON" - показывает JSON в виде текста с отступами
+        self.btn_format_json = QToolButton()
+        self.btn_format_json.setText("{ } JSON")
+        self.btn_format_json.setCheckable(True)
+        self.btn_format_json.setStyleSheet(toolbtn_qss)
         self.btn_format_json.setToolTip(
             "Форматировать JSON-фрагменты в окне 'Выделение' с отступами.\n"
             "Полезно для длинных HTTP-боди и подписанных запросов."
         )
-        self.btn_format_json.toggled.connect(lambda _: self._refresh_details_view())
-        self.bottom_tabs.setCornerWidget(self.btn_format_json, Qt.Corner.TopRightCorner)
+        self.btn_format_json.toggled.connect(self._on_json_format_toggled)
+        corner_layout.addWidget(self.btn_format_json)
 
-        # Details View
+        # Кнопка-toggle "Дерево" - показывает JSON как сворачиваемое дерево (как в Notepad++)
+        self.btn_json_tree = QToolButton()
+        self.btn_json_tree.setText("▶ Дерево")
+        self.btn_json_tree.setCheckable(True)
+        self.btn_json_tree.setStyleSheet(toolbtn_qss)
+        self.btn_json_tree.setToolTip(
+            "Показать JSON-фрагмент из выделенной строки как сворачиваемое дерево.\n"
+            "Двойной клик по узлу - свернуть/развернуть."
+        )
+        self.btn_json_tree.toggled.connect(self._on_json_tree_toggled)
+        corner_layout.addWidget(self.btn_json_tree)
+
+        self.bottom_tabs.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
+
+        # Details: stack из текстового вида и древовидного
+        self.details_stack = QStackedWidget()
+
         self.details_view = ScalableTextEdit()
         self.details_view.setReadOnly(True)
-        self.bottom_tabs.addTab(self.details_view, "Выделение")
+        self.details_stack.addWidget(self.details_view)
+
+        self.details_tree = QTreeWidget()
+        self.details_tree.setHeaderLabels(["Ключ", "Значение"])
+        self.details_tree.setColumnWidth(0, 280)
+        self.details_tree.setAlternatingRowColors(True)
+        self.details_tree.setUniformRowHeights(True)
+        self.details_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.details_tree.customContextMenuRequested.connect(self._show_details_tree_menu)
+        self.details_stack.addWidget(self.details_tree)
+
+        self.bottom_tabs.addTab(self.details_stack, "Выделение")
 
         # Search Journal Tree
         self.search_journal_tree = QTreeWidget()
@@ -770,6 +805,7 @@ class LogViewerWidget(QWidget):
         # Apply font to details view and search journal
         font = QFont(t['mono_font'], font_size)
         self.details_view.setFont(font)
+        self.details_tree.setFont(font)
         self.search_journal_tree.setFont(font)
 
         # Update model theme
@@ -829,8 +865,11 @@ class LogViewerWidget(QWidget):
         if not self._ui_features["tail_mode"] and self.btn_follow.isChecked():
             self.btn_follow.setChecked(False)
 
-        # Кнопка JSON в углу tab-бара
+        # Кнопки JSON в углу tab-бара (одна фича управляет обеими: формат + дерево)
         self.btn_format_json.setVisible(self._ui_features["json_format"])
+        self.btn_json_tree.setVisible(self._ui_features["json_format"])
+        if not self._ui_features["json_format"] and self.btn_json_tree.isChecked():
+            self.btn_json_tree.setChecked(False)
 
         # Δt и информация о выделении в статус-баре
         self.lbl_selection_info.setVisible(self._ui_features["selection_info"])
@@ -1217,32 +1256,183 @@ class LogViewerWidget(QWidget):
     def on_selection_changed(self, selected, deselected):
         self._refresh_details_view()
 
+    def _on_json_format_toggled(self, checked):
+        """{} JSON и Дерево взаимоисключающие - включение одного выключает другое."""
+        if checked and self.btn_json_tree.isChecked():
+            self.btn_json_tree.blockSignals(True)
+            self.btn_json_tree.setChecked(False)
+            self.btn_json_tree.blockSignals(False)
+        self._refresh_details_view()
+
+    def _on_json_tree_toggled(self, checked):
+        if checked and self.btn_format_json.isChecked():
+            self.btn_format_json.blockSignals(True)
+            self.btn_format_json.setChecked(False)
+            self.btn_format_json.blockSignals(False)
+        # Переключаем страницу stack: 0 = текст, 1 = дерево
+        self.details_stack.setCurrentIndex(1 if checked else 0)
+        self._refresh_details_view()
+
     def _refresh_details_view(self):
         """Перестраивает содержимое окна 'Выделение' на основе текущего выделения.
-        Учитывает кнопку 'Форматировать JSON'."""
+        Учитывает кнопки 'Форматировать JSON' и 'Дерево'."""
         selected_indexes = self.log_view.selectedIndexes()
         if not selected_indexes:
             self.details_view.clear()
             self.details_view.setExtraSelections([])
+            self.details_tree.clear()
             self._update_selection_info([])
             return
         selected_indexes.sort(key=lambda x: x.row())
-        display_indexes = selected_indexes[:50]
-        # Форматировать JSON только если фича включена в настройках И кнопка нажата
-        format_json = (
-            self._ui_features.get("json_format", True) and self.btn_format_json.isChecked()
-        )
-        full_text = ""
-        for idx in display_indexes:
-            text = self.model.data(idx, Qt.ItemDataRole.UserRole)
-            if format_json:
-                text = self._prettify_json_in_text(text)
-            full_text += text + "\n" + "=" * 80 + "\n"
-        if len(selected_indexes) > 50:
-            full_text += f"\n... и ещё {len(selected_indexes) - 50} выделенных строк не показано."
-        self.details_view.setPlainText(full_text)
-        self._highlight_search_matches()
+
+        json_feature_on = self._ui_features.get("json_format", True)
+        tree_mode = json_feature_on and self.btn_json_tree.isChecked()
+
+        if tree_mode:
+            # Берём первую выделенную строку и парсим из неё JSON в дерево.
+            first_idx = selected_indexes[0]
+            text = self.model.data(first_idx, Qt.ItemDataRole.UserRole) or ""
+            extras = len(selected_indexes) - 1
+            self._populate_json_tree(text, extras_count=extras)
+        else:
+            display_indexes = selected_indexes[:50]
+            format_json = json_feature_on and self.btn_format_json.isChecked()
+            full_text = ""
+            for idx in display_indexes:
+                text = self.model.data(idx, Qt.ItemDataRole.UserRole)
+                if format_json:
+                    text = self._prettify_json_in_text(text)
+                full_text += text + "\n" + "=" * 80 + "\n"
+            if len(selected_indexes) > 50:
+                full_text += f"\n... и ещё {len(selected_indexes) - 50} выделенных строк не показано."
+            self.details_view.setPlainText(full_text)
+            self._highlight_search_matches()
+
         self._update_selection_info(selected_indexes)
+
+    def _populate_json_tree(self, text, extras_count=0):
+        """Парсит первый JSON-объект/массив из text и наполняет details_tree.
+        Если в строке несколько JSON - берётся самый длинный (он же обычно главный).
+        extras_count - сколько ещё строк выделено (для подсказки в заголовке)."""
+        self.details_tree.clear()
+
+        obj, prefix, suffix = self._extract_largest_json(text)
+        if obj is None:
+            root = QTreeWidgetItem(self.details_tree, ["(JSON не найден)", text[:200]])
+            root.setFirstColumnSpanned(False)
+            return
+
+        # Метаданные строки до и после JSON - в отдельный узел сверху, чтобы не терялся контекст
+        meta_text = (prefix.strip() + " ... " + suffix.strip()).strip(" .")
+        if meta_text:
+            meta = QTreeWidgetItem(self.details_tree, ["(контекст строки)", meta_text[:500]])
+            meta.setForeground(0, QColor("#888888"))
+            meta.setForeground(1, QColor("#888888"))
+
+        if isinstance(obj, dict):
+            root_label = f"{{...}}  ({len(obj)} полей)"
+        else:
+            root_label = f"[...]  ({len(obj)} элементов)"
+        root = QTreeWidgetItem(self.details_tree, ["root", root_label])
+        self._add_json_node(root, obj)
+        root.setExpanded(True)
+
+        if extras_count > 0:
+            note = QTreeWidgetItem(
+                self.details_tree,
+                ["", f"... и ещё {extras_count} выделенных строк не показано (показана только первая)"]
+            )
+            note.setForeground(1, QColor("#888888"))
+
+    @staticmethod
+    def _extract_largest_json(text):
+        """Ищет в тексте все валидные JSON-фрагменты (объекты или массивы) и возвращает
+        самый длинный + текст до и после него. Если ничего нет - (None, text, '').
+        Длинный обычно и есть тот, который пользователь хочет видеть как дерево."""
+        decoder = json.JSONDecoder()
+        best = None  # (length, pos, end, obj)
+        for pos, ch in enumerate(text):
+            if ch not in '{[':
+                continue
+            try:
+                obj, end = decoder.raw_decode(text[pos:])
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(obj, (dict, list)):
+                continue
+            if isinstance(obj, dict) and len(obj) == 0:
+                continue
+            if isinstance(obj, list) and len(obj) == 0:
+                continue
+            length = end
+            if best is None or length > best[0]:
+                best = (length, pos, pos + end, obj)
+        if best is None:
+            return None, text, ""
+        _, pos, end_abs, obj = best
+        return obj, text[:pos], text[end_abs:]
+
+    def _add_json_node(self, parent_item, value):
+        """Рекурсивно добавляет дочерние узлы к parent_item для значения value."""
+        if isinstance(value, dict):
+            for k, v in value.items():
+                self._add_json_field(parent_item, str(k), v)
+        elif isinstance(value, list):
+            for i, v in enumerate(value):
+                self._add_json_field(parent_item, f"[{i}]", v)
+
+    def _add_json_field(self, parent_item, key, value):
+        """Создаёт один узел дерева под parent_item для пары (key, value)."""
+        if isinstance(value, dict):
+            label = f"{{...}}  ({len(value)} полей)" if value else "{} (пусто)"
+            item = QTreeWidgetItem(parent_item, [key, label])
+            item.setForeground(1, QColor("#888888"))
+            self._add_json_node(item, value)
+        elif isinstance(value, list):
+            label = f"[...]  ({len(value)} элементов)" if value else "[] (пусто)"
+            item = QTreeWidgetItem(parent_item, [key, label])
+            item.setForeground(1, QColor("#888888"))
+            self._add_json_node(item, value)
+        else:
+            # Примитив: строка/число/bool/null - одна строка с подсветкой типа
+            if value is None:
+                shown = "null"
+                color = QColor("#888888")
+            elif isinstance(value, bool):
+                shown = "true" if value else "false"
+                color = QColor("#569CD6")
+            elif isinstance(value, (int, float)):
+                shown = str(value)
+                color = QColor("#B5CEA8")
+            else:
+                # Строка - в кавычках, чтобы было видно что это строка
+                s = str(value)
+                if len(s) > 500:
+                    s = s[:500] + "…"
+                shown = json.dumps(s, ensure_ascii=False)
+                color = QColor("#CE9178")
+            item = QTreeWidgetItem(parent_item, [key, shown])
+            item.setForeground(1, color)
+
+    def _show_details_tree_menu(self, pos):
+        """Контекстное меню в дереве JSON: копировать ключ, значение или путь."""
+        item = self.details_tree.itemAt(pos)
+        if item is None:
+            return
+        menu = QMenu(self)
+        act_key = menu.addAction("Копировать ключ")
+        act_value = menu.addAction("Копировать значение")
+        act_pair = menu.addAction("Копировать «ключ: значение»")
+        chosen = menu.exec(self.details_tree.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        cb = QApplication.clipboard()
+        if chosen == act_key:
+            cb.setText(item.text(0))
+        elif chosen == act_value:
+            cb.setText(item.text(1))
+        else:
+            cb.setText(f"{item.text(0)}: {item.text(1)}")
 
     def _update_selection_info(self, selected_indexes):
         """Показывает в правой части статус-бара информацию о выделении:
