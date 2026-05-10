@@ -205,4 +205,117 @@ THEMES = {
             "tree_meta": "#666666",
         },
     },
+
+    # ----- Windows XP (Luna) -----
+    # Бежевый фон Windows Classic + ярко-синий акцент Luna; шрифт Tahoma как в XP.
+    "Windows XP": {
+        "layout": "top",
+        "bg_main": "#ECE9D8",
+        "bg_panel": "#FFFFFF",
+        "border": "#ACA899",
+        "text_main": "#000000",
+        "text_muted": "#5A5A5A",
+        "accent": "#0054E3",
+        "selection": "#316AC5",
+        "font_family": "Tahoma",
+        "mono_font": "Courier New",
+        "info": "#006400", "debug": "#0054E3", "warn": "#B8860B", "error": "#A52A2A",
+        "json_palette": {
+            **_LIGHT_JSON_PALETTE,
+            "gutter_bg": "#D6D3C0",
+            "gutter_glyph": "#0054E3",
+            "gutter_glyph_collapsed": "#000000",
+        },
+    },
+
+    # ----- macOS Aqua (классический OS X 10.x до Yosemite) -----
+    # Светло-серый фон, голубоватая selection, шрифт Lucida Grande (на Windows
+    # подменится на системный sans-serif - это OK).
+    "macOS Aqua": {
+        "layout": "top",
+        "bg_main": "#ECECEC",
+        "bg_panel": "#F5F5F5",
+        "border": "#C8C8C8",
+        "text_main": "#000000",
+        "text_muted": "#5A5A5A",
+        "accent": "#1D72E8",
+        "selection": "#B5D7FE",
+        "font_family": "Lucida Grande",
+        "mono_font": "Menlo",
+        "info": "#008000", "debug": "#1D72E8", "warn": "#A06000", "error": "#C00000",
+        "json_palette": dict(_LIGHT_JSON_PALETTE),
+    },
+
+    # ----- macOS Big Sur (Light) -----
+    # Современный светлый Apple-стиль: молочно-белый фон, мягкие границы,
+    # системный синий iOS-вариант. SF Pro / Helvetica Neue / fallback.
+    "macOS Big Sur Light": {
+        "layout": "top",
+        "bg_main": "#FAFAFA",
+        "bg_panel": "#F5F5F7",
+        "border": "#D1D1D6",
+        "text_main": "#1D1D1F",
+        "text_muted": "#86868B",
+        "accent": "#0071E3",
+        "selection": "#DEEAF7",
+        "font_family": "Helvetica Neue",
+        "mono_font": "Menlo",
+        "info": "#1F8B4C", "debug": "#0071E3", "warn": "#B45309", "error": "#D32F2F",
+        "json_palette": dict(_LIGHT_JSON_PALETTE),
+    },
+
+    # ----- macOS Big Sur (Dark) -----
+    # Тёмная вариация Big Sur: приглушённый чёрный, мягкие панели, ярче accent.
+    "macOS Big Sur Dark": {
+        "layout": "top",
+        "bg_main": "#1E1E1E",
+        "bg_panel": "#2A2A2C",
+        "border": "#3A3A3C",
+        "text_main": "#F5F5F7",
+        "text_muted": "#98989D",
+        "accent": "#0A84FF",
+        "selection": "#284B82",
+        "font_family": "Helvetica Neue",
+        "mono_font": "Menlo",
+        "info": "#30D158", "debug": "#0A84FF", "warn": "#FF9F0A", "error": "#FF453A",
+        "json_palette": dict(_DARK_JSON_PALETTE),
+    },
+
+    # ----- Liquid Glass (Light) -----
+    # Apple Liquid Glass: тонкие холодные оттенки, очень светлый "стеклянный"
+    # фон, мягкая голубая selection, тонкая полупрозрачная граница.
+    # Полноценный blur-эффект Qt StyleSheet не даёт - имитируем через
+    # цветовую схему: близкие к белому панели на чуть голубоватом фоне.
+    "Liquid Glass Light": {
+        "layout": "top",
+        "bg_main": "#F5F8FC",
+        "bg_panel": "#FFFFFF",
+        "border": "#E0E5EB",
+        "text_main": "#1D1D1F",
+        "text_muted": "#6E6E73",
+        "accent": "#007AFF",
+        "selection": "#D6E6FF",
+        "font_family": "Helvetica Neue",
+        "mono_font": "SF Mono",
+        "info": "#28A745", "debug": "#007AFF", "warn": "#F59E0B", "error": "#DC3545",
+        "json_palette": dict(_LIGHT_JSON_PALETTE),
+    },
+
+    # ----- Liquid Glass (Dark) -----
+    # Тёмная версия Liquid Glass: приглушённый антрацит со стеклянным отливом,
+    # яркий iOS-blue акцент, мягкие сине-серые границы.
+    "Liquid Glass Dark": {
+        "layout": "top",
+        "bg_main": "#1C1C1E",
+        "bg_panel": "#2C2C2E",
+        "border": "#3A3A3C",
+        "text_main": "#F5F5F7",
+        "text_muted": "#98989D",
+        "accent": "#0A84FF",
+        "selection": "#2D5BA8",
+        "font_family": "Helvetica Neue",
+        "mono_font": "SF Mono",
+        "info": "#30D158", "debug": "#0A84FF", "warn": "#FF9F0A", "error": "#FF453A",
+        "json_palette": dict(_DARK_JSON_PALETTE),
+    },
 }
