@@ -228,24 +228,6 @@ THEMES = {
         },
     },
 
-    # ----- macOS Aqua (классический OS X 10.x до Yosemite) -----
-    # Светло-серый фон, голубоватая selection, шрифт Lucida Grande (на Windows
-    # подменится на системный sans-serif - это OK).
-    "macOS Aqua": {
-        "layout": "top",
-        "bg_main": "#ECECEC",
-        "bg_panel": "#F5F5F5",
-        "border": "#C8C8C8",
-        "text_main": "#000000",
-        "text_muted": "#5A5A5A",
-        "accent": "#1D72E8",
-        "selection": "#B5D7FE",
-        "font_family": "Lucida Grande",
-        "mono_font": "Menlo",
-        "info": "#008000", "debug": "#1D72E8", "warn": "#A06000", "error": "#C00000",
-        "json_palette": dict(_LIGHT_JSON_PALETTE),
-    },
-
     # ----- macOS Big Sur (Light) -----
     # Современный светлый Apple-стиль: молочно-белый фон, мягкие границы,
     # системный синий iOS-вариант. SF Pro / Helvetica Neue / fallback.
@@ -281,41 +263,215 @@ THEMES = {
         "json_palette": dict(_DARK_JSON_PALETTE),
     },
 
-    # ----- Liquid Glass (Light) -----
-    # Apple Liquid Glass: тонкие холодные оттенки, очень светлый "стеклянный"
-    # фон, мягкая голубая selection, тонкая полупрозрачная граница.
-    # Полноценный blur-эффект Qt StyleSheet не даёт - имитируем через
-    # цветовую схему: близкие к белому панели на чуть голубоватом фоне.
-    "Liquid Glass Light": {
+    # ----- Frutiger Aero (2007 Vista/Web 2.0 эстетика) -----
+    # Голубое небо, белые облака, глянцевые поверхности эпохи Vista/iPhone OS 1.
+    # Светлый бирюзово-голубой фон, ярко-аквамарин акцент, белые "глянцевые" панели.
+    "Frutiger Aero": {
         "layout": "top",
-        "bg_main": "#F5F8FC",
+        "bg_main": "#D7EEF9",
         "bg_panel": "#FFFFFF",
-        "border": "#E0E5EB",
-        "text_main": "#1D1D1F",
-        "text_muted": "#6E6E73",
-        "accent": "#007AFF",
-        "selection": "#D6E6FF",
-        "font_family": "Helvetica Neue",
-        "mono_font": "SF Mono",
-        "info": "#28A745", "debug": "#007AFF", "warn": "#F59E0B", "error": "#DC3545",
-        "json_palette": dict(_LIGHT_JSON_PALETTE),
+        "border": "#9EC9E5",
+        "text_main": "#0A2A3F",
+        "text_muted": "#406680",
+        "accent": "#1FA8D8",
+        "selection": "#A8DCF0",
+        "font_family": "Segoe UI",
+        "mono_font": "Consolas",
+        "info": "#1A8E3D", "debug": "#1FA8D8", "warn": "#E08A00", "error": "#D14B4B",
+        "json_palette": {
+            **_LIGHT_JSON_PALETTE,
+            "json_key": "#0E5E8A",
+            "json_string": "#A04000",
+            "json_number": "#1A8E3D",
+            "json_keyword": "#1FA8D8",
+            "gutter_bg": "#BFE0F0",
+            "gutter_glyph": "#0E5E8A",
+            "gutter_glyph_collapsed": "#0A2A3F",
+        },
     },
 
-    # ----- Liquid Glass (Dark) -----
-    # Тёмная версия Liquid Glass: приглушённый антрацит со стеклянным отливом,
-    # яркий iOS-blue акцент, мягкие сине-серые границы.
-    "Liquid Glass Dark": {
+    # ----- Y2K (2000s neon-silver) -----
+    # Тёмный графит со стальным отливом, неоновый розово-голубой акцент,
+    # ассоциация с Winamp / WMP / интерфейсами рубежа тысячелетий.
+    "Y2K": {
         "layout": "top",
-        "bg_main": "#1C1C1E",
-        "bg_panel": "#2C2C2E",
-        "border": "#3A3A3C",
-        "text_main": "#F5F5F7",
-        "text_muted": "#98989D",
-        "accent": "#0A84FF",
-        "selection": "#2D5BA8",
-        "font_family": "Helvetica Neue",
-        "mono_font": "SF Mono",
-        "info": "#30D158", "debug": "#0A84FF", "warn": "#FF9F0A", "error": "#FF453A",
-        "json_palette": dict(_DARK_JSON_PALETTE),
+        "bg_main": "#1A1A23",
+        "bg_panel": "#252533",
+        "border": "#7B7BA8",
+        "text_main": "#E6E6F0",
+        "text_muted": "#9E9EBF",
+        "accent": "#FF3FA4",
+        "selection": "#3D2D55",
+        "font_family": "Verdana",
+        "mono_font": "Consolas",
+        "info": "#56F39A", "debug": "#5CD2FF", "warn": "#FFD700", "error": "#FF3F6E",
+        "json_palette": {
+            "gutter_bg": "#15151E",
+            "gutter_glyph": "#FF3FA4",
+            "gutter_glyph_collapsed": "#5CD2FF",
+            "json_key": "#5CD2FF",
+            "json_string": "#FFB6E1",
+            "json_number": "#56F39A",
+            "json_keyword": "#FF3FA4",
+            "json_bracket": "#C0C0C0",
+            "tree_meta": "#7B7BA8",
+        },
+    },
+
+    # ----- Tokyo Night (популярная тема VS Code) -----
+    # Глубокий ночной синий с иссиня-фиолетовыми и циан-акцентами.
+    "Tokyo Night": {
+        "layout": "top",
+        "bg_main": "#1A1B26",
+        "bg_panel": "#24283B",
+        "border": "#3B4261",
+        "text_main": "#C0CAF5",
+        "text_muted": "#787C99",
+        "accent": "#7AA2F7",
+        "selection": "#283457",
+        "font_family": "Segoe UI",
+        "mono_font": "JetBrains Mono",
+        "info": "#9ECE6A", "debug": "#7AA2F7", "warn": "#E0AF68", "error": "#F7768E",
+        "json_palette": {
+            "gutter_bg": "#16161E",
+            "gutter_glyph": "#565F89",
+            "gutter_glyph_collapsed": "#C0CAF5",
+            "json_key": "#7AA2F7",
+            "json_string": "#9ECE6A",
+            "json_number": "#FF9E64",
+            "json_keyword": "#BB9AF7",
+            "json_bracket": "#E0AF68",
+            "tree_meta": "#565F89",
+        },
+    },
+
+    # ----- Dracula (классическая фиолетово-зелёная тема) -----
+    "Dracula": {
+        "layout": "top",
+        "bg_main": "#282A36",
+        "bg_panel": "#21222C",
+        "border": "#44475A",
+        "text_main": "#F8F8F2",
+        "text_muted": "#6272A4",
+        "accent": "#BD93F9",
+        "selection": "#44475A",
+        "font_family": "Segoe UI",
+        "mono_font": "Fira Code",
+        "info": "#50FA7B", "debug": "#8BE9FD", "warn": "#F1FA8C", "error": "#FF5555",
+        "json_palette": {
+            "gutter_bg": "#1E1F29",
+            "gutter_glyph": "#6272A4",
+            "gutter_glyph_collapsed": "#F8F8F2",
+            "json_key": "#8BE9FD",
+            "json_string": "#F1FA8C",
+            "json_number": "#BD93F9",
+            "json_keyword": "#FF79C6",
+            "json_bracket": "#FFB86C",
+            "tree_meta": "#6272A4",
+        },
+    },
+
+    # ----- Nord (минималистичный арктический набор) -----
+    "Nord": {
+        "layout": "top",
+        "bg_main": "#2E3440",
+        "bg_panel": "#3B4252",
+        "border": "#434C5E",
+        "text_main": "#ECEFF4",
+        "text_muted": "#81A1C1",
+        "accent": "#88C0D0",
+        "selection": "#434C5E",
+        "font_family": "Segoe UI",
+        "mono_font": "Fira Code",
+        "info": "#A3BE8C", "debug": "#88C0D0", "warn": "#EBCB8B", "error": "#BF616A",
+        "json_palette": {
+            "gutter_bg": "#2A2F3A",
+            "gutter_glyph": "#4C566A",
+            "gutter_glyph_collapsed": "#ECEFF4",
+            "json_key": "#8FBCBB",
+            "json_string": "#A3BE8C",
+            "json_number": "#B48EAD",
+            "json_keyword": "#81A1C1",
+            "json_bracket": "#D8DEE9",
+            "tree_meta": "#4C566A",
+        },
+    },
+
+    # ----- Gruvbox Dark (ретро sepia/ochre) -----
+    "Gruvbox Dark": {
+        "layout": "top",
+        "bg_main": "#282828",
+        "bg_panel": "#32302F",
+        "border": "#504945",
+        "text_main": "#EBDBB2",
+        "text_muted": "#A89984",
+        "accent": "#FABD2F",
+        "selection": "#3C3836",
+        "font_family": "Segoe UI",
+        "mono_font": "Hack",
+        "info": "#B8BB26", "debug": "#83A598", "warn": "#FABD2F", "error": "#FB4934",
+        "json_palette": {
+            "gutter_bg": "#1D2021",
+            "gutter_glyph": "#7C6F64",
+            "gutter_glyph_collapsed": "#EBDBB2",
+            "json_key": "#83A598",
+            "json_string": "#B8BB26",
+            "json_number": "#D3869B",
+            "json_keyword": "#FE8019",
+            "json_bracket": "#FABD2F",
+            "tree_meta": "#928374",
+        },
+    },
+
+    # ----- Synthwave '84 (неоновая закатная эстетика) -----
+    "Synthwave '84": {
+        "layout": "top",
+        "bg_main": "#241B2F",
+        "bg_panel": "#2A2139",
+        "border": "#495495",
+        "text_main": "#F92AAD",
+        "text_muted": "#8B95C9",
+        "accent": "#03EDF9",
+        "selection": "#373350",
+        "font_family": "Segoe UI",
+        "mono_font": "JetBrains Mono",
+        "info": "#72F1B8", "debug": "#03EDF9", "warn": "#FEDE5D", "error": "#FE4450",
+        "json_palette": {
+            "gutter_bg": "#1B1426",
+            "gutter_glyph": "#495495",
+            "gutter_glyph_collapsed": "#03EDF9",
+            "json_key": "#03EDF9",
+            "json_string": "#FF8B39",
+            "json_number": "#F97E72",
+            "json_keyword": "#F92AAD",
+            "json_bracket": "#FEDE5D",
+            "tree_meta": "#8B95C9",
+        },
+    },
+
+    # ----- Catppuccin Mocha (пастельная тёмная) -----
+    "Catppuccin Mocha": {
+        "layout": "top",
+        "bg_main": "#1E1E2E",
+        "bg_panel": "#181825",
+        "border": "#313244",
+        "text_main": "#CDD6F4",
+        "text_muted": "#7F849C",
+        "accent": "#CBA6F7",
+        "selection": "#313244",
+        "font_family": "Segoe UI",
+        "mono_font": "JetBrains Mono",
+        "info": "#A6E3A1", "debug": "#89B4FA", "warn": "#F9E2AF", "error": "#F38BA8",
+        "json_palette": {
+            "gutter_bg": "#11111B",
+            "gutter_glyph": "#585B70",
+            "gutter_glyph_collapsed": "#CDD6F4",
+            "json_key": "#89B4FA",
+            "json_string": "#A6E3A1",
+            "json_number": "#FAB387",
+            "json_keyword": "#CBA6F7",
+            "json_bracket": "#F9E2AF",
+            "tree_meta": "#6C7086",
+        },
     },
 }

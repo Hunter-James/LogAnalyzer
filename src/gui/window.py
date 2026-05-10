@@ -133,6 +133,11 @@ class MainWindow(QMainWindow):
         self.btn_settings.setObjectName("")
 
     def apply_theme(self, theme_name):
+        # Если в settings.json лежит имя удалённой темы (например после обновления
+        # приложения, когда тема переименовали или убрали) - молча скатываемся
+        # на Default, иначе KeyError при запуске.
+        if theme_name not in THEMES:
+            theme_name = "Default"
         self.current_theme_name = theme_name
         t = THEMES[theme_name]
         layout_type = t["layout"]
