@@ -308,9 +308,16 @@ class MainWindow(QMainWindow):
             self.chk_error.setStyleSheet("")
 
     def open_settings(self):
+        # Сохраняем исходные настройки на случай отмены - тема применяется live,
+        # и при Cancel надо вернуться к ним без сохранения.
+        original_theme = self.current_theme_name
+        original_font_size = self.current_font_size
+
         dlg = SettingsDialog(
             self.current_theme_name, self.current_font_size, self.ui_features, self
         )
+        dlg.previewChanged.connect(self._preview_appearance)
+
         if dlg.exec():
             theme, size, features = dlg.get_settings()
             self.current_font_size = size
@@ -318,6 +325,16 @@ class MainWindow(QMainWindow):
             self.apply_theme(theme)
             self._apply_ui_features_everywhere()
             self.save_current_settings()
+        else:
+            # Откатываем live-превью на исходные настройки (без сохранения)
+            self.current_font_size = original_font_size
+            self.apply_theme(original_theme)
+
+    def _preview_appearance(self, theme_name, font_size):
+        """Слот live-превью из SettingsDialog: применяет тему и размер шрифта
+        прямо во время выбора, без сохранения в settings.json."""
+        self.current_font_size = font_size
+        self.apply_theme(theme_name)
 
     def _apply_ui_features_everywhere(self):
         """Распространяет настройки видимости на главное окно и все открытые вьюверы."""

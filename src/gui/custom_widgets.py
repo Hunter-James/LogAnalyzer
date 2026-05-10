@@ -33,39 +33,50 @@ class ScalableTextEdit(QTextEdit):
             super().wheelEvent(event)
 
 
-# --- JSON syntax highlighter (Monokai-ish) ---
+# --- JSON syntax highlighter ---
+# Дефолтная палитра нужна, если highlighter создан до того, как тема применилась
+# (например в момент конструирования FoldableJsonTextEdit).
+_DEFAULT_HIGHLIGHTER_PALETTE = {
+    "json_key": "#9CDCFE",
+    "json_string": "#CE9178",
+    "json_number": "#B5CEA8",
+    "json_keyword": "#569CD6",
+    "json_bracket": "#FFD700",
+}
+
+
 class JsonSyntaxHighlighter(QSyntaxHighlighter):
-    """Подсветка JSON-токенов: ключи, строки, числа, true/false/null.
-    Работает на любой строке - если в строке нет JSON, ничего не подсветит."""
+    """Подсветка JSON-токенов: ключи, строки, числа, true/false/null, скобки.
+    Работает на любой строке - если в строке нет JSON, ничего не подсветит.
+    Цвета настраиваются через apply_palette(palette), чтобы согласовать с темой."""
+
+    # Регексы общие, не зависят от палитры - компилируем один раз на класс.
+    _RULE_REGEXES = [
+        ('json_key', re.compile(r'"(?:[^"\\]|\\.)*"\s*(?=:)'), True),
+        ('json_string', re.compile(r'"(?:[^"\\]|\\.)*"'), False),
+        ('json_number', re.compile(r'-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b'), False),
+        ('json_keyword', re.compile(r'\b(?:true|false|null)\b'), True),
+        ('json_bracket', re.compile(r'[{}\[\]]'), False),
+    ]
 
     def __init__(self, document):
         super().__init__(document)
+        self._rules = []
+        self.apply_palette(_DEFAULT_HIGHLIGHTER_PALETTE)
 
-        f_key = QTextCharFormat()
-        f_key.setForeground(QColor("#9CDCFE"))      # светло-синий
-        f_key.setFontWeight(QFont.Weight.Bold)
-
-        f_str = QTextCharFormat()
-        f_str.setForeground(QColor("#CE9178"))      # оранжевый
-
-        f_num = QTextCharFormat()
-        f_num.setForeground(QColor("#B5CEA8"))      # светло-зелёный
-
-        f_kw = QTextCharFormat()
-        f_kw.setForeground(QColor("#569CD6"))       # синий
-        f_kw.setFontWeight(QFont.Weight.Bold)
-
-        f_brk = QTextCharFormat()
-        f_brk.setForeground(QColor("#FFD700"))      # жёлтый, скобки заметнее
-
-        # Порядок имеет значение: ключ (со взглядом вперёд на :) раньше обычной строки.
-        self._rules = [
-            (re.compile(r'"(?:[^"\\]|\\.)*"\s*(?=:)'), f_key),
-            (re.compile(r'"(?:[^"\\]|\\.)*"'), f_str),
-            (re.compile(r'-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b'), f_num),
-            (re.compile(r'\b(?:true|false|null)\b'), f_kw),
-            (re.compile(r'[{}\[\]]'), f_brk),
-        ]
+    def apply_palette(self, palette):
+        """Перестраивает форматы под цвета из palette (см. THEMES[...]['json_palette'])."""
+        rules = []
+        for key, regex, bold in self._RULE_REGEXES:
+            color = palette.get(key, _DEFAULT_HIGHLIGHTER_PALETTE.get(key, "#000000"))
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(color))
+            if bold:
+                fmt.setFontWeight(QFont.Weight.Bold)
+            rules.append((regex, fmt))
+        self._rules = rules
+        # Перерисовать всё, что уже подсвечено старыми цветами
+        self.rehighlight()
 
     def highlightBlock(self, text):
         for regex, fmt in self._rules:
@@ -76,7 +87,8 @@ class JsonSyntaxHighlighter(QSyntaxHighlighter):
 # --- Folding gutter for FoldableJsonTextEdit ---
 class _FoldingGutter(QWidget):
     """Узкая колонка слева от текстового редактора. Рисует ▼ для развёрнутых
-    fold-блоков и ▶ для свёрнутых; клик переключает состояние."""
+    fold-блоков и ▶ для свёрнутых; клик переключает состояние. Цвета берутся
+    из палитры темы (см. apply_palette)."""
 
     WIDTH = 16
 
@@ -86,6 +98,15 @@ class _FoldingGutter(QWidget):
         self.setFixedWidth(self.WIDTH)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMouseTracking(True)
+        self._bg = QColor("#1E1E1E")
+        self._glyph_open = QColor("#777777")
+        self._glyph_collapsed = QColor("#D4D4D4")
+
+    def apply_palette(self, palette):
+        self._bg = QColor(palette.get("gutter_bg", "#1E1E1E"))
+        self._glyph_open = QColor(palette.get("gutter_glyph", "#777777"))
+        self._glyph_collapsed = QColor(palette.get("gutter_glyph_collapsed", "#D4D4D4"))
+        self.update()
 
     def sizeHint(self):
         return QSize(self.WIDTH, 0)
@@ -93,7 +114,7 @@ class _FoldingGutter(QWidget):
     def paintEvent(self, event):
         editor = self._editor
         painter = QPainter(self)
-        painter.fillRect(event.rect(), QColor("#1E1E1E"))
+        painter.fillRect(event.rect(), self._bg)
 
         block = editor.firstVisibleBlock()
         offset = editor.contentOffset()
@@ -114,7 +135,7 @@ class _FoldingGutter(QWidget):
                 info = editor.fold_regions.get(bn)
                 if info is not None:
                     glyph = "▶" if info['folded'] else "▼"
-                    color = QColor("#D4D4D4") if info['folded'] else QColor("#777777")
+                    color = self._glyph_collapsed if info['folded'] else self._glyph_open
                     painter.setPen(color)
                     painter.drawText(QRect(0, top, self.WIDTH, height),
                                      int(Qt.AlignmentFlag.AlignCenter),
@@ -164,6 +185,12 @@ class FoldableJsonTextEdit(QPlainTextEdit):
         self.setViewportMargins(_FoldingGutter.WIDTH, 0, 0, 0)
         self.updateRequest.connect(self._on_update_request)
         self.blockCountChanged.connect(lambda _: self._gutter.update())
+
+    def apply_theme_palette(self, palette):
+        """Прокидывает палитру в gutter (фон + цвета стрелок) и в highlighter
+        (цвета JSON-токенов). Вызывается из LogViewerWidget.apply_theme."""
+        self._gutter.apply_palette(palette)
+        self._highlighter.apply_palette(palette)
 
     # ----- Zoom (Ctrl+Wheel) -----
     def wheelEvent(self, event: QWheelEvent):

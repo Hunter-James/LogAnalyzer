@@ -59,6 +59,11 @@ class LogViewerWidget(QWidget):
         # Файл архивирован - tail для него не имеет смысла
         self._is_archive = file_path.lower().endswith(('.gz', '.zip'))
 
+        # Палитра JSON-токенов и дерева - наполняется в apply_theme.
+        # Инициализируем пустым словарём, чтобы _populate_json_tree до первого
+        # apply_theme не падал.
+        self._json_palette = {}
+
         # Все логгеры, обнаруженные в файле, и подмножество включённых
         self.all_loggers = []
         self.active_loggers = set()
@@ -825,6 +830,14 @@ class LogViewerWidget(QWidget):
         self.details_tree.setFont(font)
         self.search_journal_tree.setFont(font)
 
+        # Палитра для gutter + JSON-подсветки + цветов в дереве: уезжает в
+        # FoldableJsonTextEdit и используется в _add_json_field/_populate_json_tree.
+        self._json_palette = t.get("json_palette", {})
+        self.details_view.apply_theme_palette(self._json_palette)
+        # Перерисовать дерево, если оно сейчас активно (цвета примитивов привязаны к палитре)
+        if self.details_stack.currentIndex() == 1:
+            self._refresh_details_view()
+
         # Update model theme
         self.model.set_theme(theme_name, font_size)
 
@@ -1373,11 +1386,12 @@ class LogViewerWidget(QWidget):
 
         # Метаданные строки до и после структуры - в отдельный узел сверху,
         # чтобы не терялся контекст (timestamp, уровень, логгер).
+        meta_color = QColor(self._json_palette.get("tree_meta", "#888888"))
         meta_text = (prefix.strip() + " ... " + suffix.strip()).strip(" .")
         if meta_text:
             meta = QTreeWidgetItem(self.details_tree, ["(контекст строки)", meta_text[:500]])
-            meta.setForeground(0, QColor("#888888"))
-            meta.setForeground(1, QColor("#888888"))
+            meta.setForeground(0, meta_color)
+            meta.setForeground(1, meta_color)
 
         if kv_name is not None:
             root_label = f"{kv_name}(...)  ({len(obj)} параметров)"
@@ -1396,7 +1410,7 @@ class LogViewerWidget(QWidget):
             note = QTreeWidgetItem(
                 self.details_tree, [
                     "", f"... и ещё {extras_count} выделенных строк не показано (показана только первая)"])
-            note.setForeground(1, QColor("#888888"))
+            note.setForeground(1, meta_color)
 
     @staticmethod
     def _extract_largest_json(text):
@@ -1497,35 +1511,38 @@ class LogViewerWidget(QWidget):
                 self._add_json_field(parent_item, f"[{i}]", v)
 
     def _add_json_field(self, parent_item, key, value):
-        """Создаёт один узел дерева под parent_item для пары (key, value)."""
+        """Создаёт один узел дерева под parent_item для пары (key, value).
+        Цвета примитивов берутся из текущей палитры темы (self._json_palette)."""
+        palette = self._json_palette
+        meta_color = QColor(palette.get("tree_meta", "#888888"))
         if isinstance(value, dict):
             label = f"{{...}}  ({len(value)} полей)" if value else "{} (пусто)"
             item = QTreeWidgetItem(parent_item, [key, label])
-            item.setForeground(1, QColor("#888888"))
+            item.setForeground(1, meta_color)
             self._add_json_node(item, value)
         elif isinstance(value, list):
             label = f"[...]  ({len(value)} элементов)" if value else "[] (пусто)"
             item = QTreeWidgetItem(parent_item, [key, label])
-            item.setForeground(1, QColor("#888888"))
+            item.setForeground(1, meta_color)
             self._add_json_node(item, value)
         else:
             # Примитив: строка/число/bool/null - одна строка с подсветкой типа
             if value is None:
                 shown = "null"
-                color = QColor("#888888")
+                color = meta_color
             elif isinstance(value, bool):
                 shown = "true" if value else "false"
-                color = QColor("#569CD6")
+                color = QColor(palette.get("json_keyword", "#569CD6"))
             elif isinstance(value, (int, float)):
                 shown = str(value)
-                color = QColor("#B5CEA8")
+                color = QColor(palette.get("json_number", "#B5CEA8"))
             else:
                 # Строка - в кавычках, чтобы было видно что это строка
                 s = str(value)
                 if len(s) > 500:
                     s = s[:500] + "…"
                 shown = json.dumps(s, ensure_ascii=False)
-                color = QColor("#CE9178")
+                color = QColor(palette.get("json_string", "#CE9178"))
             item = QTreeWidgetItem(parent_item, [key, shown])
             item.setForeground(1, color)
 

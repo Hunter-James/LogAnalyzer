@@ -1,4 +1,5 @@
 import sys
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QComboBox, QSpinBox,
                              QFrame, QLabel, QPushButton, QHBoxLayout, QCheckBox,
                              QGroupBox, QScrollArea, QWidget)
@@ -7,6 +8,10 @@ from config import THEMES, APP_VERSION, DEFAULT_UI_FEATURES, UI_FEATURE_LABELS
 
 # --- Settings Dialog ---
 class SettingsDialog(QDialog):
+    # Live-превью: испускается при любой смене темы или размера шрифта в комбо/спине.
+    # MainWindow подписывается, чтобы применять выбор сразу, а на Cancel - откатывать.
+    previewChanged = pyqtSignal(str, int)  # theme_name, font_size
+
     def __init__(self, current_theme, current_font_size, current_features, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Настройки")
@@ -54,6 +59,11 @@ class SettingsDialog(QDialog):
         self.font_spin.setRange(8, 24)
         self.font_spin.setValue(current_font_size)
 
+        # Live-превью: любая смена темы/шрифта сразу испускает previewChanged.
+        # MainWindow ловит это и применяет на лету (на Cancel откатывает).
+        self.theme_combo.currentTextChanged.connect(self._emit_preview)
+        self.font_spin.valueChanged.connect(self._emit_preview)
+
         form.addRow("Тема:", self.theme_combo)
         form.addRow("Размер шрифта:", self.font_spin)
         appearance_group.setLayout(form)
@@ -98,6 +108,9 @@ class SettingsDialog(QDialog):
         btn_box.addWidget(btn_ok)
         btn_box.addWidget(btn_cancel)
         layout.addLayout(btn_box)
+
+    def _emit_preview(self, *_):
+        self.previewChanged.emit(self.theme_combo.currentText(), self.font_spin.value())
 
     def get_settings(self):
         features = {key: cb.isChecked() for key, cb in self.feature_checkboxes.items()}
