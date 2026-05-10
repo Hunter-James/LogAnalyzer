@@ -205,10 +205,11 @@ class FoldableJsonTextEdit(QPlainTextEdit):
     # ----- Folding logic -----
     @staticmethod
     def _compute_fold_regions(text):
-        """Сканирует строки text и находит парные { ... } и [ ... ] на разных строках.
-        Простое правило (надёжное на выводе json.dumps(indent=...)):
-        - строка-открыватель заканчивается на { или [
-        - строка-закрыватель начинается (после whitespace) с } или ]
+        """Сканирует строки text и находит парные { ... }, [ ... ] и ( ... )
+        на разных строках. Простое правило (надёжно на выводе json.dumps(indent=...)
+        и Java-style toString после kv-prettify):
+        - строка-открыватель заканчивается на {, [ или (
+        - строка-закрыватель начинается (после whitespace) с }, ] или )
         Всё что между ними - содержимое fold-региона."""
         regions = {}
         stack = []  # [(start_block_num, char)]
@@ -219,13 +220,13 @@ class FoldableJsonTextEdit(QPlainTextEdit):
             ls = stripped.lstrip()
             # Сначала проверяем закрытие - строка может ОДНОВРЕМЕННО быть закрытием
             # одного блока и открытием следующего: "}, {"
-            if ls and ls[0] in '}]':
+            if ls and ls[0] in '}])':
                 if stack:
                     start, _ = stack.pop()
                     if i > start:
                         regions[start] = {'end': i, 'folded': False}
             # И отдельно проверяем открытие
-            if stripped[-1] in '{[':
+            if stripped[-1] in '{[(':
                 stack.append((i, stripped[-1]))
         return regions
 

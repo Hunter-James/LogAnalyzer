@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QSplitter, QAbstractItemView,
                              QMessageBox, QApplication, QLineEdit, QHBoxLayout, QLabel, QFrame,
                              QPushButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QMenu,
                              QTreeWidgetItemIterator, QTextEdit, QToolButton, QCheckBox,
-                             QWidgetAction, QScrollArea, QStackedWidget)
+                             QWidgetAction, QScrollArea, QStackedWidget, QPlainTextEdit)
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColor, QShortcut
 
@@ -261,6 +261,19 @@ class LogViewerWidget(QWidget):
         )
         self.btn_json_tree.toggled.connect(self._on_json_tree_toggled)
         corner_layout.addWidget(self.btn_json_tree)
+
+        # Кнопка-toggle "Перенос" - перенос длинных строк в окне 'Выделение' по
+        # ширине виджета. Не зависит от JSON/Дерева.
+        self.btn_word_wrap = QToolButton()
+        self.btn_word_wrap.setText("↵ Перенос")
+        self.btn_word_wrap.setCheckable(True)
+        self.btn_word_wrap.setStyleSheet(toolbtn_qss)
+        self.btn_word_wrap.setToolTip(
+            "Переносить длинные строки в окне 'Выделение' по ширине окна.\n"
+            "Удобно когда строка лога не помещается в виджет."
+        )
+        self.btn_word_wrap.toggled.connect(self._on_word_wrap_toggled)
+        corner_layout.addWidget(self.btn_word_wrap)
 
         self.bottom_tabs.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
 
@@ -1288,6 +1301,12 @@ class LogViewerWidget(QWidget):
         self.details_stack.setCurrentIndex(1 if checked else 0)
         self._refresh_details_view()
 
+    def _on_word_wrap_toggled(self, checked):
+        """Включает/выключает перенос длинных строк в текстовом details_view."""
+        mode = (QPlainTextEdit.LineWrapMode.WidgetWidth if checked
+                else QPlainTextEdit.LineWrapMode.NoWrap)
+        self.details_view.setLineWrapMode(mode)
+
     def _refresh_details_view(self):
         """Перестраивает содержимое окна 'Выделение' на основе текущего выделения.
         Учитывает кнопки 'Форматировать JSON' и 'Дерево'."""
@@ -1332,29 +1351,44 @@ class LogViewerWidget(QWidget):
         self._update_selection_info(selected_indexes)
 
     def _populate_json_tree(self, text, extras_count=0):
-        """Парсит первый JSON-объект/массив из text и наполняет details_tree.
-        Если в строке несколько JSON - берётся самый длинный (он же обычно главный).
+        """Парсит структуру (JSON или Java-style toString) из text и наполняет details_tree.
+        Если в строке несколько структур - берётся самая длинная.
         extras_count - сколько ещё строк выделено (для подсказки в заголовке)."""
         self.details_tree.clear()
 
+        # Сначала пробуем JSON - он структурно богаче
         obj, prefix, suffix = self._extract_largest_json(text)
+        kv_name = None
+
         if obj is None:
-            root = QTreeWidgetItem(self.details_tree, ["(JSON не найден)", text[:200]])
+            # JSON нет - пробуем Name(key=value, ...)
+            kv_obj, prefix, suffix, kv_name = self._extract_largest_kv_call(text)
+            obj = kv_obj
+
+        if obj is None:
+            root = QTreeWidgetItem(
+                self.details_tree, ["(структуры не найдено)", text[:200]])
             root.setFirstColumnSpanned(False)
             return
 
-        # Метаданные строки до и после JSON - в отдельный узел сверху, чтобы не терялся контекст
+        # Метаданные строки до и после структуры - в отдельный узел сверху,
+        # чтобы не терялся контекст (timestamp, уровень, логгер).
         meta_text = (prefix.strip() + " ... " + suffix.strip()).strip(" .")
         if meta_text:
             meta = QTreeWidgetItem(self.details_tree, ["(контекст строки)", meta_text[:500]])
             meta.setForeground(0, QColor("#888888"))
             meta.setForeground(1, QColor("#888888"))
 
-        if isinstance(obj, dict):
+        if kv_name is not None:
+            root_label = f"{kv_name}(...)  ({len(obj)} параметров)"
+            root_key = kv_name
+        elif isinstance(obj, dict):
             root_label = f"{{...}}  ({len(obj)} полей)"
+            root_key = "root"
         else:
             root_label = f"[...]  ({len(obj)} элементов)"
-        root = QTreeWidgetItem(self.details_tree, ["root", root_label])
+            root_key = "root"
+        root = QTreeWidgetItem(self.details_tree, [root_key, root_label])
         self._add_json_node(root, obj)
         root.setExpanded(True)
 
@@ -1391,6 +1425,67 @@ class LogViewerWidget(QWidget):
             return None, text, ""
         _, pos, end_abs, obj = best
         return obj, text[:pos], text[end_abs:]
+
+    @staticmethod
+    def _extract_largest_kv_call(text):
+        """Ищет в text вызов вида Name(key=value, key=value, ...) с >=2 параметрами
+        (все строго key=value). Возвращает самый длинный.
+
+        Возвращает (kv_dict, prefix, suffix, name) или (None, text, '', None).
+        Значения парсятся в Python-типы (true/false/null/числа/строки в кавычках).
+        Это нужно чтобы дерево могло их подсветить как примитивы по типу."""
+        best = None  # (length, name, kv, start, end)
+        for m in LogViewerWidget._KV_NAME_RE.finditer(text):
+            open_pos = m.end() - 1
+            close_pos = LogViewerWidget._find_matching_paren(text, open_pos)
+            if close_pos == -1:
+                continue
+            inner = text[open_pos + 1:close_pos]
+            parts = LogViewerWidget._split_top_level(inner, ',')
+            if len(parts) < 2:
+                continue
+            kv = {}
+            ok = True
+            for p in parts:
+                mm = re.match(r'\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*\Z',
+                              p, re.DOTALL)
+                if not mm:
+                    ok = False
+                    break
+                kv[mm.group(1)] = LogViewerWidget._parse_kv_value(mm.group(2))
+            if not ok:
+                continue
+            length = close_pos - m.start() + 1
+            if best is None or length > best[0]:
+                best = (length, m.group(1), kv, m.start(), close_pos + 1)
+        if best is None:
+            return None, text, "", None
+        _, name, kv, start, end = best
+        return kv, text[:start], text[end:], name
+
+    @staticmethod
+    def _parse_kv_value(s):
+        """Превращает текстовое значение из kv-call в Python-тип (для подсветки в дереве):
+        true/false/null/None -> bool/None, число -> int/float, "..." или '...' -> str без
+        кавычек, иначе исходная строка как есть."""
+        s = s.strip()
+        if s in ('true',):
+            return True
+        if s in ('false',):
+            return False
+        if s in ('null', 'None'):
+            return None
+        # Число
+        try:
+            if '.' in s or 'e' in s or 'E' in s:
+                return float(s)
+            return int(s)
+        except ValueError:
+            pass
+        # Строка в кавычках
+        if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+            return s[1:-1]
+        return s
 
     def _add_json_node(self, parent_item, value):
         """Рекурсивно добавляет дочерние узлы к parent_item для значения value."""
@@ -1559,7 +1654,11 @@ class LogViewerWidget(QWidget):
         """В каждой строке ищет JSON-фрагмент (объект или массив) и заменяет на
         форматированный с отступами. Перебирает ВСЕ позиции '{' и '[' пока не найдёт
         валидный JSON - нужно потому что в типичной строке лога много '['
-        (`[INFO]`, `[Logger]`), и наивный поиск первого `[` всегда падает."""
+        (`[INFO]`, `[Logger]`), и наивный поиск первого `[` всегда падает.
+
+        Если JSON не нашёлся, на той же строке пробуем переписать вызовы вида
+        Name(key=value, key=value, ...) - в логах Java/Kotlin это типичный
+        toString() длинных DTO, и читать их одной строкой невозможно."""
         result_lines = []
         decoder = json.JSONDecoder()
         for line in text.split('\n'):
@@ -1584,8 +1683,110 @@ class LogViewerWidget(QWidget):
                 pretty = json.dumps(obj, indent=2, ensure_ascii=False)
                 rebuilt = line[:pos] + pretty + line[pos + end:]
                 break
-            result_lines.append(rebuilt if rebuilt is not None else line)
+            if rebuilt is None:
+                # JSON не нашёлся - пробуем kv-call. Если и его нет - оставляем как было.
+                rebuilt = LogViewerWidget._prettify_kv_calls(line)
+            result_lines.append(rebuilt)
         return '\n'.join(result_lines)
+
+    # ----- Pretty-print для Java-style toString: Name(key=value, key=value, ...) -----
+
+    # Имя должно быть валидным Java/Kotlin/Python-идентификатором, сразу после которого '('.
+    # \b в начале не используем - имя может быть после non-word char (например ': ').
+    _KV_NAME_RE = re.compile(r'(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\(')
+
+    @staticmethod
+    def _split_top_level(s, sep=','):
+        """Разбивает s на части по sep, который встречается ВНЕ любых вложенных
+        скобок/кавычек. Поддерживает '(' '[' '{' и одинарные/двойные кавычки."""
+        parts = []
+        cur = []
+        depth = 0
+        in_str = False
+        quote = None
+        prev = ''
+        for ch in s:
+            if in_str:
+                if ch == quote and prev != '\\':
+                    in_str = False
+                cur.append(ch)
+            elif ch in ('"', "'"):
+                in_str = True
+                quote = ch
+                cur.append(ch)
+            elif ch in '([{':
+                depth += 1
+                cur.append(ch)
+            elif ch in ')]}':
+                depth -= 1
+                cur.append(ch)
+            elif ch == sep and depth == 0:
+                parts.append(''.join(cur))
+                cur = []
+            else:
+                cur.append(ch)
+            prev = ch
+        parts.append(''.join(cur))
+        return parts
+
+    @staticmethod
+    def _find_matching_paren(s, open_idx):
+        """В строке s на позиции open_idx стоит '('. Возвращает позицию соответствующей
+        ')' с учётом вложенности и кавычек. -1 если не нашлось."""
+        depth = 0
+        in_str = False
+        quote = None
+        prev = ''
+        for i in range(open_idx, len(s)):
+            ch = s[i]
+            if in_str:
+                if ch == quote and prev != '\\':
+                    in_str = False
+            elif ch in ('"', "'"):
+                in_str = True
+                quote = ch
+            elif ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    return i
+            prev = ch
+        return -1
+
+    @staticmethod
+    def _prettify_kv_calls(line):
+        """Ищет в строке вызовы Name(key=value, key=value, ...) (>=2 параметров,
+        все key=value) и переписывает их с переносом строк и отступом 2 пробела.
+        Возвращает изменённую строку (или исходную, если ничего не подошло)."""
+        out = []
+        pos = 0
+        changed = False
+        while pos < len(line):
+            m = LogViewerWidget._KV_NAME_RE.search(line, pos)
+            if not m:
+                break
+            open_pos = m.end() - 1
+            close_pos = LogViewerWidget._find_matching_paren(line, open_pos)
+            if close_pos == -1:
+                break
+            inner = line[open_pos + 1:close_pos]
+            parts = LogViewerWidget._split_top_level(inner, ',')
+            # Применяем только если >=2 параметров и КАЖДЫЙ выглядит как key=value:
+            # \b\w+\s*= в начале (после strip).
+            if len(parts) >= 2 and all(re.match(r'\s*[A-Za-z_][A-Za-z0-9_]*\s*=', p) for p in parts):
+                name = m.group(1)
+                formatted_parts = ',\n  '.join(p.strip() for p in parts)
+                out.append(line[pos:m.start()])
+                out.append(f"{name}(\n  {formatted_parts}\n)")
+                pos = close_pos + 1
+                changed = True
+            else:
+                # Сдвигаемся за эту '(' и ищем дальше
+                out.append(line[pos:open_pos + 1])
+                pos = open_pos + 1
+        out.append(line[pos:])
+        return ''.join(out) if changed else line
 
     def _highlight_search_matches(self):
         """Подсвечивает совпадения текущего поискового запроса в окне 'Выделение'
