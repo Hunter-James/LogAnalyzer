@@ -38,12 +38,14 @@ UI_FEATURE_LABELS = {
 # --- Settings Management ---
 SETTINGS_FILENAME = "settings.json"
 
+
 def get_settings_path():
     if getattr(sys, 'frozen', False):
         application_path = os.path.dirname(sys.executable)
     else:
         application_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(application_path, SETTINGS_FILENAME)
+
 
 def load_settings():
     path = get_settings_path()
@@ -67,9 +69,11 @@ def load_settings():
     # подставляем True (включено), чтобы не скрывать новые фичи у старых пользователей.
     user_features = defaults.get("ui_features", {}) or {}
     merged_features = dict(DEFAULT_UI_FEATURES)
-    merged_features.update({k: bool(v) for k, v in user_features.items() if k in DEFAULT_UI_FEATURES})
+    merged_features.update({k: bool(v)
+                           for k, v in user_features.items() if k in DEFAULT_UI_FEATURES})
     defaults["ui_features"] = merged_features
     return defaults
+
 
 def save_settings(data):
     """
@@ -82,6 +86,7 @@ def save_settings(data):
             json.dump(data, f, indent=4)
     except Exception as e:
         print(f"Failed to save settings: {e}")
+
 
 # --- Theme Definitions ---
 THEMES = {

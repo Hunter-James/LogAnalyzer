@@ -7,7 +7,7 @@ from core.models import BATCH_EVENT_RULES
 
 def _adjust_color(hex_color, delta):
     h = hex_color.lstrip('#')
-    rgb = [int(h[i:i+2], 16) for i in (0, 2, 4)]
+    rgb = [int(h[i:i + 2], 16) for i in (0, 2, 4)]
     rgb = [max(0, min(255, c + delta)) for c in rgb]
     return '#{:02x}{:02x}{:02x}'.format(*rgb)
 
@@ -38,10 +38,10 @@ def _format_delta_short(ms):
     if ms < 1000:
         return f"{ms:.0f} ms"
     if ms < 60_000:
-        return f"{ms/1000:.2f} с"
+        return f"{ms / 1000:.2f} с"
     if ms < 3_600_000:
-        return f"{ms/60_000:.2f} мин"
-    return f"{ms/3_600_000:.2f} ч"
+        return f"{ms / 60_000:.2f} мин"
+    return f"{ms / 3_600_000:.2f} ч"
 
 
 def _build_analysis_html(analysis, theme_name):
@@ -221,7 +221,7 @@ def _build_analysis_html(analysis, theme_name):
             # ms -> HH:MM:SS.mmm
             def to_hms(ms):
                 s = ms // 1000
-                return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}.{ms%1000:03d}"
+                return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}.{ms % 1000:03d}"
             parts.append(f"&nbsp;&nbsp;• {to_hms(start_ms)} → {to_hms(end_ms)} "
                          f"({_format_delta_short(diff_ms)})<br>")
         parts.append("</div>")

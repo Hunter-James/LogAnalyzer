@@ -7,6 +7,8 @@ from PyQt6.QtGui import (QWheelEvent, QPainter, QColor, QSyntaxHighlighter,
                          QTextCharFormat, QFont, QMouseEvent)
 
 # --- Custom Widgets for Zooming ---
+
+
 class ScalableListView(QListView):
     zoomRequest = pyqtSignal(int)
 

@@ -52,8 +52,6 @@ class MainWindow(QMainWindow):
         self.current_font_size = self.settings.get("font_size", 10)
         self.ui_features = self.settings.get("ui_features", dict(DEFAULT_UI_FEATURES))
 
-
-
         self.setup_ui()
         self.apply_theme(self.current_theme_name)
 
@@ -111,7 +109,8 @@ class MainWindow(QMainWindow):
         self.chk_error.stateChanged.connect(self.on_global_filter_changed)
 
         self.chk_group = QCheckBox("Свернуть дубли")
-        self.chk_group.setToolTip("Схлопывать подряд идущие одинаковые сообщения в одну строку с префиксом [×N]")
+        self.chk_group.setToolTip(
+            "Схлопывать подряд идущие одинаковые сообщения в одну строку с префиксом [×N]")
         self.chk_group.setChecked(False)
         self.chk_group.stateChanged.connect(self.on_global_filter_changed)
 
@@ -169,8 +168,11 @@ class MainWindow(QMainWindow):
         tb_layout.setContentsMargins(10, 5, 10, 5)
 
         if self.current_theme_name == "Default":
-            self.btn_open.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
-            self.btn_settings.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+            self.btn_open.setIcon(
+                self.style().standardIcon(
+                    QStyle.StandardPixmap.SP_DialogOpenButton))
+            self.btn_settings.setIcon(self.style().standardIcon(
+                QStyle.StandardPixmap.SP_FileDialogDetailedView))
         else:
             self.btn_open.setIcon(QIcon())
             self.btn_settings.setIcon(QIcon())
@@ -233,26 +235,35 @@ class MainWindow(QMainWindow):
     def apply_stylesheet(self, t):
         # Base styles
         qss = f"""
-            QMainWindow, QWidget {{ background-color: {t['bg_main']}; color: {t['text_main']}; font-family: '{t['font_family']}'; }}
+            QMainWindow, QWidget {{
+                background-color: {t['bg_main']}; color: {t['text_main']};
+                font-family: '{t['font_family']}';
+            }}
             QFrame#Panel {{ background-color: {t['bg_panel']}; border: 1px solid {t['border']}; }}
-            QLineEdit {{ background-color: {t['bg_main']}; border: 1px solid {t['border']}; padding: 6px; color: {t['text_main']}; }}
+            QLineEdit {{
+                background-color: {t['bg_main']}; border: 1px solid {t['border']};
+                padding: 6px; color: {t['text_main']};
+            }}
             QListView {{ background-color: {t['bg_main']}; border: none; }}
             QListView::item {{ padding: 4px; border-bottom: 1px solid {t['border']}; }}
             QListView::item:selected {{ background-color: {t['selection']}; color: {t['text_main']}; }}
-            QTextEdit {{ background-color: {t['bg_panel']}; border-top: 1px solid {t['border']}; color: {t['text_main']}; font-family: '{t['mono_font']}'; }}
+            QTextEdit {{
+                background-color: {t['bg_panel']}; border-top: 1px solid {t['border']};
+                color: {t['text_main']}; font-family: '{t['mono_font']}';
+            }}
             QSplitter::handle {{ background-color: {t['border']}; }}
             QTabWidget::pane {{ border: 1px solid {t['border']}; top: -1px; }}
-            QTabBar::tab {{ 
-                background: {t['bg_panel']}; 
-                color: {t['text_muted']}; 
-                padding: 8px 15px; 
-                border: 1px solid {t['border']}; 
-                border-bottom: none; 
+            QTabBar::tab {{
+                background: {t['bg_panel']};
+                color: {t['text_muted']};
+                padding: 8px 15px;
+                border: 1px solid {t['border']};
+                border-bottom: none;
                 margin-right: 2px;
             }}
-            QTabBar::tab:selected {{ 
-                background: {t['bg_main']}; 
-                color: {t['text_main']}; 
+            QTabBar::tab:selected {{
+                background: {t['bg_main']};
+                color: {t['text_main']};
                 border-bottom: 1px solid {t['bg_main']};
             }}
             QTabBar::tab:!selected:hover {{ background: {t['selection']}; }}

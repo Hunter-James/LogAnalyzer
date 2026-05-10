@@ -44,7 +44,8 @@ class LogViewerWidget(QWidget):
         from config import DEFAULT_UI_FEATURES
         self._ui_features = dict(DEFAULT_UI_FEATURES)
         if ui_features:
-            self._ui_features.update({k: bool(v) for k, v in ui_features.items() if k in DEFAULT_UI_FEATURES})
+            self._ui_features.update({k: bool(v)
+                                     for k, v in ui_features.items() if k in DEFAULT_UI_FEATURES})
 
         self.stats = {}
         self.preserved_real_index = None
@@ -284,7 +285,8 @@ class LogViewerWidget(QWidget):
         self.search_journal_tree = QTreeWidget()
         self.search_journal_tree.setHeaderHidden(True)
         # Включаем множественное выделение (с Shift / Ctrl)
-        self.search_journal_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.search_journal_tree.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
         # Подключаем кастомное контекстное меню
         self.search_journal_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.search_journal_tree.customContextMenuRequested.connect(self.show_journal_context_menu)
@@ -648,7 +650,8 @@ class LogViewerWidget(QWidget):
                 root = QTreeWidgetItem(self.batches_tree, [label])
                 # Помечаем тип узла для обработчиков
                 root.setData(0, Qt.ItemDataRole.UserRole, ('batch', bid))
-                # Фейк-чайлд - чтобы появился треугольник раскрытия. Заменим на реальные при expand.
+                # Фейк-чайлд - чтобы появился треугольник раскрытия. Заменим на реальные
+                # при expand.
                 if count > 0:
                     placeholder = QTreeWidgetItem(root, ["…"])
                     placeholder.setData(0, Qt.ItemDataRole.UserRole, ('placeholder', None))
@@ -700,8 +703,9 @@ class LogViewerWidget(QWidget):
             if total_in_batch > max_rows:
                 hidden = total_in_batch - max_rows
                 note = QTreeWidgetItem(
-                    item, [f"… ещё {hidden:,} строк не показано (лимит {max_rows} для производительности)"]
-                )
+                    item, [
+                        f"… ещё {
+                            hidden:,} строк не показано (лимит {max_rows} для производительности)"])
                 note.setData(0, Qt.ItemDataRole.UserRole, ('note', None))
         finally:
             self.batches_tree.setUpdatesEnabled(True)
@@ -843,7 +847,8 @@ class LogViewerWidget(QWidget):
         """Применяет настройки видимости элементов UI.
         Скрытые виджеты не теряют состояние - можно вернуть в Настройках."""
         self._ui_features = dict(self._ui_features)
-        self._ui_features.update({k: bool(v) for k, v in features.items() if k in self._ui_features})
+        self._ui_features.update({k: bool(v)
+                                 for k, v in features.items() if k in self._ui_features})
 
         # Опциональные элементы поисковой панели
         self.btn_match_case.setVisible(self._ui_features["match_case"])
@@ -1036,9 +1041,9 @@ class LogViewerWidget(QWidget):
 
             if match_count > max_per_search:
                 QTreeWidgetItem(
-                    file_item,
-                    [f"... ещё {match_count - max_per_search} совпадений не показано (для производительности)"]
-                )
+                    file_item, [
+                        f"... ещё {
+                            match_count - max_per_search} совпадений не показано (для производительности)"])
 
             root_item.setExpanded(True)
             file_item.setExpanded(True)
@@ -1065,8 +1070,11 @@ class LogViewerWidget(QWidget):
     def copy_journal_selection(self):
         """Копирование выделенных элементов из дерева журнала"""
         text_list = []
-        # QTreeWidgetItemIterator позволяет пройти по дереву сверху вниз и сохранить правильный порядок
-        iterator = QTreeWidgetItemIterator(self.search_journal_tree, QTreeWidgetItemIterator.IteratorFlag.Selected)
+        # QTreeWidgetItemIterator позволяет пройти по дереву сверху вниз и
+        # сохранить правильный порядок
+        iterator = QTreeWidgetItemIterator(
+            self.search_journal_tree,
+            QTreeWidgetItemIterator.IteratorFlag.Selected)
         while iterator.value():
             item = iterator.value()
             text_list.append(item.text(0))
@@ -1085,8 +1093,11 @@ class LogViewerWidget(QWidget):
                 self.log_view.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
                 self.log_view.setFocus()
             else:
-                QMessageBox.information(self, "Информация",
-                                        "Эта строка скрыта текущими фильтрами (INFO/DEBUG/WARN/ERROR) или текстом поиска.\n\nОчистите фильтры для перехода к ней.")
+                QMessageBox.information(
+                    self,
+                    "Информация",
+                    "Эта строка скрыта текущими фильтрами (INFO/DEBUG/WARN/ERROR) "
+                    "или текстом поиска.\n\nОчистите фильтры для перехода к ней.")
 
     def refresh_view(self):
         current_index = self.log_view.currentIndex()
@@ -1308,7 +1319,8 @@ class LogViewerWidget(QWidget):
                     text = self._prettify_json_in_text(text)
                 full_text += text + "\n" + "=" * 80 + "\n"
             if len(selected_indexes) > 50:
-                full_text += f"\n... и ещё {len(selected_indexes) - 50} выделенных строк не показано."
+                full_text += f"\n... и ещё {len(selected_indexes) -
+                                            50} выделенных строк не показано."
             # В режиме JSON-формата включаем code folding + подсветку.
             # В обычном режиме - просто текст.
             if format_json:
@@ -1348,9 +1360,8 @@ class LogViewerWidget(QWidget):
 
         if extras_count > 0:
             note = QTreeWidgetItem(
-                self.details_tree,
-                ["", f"... и ещё {extras_count} выделенных строк не показано (показана только первая)"]
-            )
+                self.details_tree, [
+                    "", f"... и ещё {extras_count} выделенных строк не показано (показана только первая)"])
             note.setForeground(1, QColor("#888888"))
 
     @staticmethod
@@ -1538,10 +1549,10 @@ class LogViewerWidget(QWidget):
         if a < 1000:
             return f"{sign}{a}ms"
         if a < 60_000:
-            return f"{sign}{a/1000:.2f}s"
+            return f"{sign}{a / 1000:.2f}s"
         if a < 3_600_000:
-            return f"{sign}{a/60_000:.1f}m"
-        return f"{sign}{a/3_600_000:.2f}h"
+            return f"{sign}{a / 60_000:.1f}m"
+        return f"{sign}{a / 3_600_000:.2f}h"
 
     @staticmethod
     def _prettify_json_in_text(text):

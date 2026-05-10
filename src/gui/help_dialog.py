@@ -249,7 +249,7 @@ HELP_BODY = r"""
 def _adjust_color(hex_color, delta):
     """Делает цвет светлее (+) или темнее (-) на delta (0-255)."""
     h = hex_color.lstrip('#')
-    rgb = [int(h[i:i+2], 16) for i in (0, 2, 4)]
+    rgb = [int(h[i:i + 2], 16) for i in (0, 2, 4)]
     rgb = [max(0, min(255, c + delta)) for c in rgb]
     return '#{:02x}{:02x}{:02x}'.format(*rgb)
 

@@ -89,6 +89,7 @@ def _open_log_stream(file_path):
         text = io.TextIOWrapper(raw, encoding='utf-8', errors='replace')
         # Закрытие zf при закрытии text не происходит автоматически - привяжем
         original_close = text.close
+
         def _close():
             try:
                 original_close()
@@ -186,10 +187,14 @@ class FilterWorker(QThread):
 
     def run(self):
         active_levels = set()
-        if self.show_info: active_levels.add("INFO")
-        if self.show_debug: active_levels.add("DEBUG")
-        if self.show_error: active_levels.add("ERROR")
-        if self.show_warn: active_levels.add("WARN")
+        if self.show_info:
+            active_levels.add("INFO")
+        if self.show_debug:
+            active_levels.add("DEBUG")
+        if self.show_error:
+            active_levels.add("ERROR")
+        if self.show_warn:
+            active_levels.add("WARN")
 
         search_text = self.search_text
         entries = self.entries

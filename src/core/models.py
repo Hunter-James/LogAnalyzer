@@ -12,50 +12,50 @@ from core.workers import FilterWorker
 BATCH_EVENT_RULES = [
     # --- Печать ---
     ('print_request', 'Запросов на печать кода (getAndPrintAggregationCode)',
-        lambda e, l: e.logger == 'AggregationBase' and '.getAndPrintAggregationCode' in l),
+        lambda e, line: e.logger == 'AggregationBase' and '.getAndPrintAggregationCode' in line),
     ('print_sent', 'Отправлено в принтер (printAggregationCode)',
-        lambda e, l: e.logger == 'AggregationBase' and '.printAggregationCode' in l),
+        lambda e, line: e.logger == 'AggregationBase' and '.printAggregationCode' in line),
     ('print_sato', 'Через SATO.sendCode',
-        lambda e, l: e.logger == 'SATO' and '.sendCode' in l),
+        lambda e, line: e.logger == 'SATO' and '.sendCode' in line),
     ('print_data', 'PrintService.sendData',
-        lambda e, l: e.logger == 'PrintService' and '.sendData' in l),
+        lambda e, line: e.logger == 'PrintService' and '.sendData' in line),
     # --- Агрегация ---
     ('agg_attempted', 'Попыток агрегации (manageAggregationCode)',
-        lambda e, l: e.logger == 'LinearAggregation' and '.manageAggregationCode' in l),
+        lambda e, line: e.logger == 'LinearAggregation' and '.manageAggregationCode' in line),
     ('agg_finished', 'Завершено агрегаций (finishAggregation)',
-        lambda e, l: e.logger == 'AggregationBase' and '.finishAggregation' in l),
+        lambda e, line: e.logger == 'AggregationBase' and '.finishAggregation' in line),
     ('agg_finish_response', 'Ответов на завершение (manageFinishAggregationResponse)',
-        lambda e, l: e.logger == 'AggregationBase' and '.manageFinishAggregationResponse' in l),
+        lambda e, line: e.logger == 'AggregationBase' and '.manageFinishAggregationResponse' in line),
     ('agg_cleared', 'Очищено групп (clearAggGroup)',
-        lambda e, l: e.logger == 'AggregationBase' and '.clearAggGroup' in l),
+        lambda e, line: e.logger == 'AggregationBase' and '.clearAggGroup' in line),
     # --- Сканирование / верификация ---
     ('scan_hikrobot', 'Сканирований HIKROBOT',
-        lambda e, l: e.logger == 'HIKROBOT' and '.run' in l),
+        lambda e, line: e.logger == 'HIKROBOT' and '.run' in line),
     ('scan_image', 'Изображений обработано (FileWatcher.processImageFile)',
-        lambda e, l: e.logger == 'FileWatcher' and '.processImageFile' in l),
+        lambda e, line: e.logger == 'FileWatcher' and '.processImageFile' in line),
     # --- Проблемы / ошибки ---
     ('err_not_found', 'Кодов «не найден в базе»',
-        lambda e, l: 'не найден в базе' in l),
+        lambda e, line: 'не найден в базе' in line),
     ('err_dup_in_groups', 'Дублей: код «уже находится в одной из агрегационных групп»',
-        lambda e, l: 'уже находится в одной из агрегационных групп' in l),
+        lambda e, line: 'уже находится в одной из агрегационных групп' in line),
     ('err_dup_in_current', 'Дублей: «уже добавлен в агрегационную группу»',
-        lambda e, l: 'уже добавлен в агрегационную группу' in l),
+        lambda e, line: 'уже добавлен в агрегационную группу' in line),
     ('err_processor_busy', 'Агрегационный процессор занят / не найден',
-        lambda e, l: 'процессор для заданного уровня не найден или занят' in l),
+        lambda e, line: 'процессор для заданного уровня не найден или занят' in line),
     ('err_jwt_expired', 'JWT-токен истёк (нужна повторная авторизация)',
-        lambda e, l: 'JWT expired' in l),
+        lambda e, line: 'JWT expired' in line),
     ('err_empty_image', 'Пустое изображение со сканера',
-        lambda e, l: 'пустое изображение' in l.lower()),
+        lambda e, line: 'пустое изображение' in line.lower()),
     ('err_scanner_read', 'Ошибки чтения со сканера HIKROBOT',
-        lambda e, l: 'ошибка во время чтения кодов со сканера' in l.lower()),
+        lambda e, line: 'ошибка во время чтения кодов со сканера' in line.lower()),
     # --- Сериализация / обмен ---
     ('exchange_sgtin', 'Синхронизаций с Л2 (exchangeSgtinEvents)',
-        lambda e, l: e.logger == 'ExchangeService' and '.exchangeSgtinEvents' in l),
+        lambda e, line: e.logger == 'ExchangeService' and '.exchangeSgtinEvents' in line),
     ('serialization', 'Подтверждений печати (manageNextConfirmedPrint)',
-        lambda e, l: e.logger == 'SerializationService' and '.manageNextConfirmedPrint' in l),
+        lambda e, line: e.logger == 'SerializationService' and '.manageNextConfirmedPrint' in line),
     # --- HTTP API ---
     ('http_request', 'HTTP-запросов (CustomLogFilter.beforeRequest)',
-        lambda e, l: e.logger == 'CustomLogFilter' and '.beforeRequest' in l),
+        lambda e, line: e.logger == 'CustomLogFilter' and '.beforeRequest' in line),
 ]
 
 
@@ -77,9 +77,11 @@ GROUP_CODE_RE = re.compile(r'\b04\d{16}\b')
 # в ERROR-сообщениях иногда такие символы попадаются в самом коде. Координат
 # (как в HIKROBOT.run) тут не бывает, так что лимит длины 30 chars держит безопасно.
 _NORMALIZE_CODE = re.compile(r"\b01\d{14}[^ \t\n\r\f\v]{6,30}")
-_NORMALIZE_GUID = re.compile(r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', re.I)
+_NORMALIZE_GUID = re.compile(
+    r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', re.I)
 _NORMALIZE_GROUP = re.compile(r'L2_[0-9a-f-]+_LEVEL_\d+_GROUP_ID_\d+', re.I)
 _NORMALIZE_LONG_NUM = re.compile(r'\b\d{6,}\b')
+
 
 def _normalize_error_message(msg):
     """Заменяет переменные части (коды, числа, UUID) на плейсхолдеры,
@@ -90,6 +92,7 @@ def _normalize_error_message(msg):
     s = _NORMALIZE_LONG_NUM.sub('<N>', s)
     return s.strip()
 
+
 # Партии: события, по которым мы режем лог.
 # Открытие/переключение партии: setCurrentBatch?batchId=N (N может быть -1 -> вне партии)
 # Закрытие партии: /api/close (от CustomLogFilter, чтобы не зацепить случайные совпадения)
@@ -99,6 +102,8 @@ _BATCH_OPEN_RE = re.compile(r'setCurrentBatch\?batchId=(-?\d+)')
 NO_BATCH = ""
 
 # --- Model ---
+
+
 class LogModel(QAbstractListModel):
     filterFinished = pyqtSignal()
 
@@ -109,9 +114,11 @@ class LogModel(QAbstractListModel):
         self._raw_filtered_indices = list(range(len(self._entries)))
         # _filtered_indices - то, что реально отображается; при группировке это лидеры групп
         self._filtered_indices = list(self._raw_filtered_indices)
-        # _filtered_counts - количество схлопнутых записей в каждой группе; пусто, если группировка выключена
+        # _filtered_counts - количество схлопнутых записей в каждой группе; пусто,
+        # если группировка выключена
         self._filtered_counts = []
-        # _member_to_row - real_index -> row, заполняется только при группировке для быстрого find_row_by_real_index
+        # _member_to_row - real_index -> row, заполняется только при группировке
+        # для быстрого find_row_by_real_index
         self._member_to_row = {}
 
         self._show_info = True
@@ -179,10 +186,14 @@ class LogModel(QAbstractListModel):
                     return f"[×{count} свёрнуто] {entry.message}"
             return entry.message
         if role == Qt.ItemDataRole.ForegroundRole:
-            if entry.level == "INFO": return self.color_info
-            if entry.level == "DEBUG": return self.color_debug
-            if entry.level == "ERROR": return self.color_error
-            if entry.level == "WARN": return self.color_warn
+            if entry.level == "INFO":
+                return self.color_info
+            if entry.level == "DEBUG":
+                return self.color_debug
+            if entry.level == "ERROR":
+                return self.color_error
+            if entry.level == "WARN":
+                return self.color_warn
             return self.color_default
         if role == Qt.ItemDataRole.FontRole:
             return self.font_mono
@@ -302,7 +313,8 @@ class LogModel(QAbstractListModel):
                 }
             agg[bid]['count'] += seg['end'] - seg['start'] + 1
             # first_ts - минимальный по времени, last_ts - максимальный
-            if seg['first_ts'] and (not agg[bid]['first_ts'] or seg['first_ts'] < agg[bid]['first_ts']):
+            if seg['first_ts'] and (
+                    not agg[bid]['first_ts'] or seg['first_ts'] < agg[bid]['first_ts']):
                 agg[bid]['first_ts'] = seg['first_ts']
             if seg['last_ts'] and seg['last_ts'] > agg[bid]['last_ts']:
                 agg[bid]['last_ts'] = seg['last_ts']
@@ -427,10 +439,10 @@ class LogModel(QAbstractListModel):
         # Длительность
         duration_ms = 0
         if first_ts and last_ts:
-            f = ts_to_ms(first_ts)
-            l = ts_to_ms(last_ts)
-            if f is not None and l is not None:
-                duration_ms = max(0, l - f)
+            first_ms = ts_to_ms(first_ts)
+            last_ms = ts_to_ms(last_ts)
+            if first_ms is not None and last_ms is not None:
+                duration_ms = max(0, last_ms - first_ms)
 
         per_hour = 0
         if duration_ms > 0:
@@ -439,7 +451,7 @@ class LogModel(QAbstractListModel):
         avg_scan_delta_ms = None
         if len(scan_timestamps_ms) >= 2:
             scan_timestamps_ms.sort()
-            deltas = [scan_timestamps_ms[i] - scan_timestamps_ms[i-1]
+            deltas = [scan_timestamps_ms[i] - scan_timestamps_ms[i - 1]
                       for i in range(1, len(scan_timestamps_ms))]
             avg_scan_delta_ms = sum(deltas) / len(deltas)
 
@@ -448,10 +460,10 @@ class LogModel(QAbstractListModel):
         if len(all_timestamps_ms) >= 2:
             all_timestamps_ms_sorted = sorted(all_timestamps_ms)
             for j in range(1, len(all_timestamps_ms_sorted)):
-                diff = all_timestamps_ms_sorted[j] - all_timestamps_ms_sorted[j-1]
+                diff = all_timestamps_ms_sorted[j] - all_timestamps_ms_sorted[j - 1]
                 if diff > PAUSE_THRESHOLD_MS:
                     pauses.append(
-                        (all_timestamps_ms_sorted[j-1], all_timestamps_ms_sorted[j], diff)
+                        (all_timestamps_ms_sorted[j - 1], all_timestamps_ms_sorted[j], diff)
                     )
         # Топ-5 самых длинных пауз
         pauses.sort(key=lambda x: x[2], reverse=True)

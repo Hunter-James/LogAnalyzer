@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QTimer
 from PyQt6.QtGui import QDrag, QPixmap, QCursor, QPainter, QColor
 from gui.log_viewer import LogViewerWidget
 
+
 class DraggableTabBar(QTabBar):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -220,7 +221,8 @@ class EditorTabWidget(QTabWidget):
 
     def on_current_changed(self, index):
         if index >= 0:
-            if not QApplication.keyboardModifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            if not QApplication.keyboardModifiers() & (
+                    Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
                 self.tab_bar.selected_indices = {index}
                 self.tab_bar.last_clicked_index = index
                 self.tab_bar.update()
@@ -260,11 +262,11 @@ class EditorTabWidget(QTabWidget):
 
                     if target_index == -1:
                         if self.tabBar().geometry().contains(tab_bar_pos):
-                             target_index = self.count() - 1
+                            target_index = self.count() - 1
                         else:
-                             QTimer.singleShot(0, lambda: self.moveTabRequested.emit(source_index))
-                             event.accept()
-                             return
+                            QTimer.singleShot(0, lambda: self.moveTabRequested.emit(source_index))
+                            event.accept()
+                            return
 
                     if source_index != target_index:
                         widget = self.widget(source_index)
@@ -294,6 +296,7 @@ class EditorTabWidget(QTabWidget):
             except Exception as e:
                 print(f"Drop error: {e}")
                 event.ignore()
+
 
 class SplitManager(QSplitter):
     activeTabChanged = pyqtSignal(object)
