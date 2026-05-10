@@ -17,33 +17,10 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Настройки")
         self.resize(460, 540)
 
-        # Apply Theme to Dialog
-        t = THEMES[current_theme]
-        self.setStyleSheet(f"""
-            QDialog {{ background-color: {t['bg_main']}; color: {t['text_main']}; }}
-            QLabel, QCheckBox, QGroupBox {{ color: {t['text_main']}; }}
-            QGroupBox {{
-                border: 1px solid {t['border']};
-                border-radius: 3px;
-                margin-top: 10px;
-                padding-top: 8px;
-            }}
-            QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; }}
-            QComboBox, QSpinBox {{
-                background-color: {t['bg_panel']};
-                color: {t['text_main']};
-                border: 1px solid {t['border']};
-                padding: 4px;
-            }}
-            QPushButton {{
-                background-color: {t['bg_panel']};
-                color: {t['text_main']};
-                border: 1px solid {t['border']};
-                padding: 6px 12px;
-            }}
-            QPushButton:hover {{ background-color: {t['accent']}; color: white; }}
-            QScrollArea {{ border: none; }}
-        """)
+        # Стиль сам диалога зависит от темы; применяем в отдельном методе,
+        # чтобы пере-применять при live-превью (иначе старая стилизация
+        # диалога остаётся и каскадно накладывается на новую тему окна).
+        self._apply_theme_stylesheet(current_theme)
 
         layout = QVBoxLayout(self)
 
@@ -109,7 +86,42 @@ class SettingsDialog(QDialog):
         btn_box.addWidget(btn_cancel)
         layout.addLayout(btn_box)
 
+    def _apply_theme_stylesheet(self, theme_name):
+        """Перерисовывает стиль самого диалога под выбранную тему. Вызывается
+        в __init__ и при каждом live-превью, иначе предыдущая стилизация
+        каскадно конфликтует с новыми цветами темы основного окна."""
+        t = THEMES[theme_name]
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {t['bg_main']}; color: {t['text_main']}; }}
+            QLabel, QCheckBox, QGroupBox {{ color: {t['text_main']}; }}
+            QGroupBox {{
+                border: 1px solid {t['border']};
+                border-radius: 3px;
+                margin-top: 10px;
+                padding-top: 8px;
+            }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; }}
+            QComboBox, QSpinBox {{
+                background-color: {t['bg_panel']};
+                color: {t['text_main']};
+                border: 1px solid {t['border']};
+                padding: 4px;
+            }}
+            QPushButton {{
+                background-color: {t['bg_panel']};
+                color: {t['text_main']};
+                border: 1px solid {t['border']};
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{ background-color: {t['accent']}; color: white; }}
+            QScrollArea {{ border: none; background-color: {t['bg_main']}; }}
+            QFrame {{ background-color: {t['bg_panel']}; color: {t['text_main']}; }}
+        """)
+
     def _emit_preview(self, *_):
+        # Сначала перерисовываем сам диалог под новую тему (чтобы он не
+        # конфликтовал с темой главного окна), потом - испускаем сигнал наружу.
+        self._apply_theme_stylesheet(self.theme_combo.currentText())
         self.previewChanged.emit(self.theme_combo.currentText(), self.font_spin.value())
 
     def get_settings(self):
