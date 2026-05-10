@@ -12,7 +12,8 @@ from PyQt6.QtGui import QFont, QKeySequence, QTextCursor, QTextCharFormat, QColo
 
 from core.models import LogModel
 from core.workers import LogLoader, IncrementalLogParser
-from gui.custom_widgets import ScalableListView, ScalableTextEdit, MarkerScrollBar
+from gui.custom_widgets import (ScalableListView, MarkerScrollBar,
+                                FoldableJsonTextEdit)
 from gui.batch_analysis_dialog import BatchAnalysisDialog
 from config import THEMES
 
@@ -265,8 +266,7 @@ class LogViewerWidget(QWidget):
         # Details: stack из текстового вида и древовидного
         self.details_stack = QStackedWidget()
 
-        self.details_view = ScalableTextEdit()
-        self.details_view.setReadOnly(True)
+        self.details_view = FoldableJsonTextEdit()
         self.details_stack.addWidget(self.details_view)
 
         self.details_tree = QTreeWidget()
@@ -1257,11 +1257,15 @@ class LogViewerWidget(QWidget):
         self._refresh_details_view()
 
     def _on_json_format_toggled(self, checked):
-        """{} JSON и Дерево взаимоисключающие - включение одного выключает другое."""
+        """{} JSON и Дерево взаимоисключающие - включение одного выключает другое.
+        После того как выключили Дерево, обязательно переключаем stack обратно на
+        текстовый view, иначе UI остался бы на дереве (старый баг)."""
         if checked and self.btn_json_tree.isChecked():
             self.btn_json_tree.blockSignals(True)
             self.btn_json_tree.setChecked(False)
             self.btn_json_tree.blockSignals(False)
+        # Любое нажатие/отжатие "{ } JSON" возвращает stack на текстовую страницу
+        self.details_stack.setCurrentIndex(0)
         self._refresh_details_view()
 
     def _on_json_tree_toggled(self, checked):
@@ -1305,7 +1309,12 @@ class LogViewerWidget(QWidget):
                 full_text += text + "\n" + "=" * 80 + "\n"
             if len(selected_indexes) > 50:
                 full_text += f"\n... и ещё {len(selected_indexes) - 50} выделенных строк не показано."
-            self.details_view.setPlainText(full_text)
+            # В режиме JSON-формата включаем code folding + подсветку.
+            # В обычном режиме - просто текст.
+            if format_json:
+                self.details_view.setPlainTextWithFolding(full_text)
+            else:
+                self.details_view.setPlainText(full_text)
             self._highlight_search_matches()
 
         self._update_selection_info(selected_indexes)
