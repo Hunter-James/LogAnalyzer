@@ -4,8 +4,27 @@ import io
 import time
 import gzip
 import zipfile
+import shutil
+import tempfile
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.entities import LogEntry
+
+# Опциональные библиотеки для 7z и rar. Импорт делаем мягким - если пакет не
+# установлен, поддержка соответствующего архива отключается, а юзер получает
+# понятное сообщение в _open_log_stream.
+try:
+    import py7zr
+    _HAS_PY7ZR = True
+except ImportError:  # pragma: no cover
+    py7zr = None
+    _HAS_PY7ZR = False
+
+try:
+    import rarfile
+    _HAS_RARFILE = True
+except ImportError:  # pragma: no cover
+    rarfile = None
+    _HAS_RARFILE = False
 
 
 # Шаблон строки лога: ВРЕМЯ [УРОВЕНЬ] [Логгер.метод]: ...
@@ -57,9 +76,10 @@ class IncrementalLogParser:
 
 
 def _open_log_stream(file_path):
-    """Открывает .log/.txt/.gz/.zip и возвращает (text-stream, total_bytes_for_progress).
-    Для .zip берём первый файл с расширением .log/.txt; если таких нет — кидаем ошибку.
-    total_bytes для .gz/.zip — это РАСПАКОВАННЫЙ размер (для расчёта прогресса)."""
+    """Открывает .log/.txt/.gz/.zip/.7z/.rar и возвращает (text-stream, total_bytes).
+    Для архивов с несколькими файлами берём первый с расширением .log/.txt;
+    если таких нет — кидаем ошибку. total_bytes для архивов — это РАСПАКОВАННЫЙ
+    размер (для расчёта прогресса)."""
     low = file_path.lower()
     if low.endswith('.gz'):
         # Размер несжатого: читаем последние 4 байта (ISIZE в gzip-трейлере) — это размер mod 2^32
@@ -98,8 +118,119 @@ def _open_log_stream(file_path):
         text.close = _close
         return text, info.file_size
 
+    if low.endswith('.7z'):
+        if not _HAS_PY7ZR:
+            raise ValueError(
+                "Для открытия .7z нужна библиотека py7zr.\n"
+                "Установи её: pip install py7zr"
+            )
+        # py7zr 1.x не даёт потокового чтения - только extract на диск. Поэтому
+        # распаковываем нужный файл во временную папку и читаем как обычный текст.
+        # Удаление tmp-папки навешиваем на close() потока.
+        sz = py7zr.SevenZipFile(file_path, 'r')
+        infos = sz.list()  # [FileInfo, ...]
+        candidates = [
+            fi for fi in infos
+            if not fi.is_directory and fi.filename.lower().endswith(('.log', '.txt'))
+        ]
+        if not candidates:
+            sz.close()
+            raise ValueError("В архиве .7z нет .log или .txt файлов")
+        target = candidates[0]
+        name = target.filename
+
+        tmp_dir = tempfile.mkdtemp(prefix='loganalyzer_7z_')
+        try:
+            sz.extract(path=tmp_dir, targets=[name])
+        finally:
+            sz.close()
+
+        extracted_path = os.path.join(tmp_dir, name)
+        if not os.path.exists(extracted_path):
+            # Имя файла в архиве могло содержать поддиректории / нестандартный
+            # разделитель. Подстрахуемся - ищем рекурсивно по basename.
+            base = os.path.basename(name)
+            for root, _dirs, files in os.walk(tmp_dir):
+                if base in files:
+                    extracted_path = os.path.join(root, base)
+                    break
+
+        if not os.path.exists(extracted_path):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise ValueError(f"Не удалось извлечь {name} из .7z")
+
+        stream = open(extracted_path, 'r', encoding='utf-8', errors='replace')
+        uncompressed = os.path.getsize(extracted_path)
+
+        # На закрытии stream чистим tmp_dir (включая распакованный файл).
+        original_close = stream.close
+
+        def _close():
+            try:
+                original_close()
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        stream.close = _close
+        return stream, uncompressed
+
+    if low.endswith('.rar'):
+        if not _HAS_RARFILE:
+            raise ValueError(
+                "Для открытия .rar нужна библиотека rarfile.\n"
+                "Установи её: pip install rarfile"
+            )
+        # rarfile требует внешний unrar.exe. Если он не в PATH - даём осмысленную ошибку
+        # ещё до открытия архива.
+        if not _find_unrar_tool():
+            raise ValueError(
+                "Для открытия .rar нужен unrar.exe в PATH.\n"
+                "Скачай WinRAR (https://www.win-rar.com) или unrar consumer "
+                "из https://www.rarlab.com/rar_add.htm и положи unrar.exe рядом "
+                "с LogAnalyzer.exe или в PATH."
+            )
+        rf = rarfile.RarFile(file_path)
+        candidates = [
+            n for n in rf.namelist()
+            if n.lower().endswith(('.log', '.txt')) and not n.endswith('/')
+        ]
+        if not candidates:
+            rf.close()
+            raise ValueError("В архиве .rar нет .log или .txt файлов")
+        name = candidates[0]
+        info = rf.getinfo(name)
+        raw = rf.open(name, 'r')
+        text = io.TextIOWrapper(raw, encoding='utf-8', errors='replace')
+        # rarfile сам закрывает архив при закрытии файлового объекта в большинстве
+        # случаев, но подстрахуемся - привяжем закрытие RarFile к TextIOWrapper.close.
+        original_close = text.close
+
+        def _close():
+            try:
+                original_close()
+            finally:
+                try:
+                    rf.close()
+                except Exception:
+                    pass
+        text.close = _close
+        return text, info.file_size
+
     # Обычный .log/.txt
     return open(file_path, 'r', encoding='utf-8', errors='replace'), os.path.getsize(file_path)
+
+
+def _find_unrar_tool():
+    """Возвращает True если на машине есть unrar/UnRAR.exe (в PATH или рядом с exe).
+    rarfile сам ищет unrar в PATH, но даёт невнятную ошибку - предпочитаем
+    проверить заранее и показать инструкцию по установке."""
+    if shutil.which("unrar") or shutil.which("UnRAR"):
+        return True
+    # Рядом с приложением - удобно для bundle-сценария
+    here = os.path.dirname(os.path.abspath(__file__))
+    for candidate in ("unrar.exe", "UnRAR.exe"):
+        if os.path.exists(os.path.join(here, candidate)):
+            return True
+    return False
 
 
 # --- Worker Thread for Loading Files ---
@@ -122,8 +253,8 @@ class LogLoader(QThread):
         try:
             stream, total_bytes = _open_log_stream(self.file_path)
             # Для tail удобнее знать позицию в исходном файле, а не в распакованном.
-            # Для plain .log это совпадает. Для .gz/.zip — tail отключим в UI.
-            is_plain = not self.file_path.lower().endswith(('.gz', '.zip'))
+            # Для plain .log это совпадает. Для .gz/.zip/.7z/.rar — tail отключим в UI.
+            is_plain = not self.file_path.lower().endswith(('.gz', '.zip', '.7z', '.rar'))
 
             bytes_read = 0
             last_emit_time = 0.0

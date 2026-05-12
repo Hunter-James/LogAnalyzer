@@ -57,7 +57,7 @@ class LogViewerWidget(QWidget):
         self._tail_parser = None
         self._tail_timer = None
         # Файл архивирован - tail для него не имеет смысла
-        self._is_archive = file_path.lower().endswith(('.gz', '.zip'))
+        self._is_archive = file_path.lower().endswith(('.gz', '.zip', '.7z', '.rar'))
 
         # Палитра JSON-токенов и дерева - наполняется в apply_theme.
         # Инициализируем пустым словарём, чтобы _populate_json_tree до первого
@@ -203,7 +203,7 @@ class LogViewerWidget(QWidget):
         )
         if self._is_archive:
             self.btn_follow.setEnabled(False)
-            self.btn_follow.setToolTip("Tail-режим недоступен для архивов (.gz, .zip)")
+            self.btn_follow.setToolTip("Tail-режим недоступен для архивов (.gz, .zip, .7z, .rar)")
         self.btn_follow.toggled.connect(self._on_follow_toggled)
         search_layout.addWidget(self.btn_follow)
 
