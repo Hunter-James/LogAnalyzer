@@ -319,7 +319,16 @@ class LogViewerWidget(QWidget):
         self.batches_tree.customContextMenuRequested.connect(self._show_batches_context_menu)
         self.batches_tree.itemDoubleClicked.connect(self._on_batches_tree_item_double_clicked)
         self.batches_tree.itemExpanded.connect(self._on_batches_tree_item_expanded)
-        self.bottom_tabs.addTab(self.batches_tree, "Партии")
+
+        # Контейнер с двумя подвкладками: "Все события" (дерево партий) и
+        # "История кода" (поиск конкретного SGTIN/SSCC/группового кода).
+        self.batches_container = QTabWidget()
+        self.batches_container.setTabPosition(QTabWidget.TabPosition.North)
+        self.batches_container.addTab(self.batches_tree, "Все события")
+        self.code_history_widget = self._build_code_history_widget()
+        self.batches_container.addTab(self.code_history_widget, "История кода")
+
+        self.bottom_tabs.addTab(self.batches_container, "Партии")
 
         self.splitter.addWidget(self.log_view)
         self.splitter.addWidget(self.bottom_tabs)
@@ -802,6 +811,224 @@ class LogViewerWidget(QWidget):
         elif action == act_collapse_all:
             self.batches_tree.collapseAll()
 
+    # ----- Подвкладка "История кода" -----
+
+    def _build_code_history_widget(self):
+        """Виджет под вкладкой Партии: поиск по коду + таблица его событий
+        с подсветкой типа события (печать / скан / агрегация / отбраковка / ...)."""
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(5, 5, 5, 5)
+        v.setSpacing(5)
+
+        # Строка поиска
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Код:"))
+        self.code_history_input = QLineEdit()
+        self.code_history_input.setPlaceholderText(
+            "SGTIN / SSCC / агрегат — целиком или подстрока (Enter — искать)")
+        self.code_history_input.returnPressed.connect(self._run_code_history_search)
+        row.addWidget(self.code_history_input, 1)
+
+        self.btn_code_history_find = QPushButton("Найти историю")
+        self.btn_code_history_find.clicked.connect(self._run_code_history_search)
+        row.addWidget(self.btn_code_history_find)
+
+        self.chk_code_history_batch_only = QCheckBox("Только в активных партиях")
+        self.chk_code_history_batch_only.setChecked(False)
+        row.addWidget(self.chk_code_history_batch_only)
+
+        v.addLayout(row)
+
+        # Результаты: таблица в виде QTreeWidget без иерархии
+        self.code_history_tree = QTreeWidget()
+        self.code_history_tree.setHeaderLabels(["Время", "Событие", "Сообщение"])
+        self.code_history_tree.setColumnWidth(0, 110)
+        self.code_history_tree.setColumnWidth(1, 240)
+        self.code_history_tree.setAlternatingRowColors(True)
+        self.code_history_tree.setUniformRowHeights(True)
+        self.code_history_tree.setRootIsDecorated(False)
+        self.code_history_tree.itemDoubleClicked.connect(
+            self._on_code_history_item_double_clicked)
+        v.addWidget(self.code_history_tree, 1)
+
+        # Статус-строка
+        self.code_history_status = QLabel("Введите код и нажмите Enter")
+        v.addWidget(self.code_history_status)
+
+        return w
+
+    def _run_code_history_search(self):
+        """Сканирует entries, отбирает строки где встречается код, классифицирует
+        каждое событие и кладёт в code_history_tree, отсортированно по времени."""
+        code = self.code_history_input.text().strip()
+        self.code_history_tree.clear()
+        if not code:
+            self.code_history_status.setText("Введите код для поиска")
+            return
+
+        entries = self.model._entries
+        bfi = self.model._batch_for_index
+        only_batch = self.chk_code_history_batch_only.isChecked()
+        # Множество "активных" партий (то что показывается в логе сейчас).
+        # Используем active_batches, если фильтр включён юзером.
+        active_ids = self.active_batches if only_batch else None
+
+        matches = []
+        for i, e in enumerate(entries):
+            if active_ids is not None:
+                bid = bfi[i] if i < len(bfi) else ""
+                if bid not in active_ids:
+                    continue
+            if code in e.full_line:
+                matches.append(i)
+
+        if not matches:
+            self.code_history_status.setText(
+                f"Не найдено упоминаний кода «{code}»"
+                + (" в активных партиях" if only_batch else "")
+            )
+            return
+
+        # Лимит для производительности дерева
+        MAX = 5000
+        display = matches[:MAX]
+
+        # Цвета событий берём из текущей темы (info/debug/warn/error)
+        t = THEMES.get(self.current_theme_name, {})
+        color_for_kind = {
+            'info': QColor(t.get('info', '#2E8B57')),
+            'debug': QColor(t.get('debug', '#4682B4')),
+            'warn': QColor(t.get('warn', '#FFA500')),
+            'error': QColor(t.get('error', '#CD5C5C')),
+        }
+
+        items = []
+        for idx in display:
+            e = entries[idx]
+            label, kind = self._classify_event_for_code(e, e.full_line)
+            ts = e.timestamp or ""
+            # Превью первой строки записи (могут быть многострочные через \n)
+            msg = e.message.split('\n', 1)[0]
+            if len(msg) > 300:
+                msg = msg[:300] + "..."
+            it = QTreeWidgetItem([ts, label, msg])
+            it.setData(0, Qt.ItemDataRole.UserRole, idx)
+            color = color_for_kind.get(kind)
+            if color is not None:
+                it.setForeground(1, color)
+            items.append(it)
+
+        self.code_history_tree.setUpdatesEnabled(False)
+        try:
+            self.code_history_tree.addTopLevelItems(items)
+        finally:
+            self.code_history_tree.setUpdatesEnabled(True)
+
+        suffix = f" (показано первые {MAX:,})" if len(matches) > MAX else ""
+        scope = " в активных партиях" if only_batch else ""
+        self.code_history_status.setText(
+            f"Найдено упоминаний{scope}: {len(matches):,}{suffix}"
+        )
+
+    @staticmethod
+    def _classify_event_for_code(entry, line):
+        """Классифицирует строку лога относительно кода - возвращает (label, kind),
+        где kind in {'info','debug','warn','error'} для подсветки.
+
+        Правила построены под smartl2-логи (печать / скан / агрегация / отбраковка)."""
+        lvl = entry.level
+        logger = entry.logger or ''
+        lower = line.lower()
+
+        # --- Печать ---
+        if '.printAggregationCode' in line:
+            return ("Напечатан", 'info')
+        if logger == 'SATO' and '.sendCode' in line:
+            return ("Отправлен на печать (SATO)", 'info')
+        if logger == 'PrintService' and '.sendData' in line:
+            return ("Отправлен на принтер", 'info')
+        if '.getAndPrintAggregationCode' in line:
+            return ("Запрос печати агрегата", 'info')
+        if 'manageNextConfirmedPrint' in line:
+            return ("Подтверждение печати", 'info')
+
+        # --- Сканирование / верификация камерой ---
+        if logger == 'HIKROBOT' and '.run' in line:
+            if 'noread' in lower or 'не прочитан' in lower:
+                return ("Не прочитан камерой", 'warn')
+            return ("Считан камерой", 'info')
+        if 'noread' in lower or 'не прочитан камерой' in lower:
+            return ("NoRead", 'warn')
+        if 'verif' in lower and 'не' not in lower[:max(0, lower.find('verif'))]:
+            # 'verified' / 'verification' - аккуратно с "не верифицирован"
+            if 'не верифиц' in lower:
+                return ("Не верифицирован", 'warn')
+            return ("Верифицирован", 'info')
+
+        # --- Агрегация / разагрегация ---
+        if '.finishAggregation' in line:
+            return ("Агрегирован", 'info')
+        if '.manageAggregationCode' in line:
+            return ("Попытка агрегации", 'debug')
+        if '.clearAggGroup' in line:
+            return ("Группа очищена", 'warn')
+        if '.manageFinishAggregationResponse' in line:
+            return ("Ответ на завершение агрегации", 'debug')
+        if 'дезагрегац' in lower or 'разагрегац' in lower or 'disaggregat' in lower:
+            return ("Разагрегирован", 'warn')
+
+        # --- Отбраковка / выбытие ---
+        if 'отбракован' in lower or 'rejection' in lower or 'rejected' in lower:
+            return ("Отбракован", 'error')
+        if 'выбыл' in lower or 'utilizat' in lower or 'withdraw' in lower:
+            return ("Выбыл", 'warn')
+
+        # --- Дубли / ошибки кодов ---
+        if 'уже находится в одной из агрегационных групп' in line:
+            return ("Дубль (в другой группе)", 'error')
+        if 'уже добавлен в агрегационную группу' in line:
+            return ("Дубль (в текущей группе)", 'error')
+        if 'не найден в базе' in line:
+            return ("Не найден в базе", 'error')
+        if 'процессор для заданного уровня не найден или занят' in line:
+            return ("Процессор занят/не найден", 'error')
+
+        # --- Обмен с Л2 / отчёты ---
+        if 'exchangeSgtinEvents' in line:
+            return ("Синхронизация с Л2", 'info')
+        if 'отчет о нанесении' in lower or 'introduction' in lower:
+            return ("Отчёт о нанесении", 'info')
+        if 'отчет о вводе' in lower:
+            return ("Отчёт о вводе в оборот", 'info')
+
+        # --- По умолчанию: по уровню ---
+        if lvl == 'ERROR':
+            return ("Ошибка", 'error')
+        if lvl == 'WARN':
+            return ("Предупреждение", 'warn')
+        if lvl == 'DEBUG':
+            return ("Отладка", 'debug')
+        return ("Событие", 'info')
+
+    def _on_code_history_item_double_clicked(self, item, column):
+        """Двойной клик по строке истории - переход к ней в основном лог-вьюхе."""
+        real_index = item.data(0, Qt.ItemDataRole.UserRole)
+        if real_index is None:
+            return
+        row = self.model.find_row_by_real_index(real_index)
+        if row != -1:
+            idx = self.model.index(row)
+            self.log_view.setCurrentIndex(idx)
+            self.log_view.scrollTo(idx, QAbstractItemView.ScrollHint.PositionAtCenter)
+            self.log_view.setFocus()
+        else:
+            QMessageBox.information(
+                self, "Информация",
+                "Эта строка скрыта текущими фильтрами / выбором партии.\n"
+                "Очистите фильтры для перехода к ней."
+            )
+
     def _open_batch_analysis(self, batch_id):
         """Запускает подсчёт метрик и открывает диалог BatchAnalysisDialog."""
         analysis = self.model.analyze_batch(batch_id)
@@ -829,6 +1056,7 @@ class LogViewerWidget(QWidget):
         self.details_view.setFont(font)
         self.details_tree.setFont(font)
         self.search_journal_tree.setFont(font)
+        self.code_history_tree.setFont(font)
 
         # Палитра для gutter + JSON-подсветки + цветов в дереве: уезжает в
         # FoldableJsonTextEdit и используется в _add_json_field/_populate_json_tree.
@@ -882,7 +1110,9 @@ class LogViewerWidget(QWidget):
         self.btn_batches.setVisible(self._ui_features["batches_filter"])
 
         # Tab "Партии" - скрываем через тот же ui_features.batches_filter
-        batches_tab_idx = self.bottom_tabs.indexOf(self.batches_tree)
+        # Вкладка "Партии" теперь - контейнер с подвкладками ("Все события" + "История кода"),
+        # поэтому ищем по контейнеру, а не по самому дереву.
+        batches_tab_idx = self.bottom_tabs.indexOf(self.batches_container)
         if batches_tab_idx != -1:
             self.bottom_tabs.setTabVisible(batches_tab_idx, self._ui_features["batches_filter"])
         self.lbl_time.setVisible(self._ui_features["time_range"])
