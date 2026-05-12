@@ -668,8 +668,103 @@ class LogViewerWidget(QWidget):
 
     # ----- Дерево партий во вкладке "Партии" -----
 
+    @staticmethod
+    def _classify_for_stats(line):
+        """Считаем по тем же сигналам, которые показывает отчёт smartl2 при
+        остановке сериализации (Напечатано / Прочитано / NoRead / Верифицировано /
+        Отбраковано). Возвращает ключ счётчика или None."""
+        # Статус кода → Printed = напечатан, → PrintConfirmed = верифицирован.
+        # Прямые строки smartl2 - самый надёжный источник.
+        if 'изменён на Printed' in line or 'изменен на Printed' in line:
+            return 'printed'
+        if ('изменён на PrintConfirmed' in line
+                or 'изменен на PrintConfirmed' in line
+                or 'изменён на Verified' in line):
+            return 'verified'
+        if 'изменён на Rejected' in line or 'изменен на Rejected' in line:
+            return 'rejected'
+        # Hikrobot события
+        if 'Hikrobot получены данные' in line:
+            return 'scanned'
+        lower = line.lower()
+        if 'hikrobot noread' in lower or 'noread' in lower or 'не прочитан камерой' in lower:
+            return 'noread'
+        if 'отбракован' in lower or 'rejection' in lower:
+            return 'rejected'
+        if 'не верифицирован' in lower:
+            return 'not_verified'
+        return None
+
+    def _ensure_batches_stats(self):
+        """Считает {bid: {printed, scanned, noread, verified, rejected, not_verified}}
+        один раз. Линейный проход по entries с быстрой классификацией. Кэш
+        инвалидируется в _invalidate_code_history (при reload / tail-append)."""
+        if getattr(self, '_batches_stats', None) is not None:
+            return self._batches_stats
+
+        from core.models import NO_BATCH
+        entries = self.model._entries
+        bfi = self.model._batch_for_index
+        keys = ('printed', 'scanned', 'noread',
+                'verified', 'rejected', 'not_verified')
+
+        stats = {}
+        for i, e in enumerate(entries):
+            key = self._classify_for_stats(e.full_line)
+            if not key:
+                continue
+            bid = bfi[i] if i < len(bfi) else NO_BATCH
+            bucket = stats.get(bid)
+            if bucket is None:
+                bucket = {k: 0 for k in keys}
+                stats[bid] = bucket
+            bucket[key] += 1
+
+        self._batches_stats = stats
+        return stats
+
+    def _add_stats_subnode(self, parent_item, bid):
+        """Добавляет под parent_item раскрываемый узел '📊 Статистика партии'
+        со счётчиками. Применяется и в Все события, и в Истории кода."""
+        stats = self._ensure_batches_stats().get(bid)
+        if not stats:
+            return None
+        printed = stats.get('printed', 0)
+        scanned = stats.get('scanned', 0)
+        noread = stats.get('noread', 0)
+        verified = stats.get('verified', 0)
+        rejected = stats.get('rejected', 0)
+        not_verified = stats.get('not_verified', 0)
+        # Если в логе нет явных "Не верифицирован" - считаем как printed-verified
+        not_verified_calc = max(0, printed - verified)
+        if not_verified == 0 and not_verified_calc > 0:
+            not_verified = not_verified_calc
+
+        node = QTreeWidgetItem(parent_item, ["📊 Статистика партии"])
+        node.setData(0, Qt.ItemDataRole.UserRole, ('stats', None))
+
+        t = THEMES.get(self.current_theme_name, {})
+        info = QColor(t.get('info', '#2E8B57'))
+        warn = QColor(t.get('warn', '#FFA500'))
+        error = QColor(t.get('error', '#CD5C5C'))
+        muted = QColor(t.get('text_muted', '#999999'))
+
+        rows = [
+            ("Напечатано", printed, info if printed else muted),
+            ("Прочитано", scanned, info if scanned else muted),
+            ("No read", noread, warn if noread else muted),
+            ("Верифицировано", verified, info if verified else muted),
+            ("Отбраковано", rejected, error if rejected else muted),
+            ("Не верифицировано", not_verified, warn if not_verified else muted),
+        ]
+        for label, n, color in rows:
+            ci = QTreeWidgetItem(node, [f"{label}: {n:,}"])
+            ci.setData(0, Qt.ItemDataRole.UserRole, ('stat_row', None))
+            ci.setForeground(0, color)
+        return node
+
     def _rebuild_batches_tree(self):
-        """Перестраивает дерево партий: только заголовки, дочерние строки lazy-load."""
+        """Перестраивает дерево партий: заголовки + узел статистики; строки lazy."""
         self.batches_tree.clear()
         if not self.all_batches:
             return
@@ -682,10 +777,11 @@ class LogViewerWidget(QWidget):
                 else:
                     label = f"Партия {bid}  —  {count:,} строк  ({first_ts} → {last_ts})"
                 root = QTreeWidgetItem(self.batches_tree, [label])
-                # Помечаем тип узла для обработчиков
                 root.setData(0, Qt.ItemDataRole.UserRole, ('batch', bid))
-                # Фейк-чайлд - чтобы появился треугольник раскрытия. Заменим на реальные
-                # при expand.
+                # Сводка по партии - первым дочерним узлом
+                self._add_stats_subnode(root, bid)
+                # Фейк-чайлд для появления треугольника раскрытия. Заменим на
+                # реальные строки при expand. Статистика остаётся.
                 if count > 0:
                     placeholder = QTreeWidgetItem(root, ["…"])
                     placeholder.setData(0, Qt.ItemDataRole.UserRole, ('placeholder', None))
@@ -693,20 +789,23 @@ class LogViewerWidget(QWidget):
             self.batches_tree.setUpdatesEnabled(True)
 
     def _on_batches_tree_item_expanded(self, item):
-        """Lazy-load: заполняем строки партии только когда юзер раскрывает её узел."""
+        """Lazy-load: заполняем строки партии только когда юзер раскрывает её узел.
+        Узел статистики и его дети остаются на месте, мы трогаем только placeholder."""
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if not data or data[0] != 'batch':
             return
-        # Уже наполнено реальными children? (placeholder только один и пустой)
-        if item.childCount() != 1:
-            return
-        first = item.child(0)
-        first_data = first.data(0, Qt.ItemDataRole.UserRole)
-        if not first_data or first_data[0] != 'placeholder':
-            return  # уже реальные дети
+        # Ищем placeholder среди детей (он один если ещё не подгружали строки).
+        placeholder_idx = -1
+        for ci in range(item.childCount()):
+            ch = item.child(ci)
+            cd = ch.data(0, Qt.ItemDataRole.UserRole)
+            if cd and cd[0] == 'placeholder':
+                placeholder_idx = ci
+                break
+        if placeholder_idx == -1:
+            return  # уже подгрузили
 
-        # Удаляем placeholder и собираем реальные строки
-        item.takeChildren()
+        item.takeChild(placeholder_idx)
 
         bid = data[1]
         entries = self.model._entries
@@ -877,14 +976,19 @@ class LogViewerWidget(QWidget):
         self._code_history_index = None
         # Флаг "дерево уже построено для текущего индекса"
         self._code_history_tree_built = False
+        # Кэш счётчиков по партиям {bid: {printed, scanned, ...}}.
+        # Используется и Все события, и История кода; пересчитывается лениво.
+        self._batches_stats = None
 
         return w
 
     def _invalidate_code_history(self):
         """Сбрасывает индекс и помечает дерево как устаревшее (надо перепостроить).
-        Вызывается при on_load_finished и при append_entries (tail)."""
+        Вызывается при on_load_finished и при append_entries (tail).
+        Заодно сбрасывает кэш статистики по партиям."""
         self._code_history_index = None
         self._code_history_tree_built = False
+        self._batches_stats = None  # кэш статистики тоже устарел
         # Чистим визуально, чтобы старые ссылки на real_index не указывали в никуда
         if hasattr(self, 'code_history_tree'):
             self.code_history_tree.clear()
@@ -965,6 +1069,8 @@ class LogViewerWidget(QWidget):
                     bid_label = f"Партия {bid}  —  {len(bucket):,} кодов"
                 b_item = QTreeWidgetItem(self.code_history_tree, [bid_label, "", ""])
                 b_item.setData(0, Qt.ItemDataRole.UserRole, ('batch', bid))
+                # Сводка по партии - первым дочерним узлом
+                self._add_stats_subnode(b_item, bid)
                 total_codes += len(bucket)
 
                 # Коды в хронологическом порядке (по первому индексу)
@@ -1038,7 +1144,8 @@ class LogViewerWidget(QWidget):
         item.addChildren(new_children)
 
     def _filter_code_history_tree(self, text):
-        """Live-фильтр по подстроке кода. Пустая строка - показываем всё."""
+        """Live-фильтр по подстроке кода. Пустая строка - показываем всё.
+        Узел статистики партии остаётся видим в любом случае."""
         needle = text.strip().lower()
         root = self.code_history_tree.invisibleRootItem()
         for i in range(root.childCount()):
@@ -1047,6 +1154,10 @@ class LogViewerWidget(QWidget):
             for j in range(batch_item.childCount()):
                 code_item = batch_item.child(j)
                 data = code_item.data(0, Qt.ItemDataRole.UserRole)
+                if data and data[0] == 'stats':
+                    # Статистика партии видна всегда
+                    code_item.setHidden(False)
+                    continue
                 if not data or data[0] != 'code':
                     # placeholder/note всегда скрываем при активном фильтре
                     code_item.setHidden(bool(needle))
@@ -1056,7 +1167,7 @@ class LogViewerWidget(QWidget):
                 code_item.setHidden(not visible)
                 if visible:
                     visible_codes += 1
-            # Партию скрываем если ни один её код не виден
+            # Партию скрываем если ни один её код не виден (но если активен фильтр)
             batch_item.setHidden(bool(needle) and visible_codes == 0)
 
     def _expand_visible_code_history_codes(self):
