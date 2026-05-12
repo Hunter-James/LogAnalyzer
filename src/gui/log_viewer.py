@@ -1157,10 +1157,13 @@ class LogViewerWidget(QWidget):
         return ("Событие", 'info')
 
     def _on_code_history_item_double_clicked(self, item, column):
-        """Двойной клик по строке истории - переход к ней в основном лог-вьюхе."""
-        real_index = item.data(0, Qt.ItemDataRole.UserRole)
-        if real_index is None:
+        """Двойной клик по строке истории. Прыгаем к строке только если это узел
+        конкретного события ('event'). Двойной клик по партии/коду - просто
+        разворачивает/сворачивает узел (стандартное поведение QTreeWidget)."""
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(data, tuple) or len(data) < 2 or data[0] != 'event':
             return
+        real_index = data[1]
         row = self.model.find_row_by_real_index(real_index)
         if row != -1:
             idx = self.model.index(row)
