@@ -562,8 +562,15 @@ class LogModel(QAbstractListModel):
         self.endResetModel()
         self.filterFinished.emit()
 
+    # Регулярка для извлечения тела сообщения из строки лога после "]:".
+    # entry.message содержит ВСЮ строку лога, включая timestamp - если сравнивать
+    # её целиком, две одинаковых ошибки с разным временем не считаются дублями.
+    _MSG_BODY_RE = re.compile(r'\]\s*:\s*(.*)', re.DOTALL)
+
     def _build_groups(self, indices):
-        """Схлопывает подряд идущие записи с одинаковым (level, message) в группы."""
+        """Схлопывает подряд идущие записи с одинаковым (level, тело сообщения).
+        Под «телом сообщения» понимается часть после «]: » - без timestamp,
+        уровня и логгера, иначе ни одна повторяющаяся ошибка не свернётся."""
         grouped = []
         counts = []
         member_to_row = {}
@@ -571,7 +578,10 @@ class LogModel(QAbstractListModel):
         entries = self._entries
         for idx in indices:
             e = entries[idx]
-            key = (e.level, e.message)
+            first_line = e.message.split('\n', 1)[0]
+            m = self._MSG_BODY_RE.search(first_line)
+            body = m.group(1).strip() if m else first_line
+            key = (e.level, body)
             if grouped and key == prev_key:
                 counts[-1] += 1
             else:
