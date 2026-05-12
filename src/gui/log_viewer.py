@@ -321,12 +321,14 @@ class LogViewerWidget(QWidget):
         self.batches_tree.itemExpanded.connect(self._on_batches_tree_item_expanded)
 
         # Контейнер с двумя подвкладками: "Все события" (дерево партий) и
-        # "История кода" (поиск конкретного SGTIN/SSCC/группового кода).
+        # "История кода" (дерево Партия→Код→События).
         self.batches_container = QTabWidget()
         self.batches_container.setTabPosition(QTabWidget.TabPosition.North)
         self.batches_container.addTab(self.batches_tree, "Все события")
         self.code_history_widget = self._build_code_history_widget()
         self.batches_container.addTab(self.code_history_widget, "История кода")
+        # При первом открытии подвкладки "История кода" строим индекс лениво
+        self.batches_container.currentChanged.connect(self._on_batches_container_changed)
 
         self.bottom_tabs.addTab(self.batches_container, "Партии")
 
@@ -409,6 +411,8 @@ class LogViewerWidget(QWidget):
         self.update_stats_text()
         self.statsChanged.emit(stats)
         self.loadingFinished.emit()
+        # Индекс кодов устарел - перестроится при следующем открытии вкладки
+        self._invalidate_code_history()
 
         # Собираем уникальные логгеры из файла и наполняем меню "Компоненты"
         self._collect_loggers(entries)
@@ -501,6 +505,9 @@ class LogViewerWidget(QWidget):
         was_at_bottom = sb.value() >= sb.maximum() - 5
 
         self.model.append_entries(new_entries)
+
+        # Индекс кодов устарел (появились новые строки) - перестроим при следующем открытии вкладки
+        self._invalidate_code_history()
 
         # Новые компоненты - подбираем их в меню "Компоненты"
         new_loggers = {e.logger for e in new_entries if e.logger} - set(self.all_loggers)
@@ -813,88 +820,197 @@ class LogViewerWidget(QWidget):
 
     # ----- Подвкладка "История кода" -----
 
+    # Лимит кодов на партию в дереве (на больших логах это десятки тысяч);
+    # сверх лимита выводим пометку "ещё N кодов".
+    MAX_CODES_PER_BATCH = 5000
+    # Регекс SSCC (палеты/короба): 18 цифр после префикса 00.
+    _SSCC_RE = re.compile(r'\b00\d{18}\b')
+
     def _build_code_history_widget(self):
-        """Виджет под вкладкой Партии: поиск по коду + таблица его событий
-        с подсветкой типа события (печать / скан / агрегация / отбраковка / ...)."""
+        """Виджет под вкладкой Партии: дерево Партия → Код → События.
+        Поле поиска фильтрует видимость узлов кодов в дереве по подстроке."""
         w = QWidget()
         v = QVBoxLayout(w)
         v.setContentsMargins(5, 5, 5, 5)
         v.setSpacing(5)
 
-        # Строка поиска
+        # Строка поиска (live-фильтр дерева)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Код:"))
+        row.addWidget(QLabel("Поиск кода:"))
         self.code_history_input = QLineEdit()
         self.code_history_input.setPlaceholderText(
-            "SGTIN / SSCC / агрегат — целиком или подстрока (Enter — искать)")
-        self.code_history_input.returnPressed.connect(self._run_code_history_search)
+            "Часть кода — фильтрует дерево по мере ввода. Пусто — все коды.")
+        self.code_history_input.textChanged.connect(self._filter_code_history_tree)
         row.addWidget(self.code_history_input, 1)
 
-        self.btn_code_history_find = QPushButton("Найти историю")
-        self.btn_code_history_find.clicked.connect(self._run_code_history_search)
-        row.addWidget(self.btn_code_history_find)
+        btn_clear = QPushButton("×")
+        btn_clear.setToolTip("Очистить поиск")
+        btn_clear.setFixedWidth(28)
+        btn_clear.clicked.connect(self.code_history_input.clear)
+        row.addWidget(btn_clear)
 
-        self.chk_code_history_batch_only = QCheckBox("Только в активных партиях")
-        self.chk_code_history_batch_only.setChecked(False)
-        row.addWidget(self.chk_code_history_batch_only)
+        btn_expand = QPushButton("Раскрыть видимые")
+        btn_expand.clicked.connect(self._expand_visible_code_history_codes)
+        row.addWidget(btn_expand)
 
         v.addLayout(row)
 
-        # Результаты: таблица в виде QTreeWidget без иерархии
+        # Дерево Партия → Код → События
         self.code_history_tree = QTreeWidget()
-        self.code_history_tree.setHeaderLabels(["Время", "Событие", "Сообщение"])
-        self.code_history_tree.setColumnWidth(0, 110)
-        self.code_history_tree.setColumnWidth(1, 240)
+        self.code_history_tree.setHeaderLabels(["Партия / Код / Время", "Событие", "Сообщение"])
+        self.code_history_tree.setColumnWidth(0, 320)
+        self.code_history_tree.setColumnWidth(1, 220)
         self.code_history_tree.setAlternatingRowColors(True)
-        self.code_history_tree.setUniformRowHeights(True)
-        self.code_history_tree.setRootIsDecorated(False)
         self.code_history_tree.itemDoubleClicked.connect(
             self._on_code_history_item_double_clicked)
+        self.code_history_tree.itemExpanded.connect(
+            self._on_code_history_tree_item_expanded)
         v.addWidget(self.code_history_tree, 1)
 
         # Статус-строка
-        self.code_history_status = QLabel("Введите код и нажмите Enter")
+        self.code_history_status = QLabel("Откройте вкладку, чтобы построить дерево кодов.")
         v.addWidget(self.code_history_status)
+
+        # Индекс {batch_id: {code: [(real_index, event_label, kind), ...]}}.
+        # Строится лениво при первом открытии вкладки; инвалидируется при
+        # перезагрузке файла / tail-append.
+        self._code_history_index = None
+        # Флаг "дерево уже построено для текущего индекса"
+        self._code_history_tree_built = False
 
         return w
 
-    def _run_code_history_search(self):
-        """Сканирует entries, отбирает строки где встречается код, классифицирует
-        каждое событие и кладёт в code_history_tree, отсортированно по времени."""
-        code = self.code_history_input.text().strip()
-        self.code_history_tree.clear()
-        if not code:
-            self.code_history_status.setText("Введите код для поиска")
+    def _invalidate_code_history(self):
+        """Сбрасывает индекс и помечает дерево как устаревшее (надо перепостроить).
+        Вызывается при on_load_finished и при append_entries (tail)."""
+        self._code_history_index = None
+        self._code_history_tree_built = False
+        # Чистим визуально, чтобы старые ссылки на real_index не указывали в никуда
+        if hasattr(self, 'code_history_tree'):
+            self.code_history_tree.clear()
+            self.code_history_status.setText(
+                "Дерево устарело — переключитесь на вкладку, чтобы перестроить.")
+
+    def _on_batches_container_changed(self, index):
+        """Подвкладка переключилась. Если открыли «История кода» и дерево
+        не построено — строим лениво."""
+        if index < 0:
             return
+        w = self.batches_container.widget(index)
+        if w is self.code_history_widget and not self._code_history_tree_built:
+            self._build_code_history_index()
+            self._populate_code_history_tree()
+            self._code_history_tree_built = True
+
+    def _build_code_history_index(self):
+        """Сканирует все entries, извлекает коды (SGTIN / групповой / SSCC)
+        и собирает индекс {batch_id: {code: [(real_index, label, kind)]}}.
+        Тяжёлая операция - вызывать только при первом обращении / после reload."""
+        from core.models import SGTIN_CODE_RE, GROUP_CODE_RE, NO_BATCH
 
         entries = self.model._entries
         bfi = self.model._batch_for_index
-        only_batch = self.chk_code_history_batch_only.isChecked()
-        # Множество "активных" партий (то что показывается в логе сейчас).
-        # Используем active_batches, если фильтр включён юзером.
-        active_ids = self.active_batches if only_batch else None
 
-        matches = []
+        index = {}
+        sgtin_find = SGTIN_CODE_RE.findall
+        group_find = GROUP_CODE_RE.findall
+        sscc_find = self._SSCC_RE.findall
+
         for i, e in enumerate(entries):
-            if active_ids is not None:
-                bid = bfi[i] if i < len(bfi) else ""
-                if bid not in active_ids:
-                    continue
-            if code in e.full_line:
-                matches.append(i)
+            line = e.full_line
+            codes = set()
+            codes.update(sgtin_find(line))
+            codes.update(group_find(line))
+            codes.update(sscc_find(line))
+            if not codes:
+                continue
+            bid = bfi[i] if i < len(bfi) else NO_BATCH
+            bucket = index.setdefault(bid, {})
+            label, kind = self._classify_event_for_code(e, line)
+            for c in codes:
+                bucket.setdefault(c, []).append((i, label, kind))
 
-        if not matches:
-            self.code_history_status.setText(
-                f"Не найдено упоминаний кода «{code}»"
-                + (" в активных партиях" if only_batch else "")
-            )
+        self._code_history_index = index
+
+    def _populate_code_history_tree(self):
+        """Наполняет дерево из готового индекса. Партии сортируются по
+        first_ts из get_batch_summary(); коды внутри партии - по индексу
+        первого упоминания (=хронологически). События загружаются лениво."""
+        from core.models import NO_BATCH
+
+        self.code_history_tree.clear()
+        index = self._code_history_index or {}
+        if not index:
+            self.code_history_status.setText("Кодов в логе не обнаружено.")
             return
 
-        # Лимит для производительности дерева
-        MAX = 5000
-        display = matches[:MAX]
+        # Партии в хронологическом порядке - get_batch_summary уже сортирует по first_ts.
+        batches_summary = self.model.get_batch_summary()
+        # На случай если в индексе есть batch_id, которого нет в summary
+        # (теоретически не должно случаться) - подмешаем их в конец.
+        known = {b[0] for b in batches_summary}
+        extra = [(bid, 0, "", "") for bid in index.keys() if bid not in known]
+        ordered = list(batches_summary) + extra
 
-        # Цвета событий берём из текущей темы (info/debug/warn/error)
+        total_codes = 0
+        self.code_history_tree.setUpdatesEnabled(False)
+        try:
+            for bid, _count, _f, _l in ordered:
+                bucket = index.get(bid)
+                if not bucket:
+                    continue
+                if bid == NO_BATCH:
+                    bid_label = f"Вне партии  —  {len(bucket):,} кодов"
+                else:
+                    bid_label = f"Партия {bid}  —  {len(bucket):,} кодов"
+                b_item = QTreeWidgetItem(self.code_history_tree, [bid_label, "", ""])
+                b_item.setData(0, Qt.ItemDataRole.UserRole, ('batch', bid))
+                total_codes += len(bucket)
+
+                # Коды в хронологическом порядке (по первому индексу)
+                sorted_codes = sorted(
+                    bucket.items(), key=lambda kv: kv[1][0][0]
+                )[:self.MAX_CODES_PER_BATCH]
+
+                for code, events in sorted_codes:
+                    c_label = f"{code}   ({len(events)} событий)"
+                    c_item = QTreeWidgetItem(b_item, [c_label, "", ""])
+                    c_item.setData(0, Qt.ItemDataRole.UserRole, ('code', code, bid))
+                    # Placeholder - реальные события подгрузим при раскрытии
+                    placeholder = QTreeWidgetItem(c_item, ["…", "", ""])
+                    placeholder.setData(0, Qt.ItemDataRole.UserRole,
+                                        ('placeholder', None))
+
+                if len(bucket) > self.MAX_CODES_PER_BATCH:
+                    hidden = len(bucket) - self.MAX_CODES_PER_BATCH
+                    note = QTreeWidgetItem(b_item, [
+                        f"… ещё {hidden:,} кодов не показано (лимит {self.MAX_CODES_PER_BATCH})",
+                        "", ""
+                    ])
+                    note.setData(0, Qt.ItemDataRole.UserRole, ('note', None))
+        finally:
+            self.code_history_tree.setUpdatesEnabled(True)
+
+        self.code_history_status.setText(
+            f"Партий: {len(index):,}, всего кодов: {total_codes:,}"
+        )
+
+    def _on_code_history_tree_item_expanded(self, item):
+        """Lazy-load: при раскрытии узла кода подгружаем его события."""
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data or data[0] != 'code':
+            return
+        if item.childCount() != 1:
+            return  # уже наполнено
+        first = item.child(0)
+        fd = first.data(0, Qt.ItemDataRole.UserRole)
+        if not fd or fd[0] != 'placeholder':
+            return
+
+        _, code, bid = data
+        bucket = (self._code_history_index or {}).get(bid, {})
+        events = bucket.get(code, [])
+
         t = THEMES.get(self.current_theme_name, {})
         color_for_kind = {
             'info': QColor(t.get('info', '#2E8B57')),
@@ -903,33 +1019,62 @@ class LogViewerWidget(QWidget):
             'error': QColor(t.get('error', '#CD5C5C')),
         }
 
-        items = []
-        for idx in display:
+        entries = self.model._entries
+        new_children = []
+        for (idx, ev_label, kind) in events:
             e = entries[idx]
-            label, kind = self._classify_event_for_code(e, e.full_line)
             ts = e.timestamp or ""
-            # Превью первой строки записи (могут быть многострочные через \n)
             msg = e.message.split('\n', 1)[0]
             if len(msg) > 300:
                 msg = msg[:300] + "..."
-            it = QTreeWidgetItem([ts, label, msg])
-            it.setData(0, Qt.ItemDataRole.UserRole, idx)
+            ev_item = QTreeWidgetItem([ts, ev_label, msg])
+            ev_item.setData(0, Qt.ItemDataRole.UserRole, ('event', idx))
             color = color_for_kind.get(kind)
             if color is not None:
-                it.setForeground(1, color)
-            items.append(it)
+                ev_item.setForeground(1, color)
+            new_children.append(ev_item)
 
-        self.code_history_tree.setUpdatesEnabled(False)
-        try:
-            self.code_history_tree.addTopLevelItems(items)
-        finally:
-            self.code_history_tree.setUpdatesEnabled(True)
+        item.takeChildren()
+        item.addChildren(new_children)
 
-        suffix = f" (показано первые {MAX:,})" if len(matches) > MAX else ""
-        scope = " в активных партиях" if only_batch else ""
-        self.code_history_status.setText(
-            f"Найдено упоминаний{scope}: {len(matches):,}{suffix}"
-        )
+    def _filter_code_history_tree(self, text):
+        """Live-фильтр по подстроке кода. Пустая строка - показываем всё."""
+        needle = text.strip().lower()
+        root = self.code_history_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            batch_item = root.child(i)
+            visible_codes = 0
+            for j in range(batch_item.childCount()):
+                code_item = batch_item.child(j)
+                data = code_item.data(0, Qt.ItemDataRole.UserRole)
+                if not data or data[0] != 'code':
+                    # placeholder/note всегда скрываем при активном фильтре
+                    code_item.setHidden(bool(needle))
+                    continue
+                code = data[1]
+                visible = (not needle) or (needle in code.lower())
+                code_item.setHidden(not visible)
+                if visible:
+                    visible_codes += 1
+            # Партию скрываем если ни один её код не виден
+            batch_item.setHidden(bool(needle) and visible_codes == 0)
+
+    def _expand_visible_code_history_codes(self):
+        """Раскрывает все видимые узлы кода. Полезно после фильтра по подстроке -
+        когда осталось 5-10 кодов и хочется сразу увидеть их события."""
+        root = self.code_history_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            batch_item = root.child(i)
+            if batch_item.isHidden():
+                continue
+            batch_item.setExpanded(True)
+            for j in range(batch_item.childCount()):
+                code_item = batch_item.child(j)
+                if code_item.isHidden():
+                    continue
+                data = code_item.data(0, Qt.ItemDataRole.UserRole)
+                if data and data[0] == 'code':
+                    code_item.setExpanded(True)
 
     @staticmethod
     def _classify_event_for_code(entry, line):
