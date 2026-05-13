@@ -11,6 +11,7 @@ GITHUB_REPO = "Hunter-James/LogAnalyzerEVOL"
 # Базовые вещи (поиск, фильтры по уровню, открытие файла) не отключаются.
 DEFAULT_UI_FEATURES = {
     "match_case": True,
+    "use_regex": True,
     "loggers_filter": True,
     "batches_filter": True,
     "time_range": True,
@@ -24,6 +25,7 @@ DEFAULT_UI_FEATURES = {
 
 UI_FEATURE_LABELS = {
     "match_case": "Кнопка «Aa» (учитывать регистр поиска)",
+    "use_regex": "Кнопка «.*» (использовать regex; иначе поиск буквальный)",
     "loggers_filter": "Кнопка «Компоненты» (фильтр по логгеру)",
     "batches_filter": "Кнопка «Партии» (фильтр по setCurrentBatch / api/close)",
     "time_range": "Поля диапазона времени (Время: с – по)",

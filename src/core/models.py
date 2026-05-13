@@ -515,7 +515,7 @@ class LogModel(QAbstractListModel):
     def update_filters(self, show_info, show_debug, show_error, show_warn,
                        search_text, group_dupes=False, loggers=None,
                        time_from=None, time_to=None, case_sensitive=False,
-                       batch_filter=None):
+                       batch_filter=None, use_regex=False):
         self._show_info = show_info
         self._show_debug = show_debug
         self._show_error = show_error
@@ -527,6 +527,7 @@ class LogModel(QAbstractListModel):
         self._time_to = time_to
         self._case_sensitive = case_sensitive
         self._batch_filter = batch_filter
+        self._use_regex = use_regex
         self.apply_filters_async()
 
     def apply_filters_async(self):
@@ -544,6 +545,7 @@ class LogModel(QAbstractListModel):
             self._case_sensitive,
             self._batch_filter,
             self._batch_for_index,
+            getattr(self, '_use_regex', False),
         )
         self.filter_worker.finished.connect(self.on_filter_finished)
         self.filter_worker.start()

@@ -138,6 +138,17 @@ class LogViewerWidget(QWidget):
         self.btn_match_case.toggled.connect(self._on_match_case_toggled)
         search_layout.addWidget(self.btn_match_case)
 
+        # Regex (.*) - по умолчанию OFF. Иначе любое '?' '(' '+' '*' в запросе
+        # трактовалось как regex, и поиск буквальных URL вида /api/...?id=N
+        # ничего не находил.
+        self.btn_use_regex = QToolButton()
+        self.btn_use_regex.setText(".*")
+        self.btn_use_regex.setCheckable(True)
+        self.btn_use_regex.setStyleSheet(self.btn_match_case.styleSheet())
+        self._update_use_regex_tooltip()
+        self.btn_use_regex.toggled.connect(self._on_use_regex_toggled)
+        search_layout.addWidget(self.btn_use_regex)
+
         # Кнопка-меню для фильтрации по логгеру/компоненту
         self.btn_loggers = QToolButton()
         self.btn_loggers.setText("Компоненты")
@@ -1365,6 +1376,7 @@ class LogViewerWidget(QWidget):
 
         # Опциональные элементы поисковой панели
         self.btn_match_case.setVisible(self._ui_features["match_case"])
+        self.btn_use_regex.setVisible(self._ui_features.get("use_regex", True))
         self.btn_loggers.setVisible(self._ui_features["loggers_filter"])
         self.btn_batches.setVisible(self._ui_features["batches_filter"])
 
@@ -1442,6 +1454,22 @@ class LogViewerWidget(QWidget):
         else:
             self.btn_match_case.setToolTip(
                 "Match case: ВЫКЛ — регистр игнорируется.\nНажмите чтобы включить."
+            )
+
+    def _on_use_regex_toggled(self, _checked):
+        self._update_use_regex_tooltip()
+        self.search_timer.start()
+
+    def _update_use_regex_tooltip(self):
+        if self.btn_use_regex.isChecked():
+            self.btn_use_regex.setToolTip(
+                "Regex: ВКЛ — поисковая строка трактуется как регулярное выражение.\n"
+                "Спецсимволы: . * + ? ( ) [ ] | ^ $ \\d \\w …"
+            )
+        else:
+            self.btn_use_regex.setToolTip(
+                "Regex: ВЫКЛ — поиск буквальный.\nСимволы вроде ? ( ) * + ищутся как есть.\n"
+                "Нажмите чтобы включить regex."
             )
 
     def _on_time_changed(self):
@@ -1641,6 +1669,11 @@ class LogViewerWidget(QWidget):
         case_sensitive = (
             self._ui_features.get("match_case", True) and self.btn_match_case.isChecked()
         )
+        # Аналогично для regex: пользователь явно должен включить '.*',
+        # иначе search_text трактуется буквально (любые ?, (, ), +, *).
+        use_regex = (
+            self._ui_features.get("use_regex", True) and self.btn_use_regex.isChecked()
+        )
 
         # Фильтр партий: если все включены или фича скрыта - не передаём ограничения
         if (self._ui_features.get("batches_filter", True)
@@ -1662,6 +1695,7 @@ class LogViewerWidget(QWidget):
             time_to,
             case_sensitive,
             batch_filter,
+            use_regex,
         )
 
         # Перерисовываем подсветку, если поисковый запрос изменился
@@ -2308,18 +2342,25 @@ class LogViewerWidget(QWidget):
         if not full_text:
             return
 
-        # Совпадения ищем так же, как FilterWorker: сначала regex, потом literal fallback.
-        # Match case учитываем согласно состоянию кнопки "Aa".
+        # Совпадения ищем точно так же, как FilterWorker. Match case и regex -
+        # по состоянию кнопок "Aa" и ".*". Regex по умолчанию выключен,
+        # иначе любой '?' в URL ломал бы подсветку.
         case_sensitive = self.btn_match_case.isChecked()
+        use_regex = self.btn_use_regex.isChecked()
         positions = []
-        try:
-            pattern = re.compile(search_text, 0 if case_sensitive else re.IGNORECASE)
+        pattern = None
+        if use_regex:
+            try:
+                pattern = re.compile(search_text, 0 if case_sensitive else re.IGNORECASE)
+            except re.error:
+                pattern = None
+        if pattern is not None:
             for m in pattern.finditer(full_text):
                 if m.start() != m.end():
                     positions.append((m.start(), m.end()))
                 if len(positions) >= self.MAX_DETAIL_HIGHLIGHTS:
                     break
-        except re.error:
+        else:
             slen = len(search_text)
             if case_sensitive:
                 pos = full_text.find(search_text)

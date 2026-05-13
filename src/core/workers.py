@@ -292,7 +292,8 @@ class FilterWorker(QThread):
 
     def __init__(self, entries, show_info, show_debug, show_error, show_warn,
                  search_text, loggers=None, time_from=None, time_to=None,
-                 case_sensitive=False, batch_filter=None, batch_for_index=None):
+                 case_sensitive=False, batch_filter=None, batch_for_index=None,
+                 use_regex=False):
         super().__init__()
         self.entries = entries
         self.show_info = show_info
@@ -311,6 +312,9 @@ class FilterWorker(QThread):
         # batch_for_index - параллельный entries массив str (id партии или "" для "вне партии").
         self.batch_filter = batch_filter
         self.batch_for_index = batch_for_index or []
+        # Regex как в Notepad++: по умолчанию off - search_text трактуется буквально.
+        # Когда on - компилируется как регулярка; если она невалидна, делаем literal fallback.
+        self.use_regex = use_regex
         self._is_cancelled = False
 
     def cancel(self):
@@ -357,12 +361,16 @@ class FilterWorker(QThread):
         if not search_text:
             new_indices = [i for i, e in enumerate(entries) if base_pass(i, e)]
         else:
-            regex_flags = 0 if self.case_sensitive else re.IGNORECASE
+            # Поведение поиска:
+            # use_regex=False (по умолчанию) - чистый literal (in / lower in).
+            # use_regex=True - regex; если запрос невалидная регулярка - literal fallback.
             search_regex = None
-            try:
-                search_regex = re.compile(search_text, regex_flags)
-            except re.error:
-                search_regex = None
+            if self.use_regex:
+                regex_flags = 0 if self.case_sensitive else re.IGNORECASE
+                try:
+                    search_regex = re.compile(search_text, regex_flags)
+                except re.error:
+                    search_regex = None
 
             if search_regex:
                 match = search_regex.search

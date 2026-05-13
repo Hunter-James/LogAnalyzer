@@ -209,11 +209,20 @@ class EditorTabWidget(QTabWidget):
             QApplication.clipboard().setText(file_path)
 
     def _open_in_explorer(self, file_path):
-        """Открывает Проводник Windows с выделенным файлом (как в VS Code 'Reveal in Explorer')."""
+        """Открывает Проводник Windows с выделенным файлом (как в VS Code 'Reveal in Explorer').
+
+        ВАЖНО: explorer.exe ожидает /select,<path> как ОДИН токен командной строки
+        (после запятой - сразу значение). subprocess.Popen со списком на Windows
+        конвертирует аргументы через list2cmdline, и при пробелах в пути explorer
+        видит /select,"C:\\path with space\\file.log" как два аргумента и обрывает
+        путь на первом пробеле - на скриншоте юзера так и получалось:
+        путь доходил только до Documents\\, а дальше "работа Селена Люкс" терялись.
+
+        Решение - передать команду одной строкой, тогда CreateProcess сохраняет
+        её как есть, и explorer корректно парсит /select,"<full path>"."""
         normalized = os.path.normpath(file_path)
         if sys.platform == 'win32':
-            # /select, выделит файл в открывшемся окне Проводника
-            subprocess.Popen(['explorer', f'/select,{normalized}'])
+            subprocess.Popen(f'explorer /select,"{normalized}"')
         elif sys.platform == 'darwin':
             subprocess.Popen(['open', '-R', normalized])
         else:
