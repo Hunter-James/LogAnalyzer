@@ -104,6 +104,8 @@ class LogViewerWidget(QWidget):
         search_layout.addWidget(QLabel("Поиск:"))
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Поиск по этому файлу...")
+        # Встроенный крестик очистки справа от текста (стандартная Qt-фича).
+        self.search_input.setClearButtonEnabled(True)
         self.search_input.textChanged.connect(self.on_search_text_changed)
         search_layout.addWidget(self.search_input)
 
@@ -218,10 +220,9 @@ class LogViewerWidget(QWidget):
         self.btn_follow.toggled.connect(self._on_follow_toggled)
         search_layout.addWidget(self.btn_follow)
 
-        # Кнопка для сохранения результатов поиска в журнал
-        self.btn_save_search = QPushButton("Добавить в журнал")
-        self.btn_save_search.clicked.connect(self.on_save_search_clicked)
-        search_layout.addWidget(self.btn_save_search)
+        # "Добавить в журнал" живёт теперь на главном тулбаре MainWindow
+        # (общая кнопка для активного вьювера); см. MainWindow.btn_save_search.
+        # Локальную кнопку убрали - меньше шума в строке поиска.
 
         layout.addWidget(self.search_frame)
 
@@ -1391,7 +1392,8 @@ class LogViewerWidget(QWidget):
         self.lbl_time_dash.setVisible(self._ui_features["time_range"])
         self.time_to.setVisible(self._ui_features["time_range"])
         self.btn_follow.setVisible(self._ui_features["tail_mode"])
-        self.btn_save_search.setVisible(self._ui_features["save_to_journal"])
+        # "Добавить в журнал" теперь на главном тулбаре MainWindow,
+        # видимостью управляет _apply_ui_features_everywhere там же.
 
         # Tail с скрытой кнопки нельзя контролировать - принудительно останавливаем
         if not self._ui_features["tail_mode"] and self.btn_follow.isChecked():

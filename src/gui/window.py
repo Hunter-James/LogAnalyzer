@@ -95,6 +95,15 @@ class MainWindow(QMainWindow):
         self.btn_help.setToolTip("Открыть окно со справкой по функционалу (F1)")
         self.btn_help.clicked.connect(self.open_help)
 
+        # «Добавить в журнал» переехала из строки поиска на главный тулбар.
+        # Работает с активным viewer'ом - значит должна быть disabled пока
+        # нет открытого файла. См. on_active_tab_changed.
+        self.btn_save_search = QPushButton("Добавить в журнал")
+        self.btn_save_search.setToolTip(
+            "Сохранить текущие результаты поиска в журнал активной вкладки")
+        self.btn_save_search.setEnabled(False)
+        self.btn_save_search.clicked.connect(self._on_save_search_clicked_main)
+
         self.chk_info = QCheckBox("INFO")
         self.chk_info.setChecked(True)
         self.chk_info.stateChanged.connect(self.on_global_filter_changed)
@@ -121,6 +130,7 @@ class MainWindow(QMainWindow):
     def detach_widgets(self):
         widgets = [
             self.btn_open, self.btn_settings, self.btn_help,
+            self.btn_save_search,
             self.chk_info, self.chk_debug, self.chk_warn, self.chk_error,
             self.chk_group,
             self.progress_bar,
@@ -193,6 +203,7 @@ class MainWindow(QMainWindow):
         tb_layout.addSpacing(15)
         tb_layout.addWidget(self.chk_group)
         tb_layout.addStretch()
+        tb_layout.addWidget(self.btn_save_search)
         tb_layout.addWidget(self.progress_bar)
 
         self.root_layout.addWidget(toolbar)
@@ -219,6 +230,7 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.btn_open)
         sb_layout.addWidget(self.btn_settings)
         sb_layout.addWidget(self.btn_help)
+        sb_layout.addWidget(self.btn_save_search)
         sb_layout.addSpacing(10)
         sb_layout.addWidget(QLabel("ФИЛЬТРЫ"))
         sb_layout.addWidget(self.chk_info)
@@ -348,6 +360,8 @@ class MainWindow(QMainWindow):
         # При скрытии глобально снимаем галочку, иначе фильтр продолжит группировать
         if not self.ui_features.get("group_dupes", True) and self.chk_group.isChecked():
             self.chk_group.setChecked(False)
+        # «Добавить в журнал» - общая кнопка на тулбаре
+        self.btn_save_search.setVisible(self.ui_features.get("save_to_journal", True))
 
         for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
             for i in range(group.count()):
@@ -409,6 +423,17 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{viewer.file_path} - Log Analyzer v{APP_VERSION}")
         else:
             self.setWindowTitle(f"Log Analyzer v{APP_VERSION}")
+        # «Добавить в журнал» активна только когда есть открытый файл (viewer)
+        # и фича включена в настройках.
+        feature_on = self.ui_features.get("save_to_journal", True)
+        self.btn_save_search.setEnabled(viewer is not None and feature_on)
+
+    def _on_save_search_clicked_main(self):
+        """Делегирует клик активному LogViewerWidget."""
+        viewer = self.split_manager.active_group.currentWidget() \
+            if self.split_manager.active_group else None
+        if isinstance(viewer, LogViewerWidget):
+            viewer.on_save_search_clicked()
 
     def on_global_filter_changed(self):
         if self.updating_ui:
