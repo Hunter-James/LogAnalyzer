@@ -151,6 +151,14 @@ class LogViewerWidget(QWidget):
         self.btn_use_regex.toggled.connect(self._on_use_regex_toggled)
         search_layout.addWidget(self.btn_use_regex)
 
+        # «Добавить в журнал» - локально для активной вкладки, сразу после
+        # кнопок поиска (Aa / .*) и перед фильтрами (Компоненты / Партии).
+        self.btn_save_search = QPushButton("Добавить в журнал")
+        self.btn_save_search.setToolTip(
+            "Сохранить текущие результаты поиска в журнал этой вкладки")
+        self.btn_save_search.clicked.connect(self.on_save_search_clicked)
+        search_layout.addWidget(self.btn_save_search)
+
         # Кнопка-меню для фильтрации по логгеру/компоненту
         self.btn_loggers = QToolButton()
         self.btn_loggers.setText("Компоненты")
@@ -1392,8 +1400,7 @@ class LogViewerWidget(QWidget):
         self.lbl_time_dash.setVisible(self._ui_features["time_range"])
         self.time_to.setVisible(self._ui_features["time_range"])
         self.btn_follow.setVisible(self._ui_features["tail_mode"])
-        # "Добавить в журнал" теперь на главном тулбаре MainWindow,
-        # видимостью управляет _apply_ui_features_everywhere там же.
+        self.btn_save_search.setVisible(self._ui_features["save_to_journal"])
 
         # Tail с скрытой кнопки нельзя контролировать - принудительно останавливаем
         if not self._ui_features["tail_mode"] and self.btn_follow.isChecked():
