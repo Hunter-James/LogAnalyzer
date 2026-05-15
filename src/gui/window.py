@@ -1,6 +1,15 @@
 import os
 import sys
 import ctypes
+import datetime
+import tracemalloc
+
+try:
+    import psutil
+    _HAS_PSUTIL = True
+except ImportError:  # pragma: no cover
+    psutil = None
+    _HAS_PSUTIL = False
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLineEdit, QLabel, QFileDialog, QProgressBar,
@@ -70,6 +79,28 @@ class MainWindow(QMainWindow):
 
         # Применяем стартовые UI-фичи (для chk_group в главном окне)
         self.chk_group.setVisible(self.ui_features.get("group_dupes", True))
+
+        # --- RAM-монитор в строке статуса ---
+        # psutil для текущего RSS процесса; tracemalloc для snapshot top-N
+        # аллокаций (Ctrl+Shift+M). Если psutil не установлен (например при
+        # запуске из исходников без `pip install psutil`), монитор просто
+        # покажет «—», но snapshot всё равно сработает.
+        self.lbl_ram = QLabel("RAM: —")
+        self.lbl_ram.setToolTip(
+            "Текущее потребление памяти процессом + entries по табам.\n"
+            "Ctrl+Shift+M — сохранить tracemalloc-snapshot топ-30 аллокаций "
+            "в файл рядом с приложением."
+        )
+        self.statusBar().addPermanentWidget(self.lbl_ram)
+        self._ram_timer = QTimer(self)
+        self._ram_timer.setInterval(2000)  # обновлять раз в 2 сек
+        self._ram_timer.timeout.connect(self._update_ram_indicator)
+        self._ram_timer.start()
+        self._update_ram_indicator()
+
+        sc_snapshot = QShortcut(QKeySequence("Ctrl+Shift+M"), self)
+        sc_snapshot.setContext(Qt.ShortcutContext.WindowShortcut)
+        sc_snapshot.activated.connect(self._take_memory_snapshot)
 
         # Restore session
         self.restore_session()
@@ -452,6 +483,116 @@ class MainWindow(QMainWindow):
             self._lru_loaded.remove(viewer)
         self._lru_loaded.append(viewer)
         self._enforce_loaded_lru(keep_active=viewer)
+
+    # ----- RAM-монитор -----
+
+    def _format_count(self, n):
+        """473000 → '473K', 985000 → '985K', 1500000 → '1.5M'."""
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n // 1_000}K"
+        return str(n)
+
+    def _update_ram_indicator(self):
+        """Обновляет lbl_ram: текущий RSS процесса + entries по каждой
+        открытой вкладке (или 'lazy', если таб не загружен)."""
+        if _HAS_PSUTIL:
+            try:
+                rss_mb = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+                rss_text = f"RAM: {rss_mb:,.0f} MB"
+            except Exception:
+                rss_text = "RAM: ?"
+        else:
+            rss_text = "RAM: (psutil не установлен)"
+
+        counts = []
+        if hasattr(self, 'split_manager'):
+            for group in (self.split_manager.left_tabs,
+                          self.split_manager.right_tabs):
+                for i in range(group.count()):
+                    w = group.widget(i)
+                    if isinstance(w, LogViewerWidget):
+                        if getattr(w, '_loaded', False):
+                            counts.append(
+                                self._format_count(len(w.model._entries))
+                            )
+                        else:
+                            counts.append("lazy")
+        if counts:
+            self.lbl_ram.setText(f"{rss_text}  |  Entries: {' + '.join(counts)}")
+        else:
+            self.lbl_ram.setText(rss_text)
+
+    def _take_memory_snapshot(self):
+        """Сохраняет tracemalloc-snapshot в файл рядом с .exe (или с main.py
+        при запуске из исходников). Показывает QMessageBox с топ-10."""
+        if not tracemalloc.is_tracing():
+            QMessageBox.warning(
+                self, "Snapshot недоступен",
+                "tracemalloc не запущен - возможно, приложение запустилось "
+                "не из main.py."
+            )
+            return
+
+        try:
+            snap = tracemalloc.take_snapshot()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось взять snapshot:\n{e}")
+            return
+
+        top = snap.statistics('lineno')[:30]
+
+        # Куда сохранять: рядом с exe (frozen) или с main.py (dev)
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(sys.argv[0])) or '.'
+        ts = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        path = os.path.join(base_dir, f'memory_snapshot_{ts}.txt')
+
+        if _HAS_PSUTIL:
+            rss_mb = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+            header_rss = f"Process RSS: {rss_mb:,.1f} MB"
+        else:
+            header_rss = "Process RSS: (psutil не установлен)"
+
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(f"Memory snapshot @ {ts}\n")
+                f.write(f"{header_rss}\n")
+                # Сводка по табам
+                for group_name, group in (
+                    ("left", self.split_manager.left_tabs),
+                    ("right", self.split_manager.right_tabs),
+                ):
+                    for i in range(group.count()):
+                        w = group.widget(i)
+                        if isinstance(w, LogViewerWidget):
+                            state = ("loaded" if getattr(w, '_loaded', False)
+                                     else "lazy")
+                            cnt = (len(w.model._entries)
+                                   if getattr(w, '_loaded', False) else 0)
+                            f.write(f"  [{group_name}] {w.file_path}: "
+                                    f"{state}, entries={cnt}\n")
+                f.write("\nTop 30 allocations by size:\n")
+                for i, stat in enumerate(top, 1):
+                    f.write(f"#{i:2d}: {stat}\n")
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Ошибка", f"Не удалось записать snapshot:\n{e}")
+            return
+
+        # Показываем компактный preview в диалоге
+        preview = "\n".join(
+            f"#{i}: {stat}" for i, stat in enumerate(top[:10], 1)
+        )
+        QMessageBox.information(
+            self, "Memory snapshot",
+            f"{header_rss}\n\n"
+            f"Сохранено: {path}\n\n"
+            f"Top-10 аллокаций:\n{preview}"
+        )
 
     def _enforce_loaded_lru(self, keep_active=None):
         """Пока загруженных табов больше лимита - выгружает самый давно
