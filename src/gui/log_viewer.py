@@ -33,11 +33,15 @@ class LogViewerWidget(QWidget):
     MAX_BATCH_TREE_ROWS = 1000
 
     def __init__(self, file_path, theme_name, font_size, bookmarks=None,
-                 ui_features=None, parent=None):
+                 ui_features=None, parent=None, lazy=False):
         super().__init__(parent)
         self.file_path = file_path
         self.current_theme_name = theme_name
         self.current_font_size = font_size
+        # Lazy/loaded state. Если lazy=True, в конце __init__ файл НЕ парсится -
+        # MainWindow вызовет ensure_loaded() при первой активации таба.
+        self._loaded = False
+        self._lazy = lazy
 
         # Флаги видимости опциональных элементов UI - применяются в apply_ui_features.
         # По умолчанию все включены, иначе подхватываем переданный словарь.
@@ -87,8 +91,83 @@ class LogViewerWidget(QWidget):
         self.setup_ui()
         self.apply_theme(theme_name, font_size)
 
-        # Load the file immediately
+        if lazy:
+            # Lazy-режим: показываем placeholder, пока юзер не активирует таб.
+            self.lbl_stats.setText(
+                "Файл не загружен (lazy) — кликни по табу, чтобы открыть.")
+        else:
+            self.load_file()
+            self._loaded = True
+
+    def ensure_loaded(self):
+        """Если viewer не загружен (lazy-стартовый или unload()-нутый),
+        запускает фактический парсинг файла. Идемпотентно."""
+        if self._loaded:
+            return
+        # Останавливаем tail/filter если что-то осталось от прошлой загрузки
+        self._stop_tail()
+        if hasattr(self, 'loader') and self.loader and self.loader.isRunning():
+            return  # уже грузится
         self.load_file()
+        self._loaded = True
+
+    def unload(self):
+        """Освобождает память: убивает model, индексы, виджеты. После этого
+        viewer в том же состоянии как lazy-стартовый - данных нет, ждём
+        ensure_loaded(). file_path остаётся для отображения таба."""
+        if not self._loaded:
+            return
+        # 1. Останавливаем фоновые потоки
+        self._stop_tail()
+        if hasattr(self, 'loader') and self.loader is not None:
+            try:
+                if self.loader.isRunning():
+                    self.loader.wait(2000)
+            except Exception:
+                pass
+            self.loader = None
+        if self.model.filter_worker and self.model.filter_worker.isRunning():
+            self.model.filter_worker.cancel()
+            self.model.filter_worker.wait(2000)
+
+        # 2. Чистим модель (это самый жирный потребитель)
+        self.model.set_entries([])
+
+        # 3. Тяжёлые кэши
+        self._code_history_index = None
+        self._code_history_tree_built = False
+        self._batches_stats = None
+        self.all_batches = []
+        self.active_batches = set()
+        self.all_loggers = []
+        self.active_loggers = set()
+
+        # 4. Чистим визуальные виджеты
+        if hasattr(self, 'details_view'):
+            self.details_view.clear()
+        if hasattr(self, 'details_tree'):
+            self.details_tree.clear()
+        if hasattr(self, 'batches_tree'):
+            self.batches_tree.clear()
+        if hasattr(self, 'code_history_tree'):
+            self.code_history_tree.clear()
+        if hasattr(self, 'search_journal_tree'):
+            self.search_journal_tree.clear()
+
+        self.stats = {}
+        self.lbl_stats.setText(
+            "Файл выгружен из памяти — кликни по табу, чтобы загрузить заново.")
+        self._loaded = False
+
+    def _stop_tail(self):
+        """Безопасно останавливает tail-таймер, если он активен."""
+        if self._tail_timer is not None:
+            try:
+                self._tail_timer.stop()
+            except Exception:
+                pass
+            self._tail_timer = None
+        self._tail_parser = None
 
     def setup_ui(self):
         layout = QVBoxLayout(self)

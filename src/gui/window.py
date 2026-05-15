@@ -52,6 +52,11 @@ class MainWindow(QMainWindow):
         self.current_font_size = self.settings.get("font_size", 10)
         self.ui_features = self.settings.get("ui_features", dict(DEFAULT_UI_FEATURES))
 
+        # LRU список загруженных viewer'ов (от давнего к свежему). Когда длина
+        # превышает MAX_LOADED_VIEWERS, голова списка выгружается. Сами
+        # вкладки не закрываются - они остаются в lazy-состоянии.
+        self._lru_loaded = []
+
         self.setup_ui()
         self.apply_theme(self.current_theme_name)
 
@@ -375,13 +380,18 @@ class MainWindow(QMainWindow):
         for file_name in file_names:
             self.load_file(file_name)
 
-    def load_file(self, file_path, side="active"):
+    # Максимум одновременно загруженных в RAM табов. Свыше - самый давно
+    # неактивный выгружается через viewer.unload() (см. _enforce_loaded_lru).
+    MAX_LOADED_VIEWERS = 3
+
+    def load_file(self, file_path, side="active", lazy=False):
         # Достаём сохранённые закладки для этого файла (если были)
         bookmarks = self.settings.get("bookmarks", {}).get(file_path, [])
         viewer = LogViewerWidget(
             file_path, self.current_theme_name, self.current_font_size,
             bookmarks=bookmarks,
             ui_features=self.ui_features,
+            lazy=lazy,
         )
         viewer.progressChanged.connect(self.progress_bar.setValue)
         viewer.loadingFinished.connect(self.on_loading_finished)
@@ -395,9 +405,14 @@ class MainWindow(QMainWindow):
             self.chk_group.isChecked(),
         )
 
-        self.split_manager.add_tab(viewer, os.path.basename(file_path), side)
-        self.progress_bar.setVisible(True)
-        self.btn_open.setEnabled(False)
+        # silent=True для lazy: иначе activeTabChanged сработает на каждом
+        # добавленном табе при restore_session, и lazy перестанет работать.
+        self.split_manager.add_tab(
+            viewer, os.path.basename(file_path), side, silent=lazy)
+        if not lazy:
+            self.progress_bar.setVisible(True)
+            self.btn_open.setEnabled(False)
+            self._lru_touch(viewer)
 
     def on_loading_finished(self):
         self.progress_bar.setVisible(False)
@@ -409,8 +424,19 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{viewer.file_path} - Log Analyzer v{APP_VERSION}")
         else:
             self.setWindowTitle(f"Log Analyzer v{APP_VERSION}")
+
+        # Lazy-load: если активировали виджет, который не загружен (после
+        # restore_session или после LRU-выгрузки) - грузим его сейчас.
+        if isinstance(viewer, LogViewerWidget) and not viewer._loaded:
+            viewer.ensure_loaded()
+            self.progress_bar.setVisible(True)
+            self.btn_open.setEnabled(False)
+
+        if isinstance(viewer, LogViewerWidget) and viewer._loaded:
+            self._lru_touch(viewer)
+
         # Освобождаем тяжёлые кэши (индекс «История кода») у НЕактивных
-        # viewer'ов. На 4 логах это легко спасает 300-600 MB RAM.
+        # viewer'ов. Дополнительно к LRU-выгрузке полных модели - дешёвая мера.
         for group in (self.split_manager.left_tabs, self.split_manager.right_tabs):
             for i in range(group.count()):
                 w = group.widget(i)
@@ -418,6 +444,32 @@ class MainWindow(QMainWindow):
                     continue
                 if isinstance(w, LogViewerWidget):
                     w.release_heavy_caches()
+
+    def _lru_touch(self, viewer):
+        """Делает viewer самым «свежим» в LRU; запускает eviction, если
+        количество загруженных табов превысило MAX_LOADED_VIEWERS."""
+        if viewer in self._lru_loaded:
+            self._lru_loaded.remove(viewer)
+        self._lru_loaded.append(viewer)
+        self._enforce_loaded_lru(keep_active=viewer)
+
+    def _enforce_loaded_lru(self, keep_active=None):
+        """Пока загруженных табов больше лимита - выгружает самый давно
+        неактивный (но никогда не текущий активный). Снимает viewer'ов,
+        которые уже unload()-нулись извне."""
+        # Сначала чистим тех, кто уже разгрузился (не должен висеть в LRU)
+        self._lru_loaded = [v for v in self._lru_loaded if getattr(v, '_loaded', False)]
+        while len(self._lru_loaded) > self.MAX_LOADED_VIEWERS:
+            # Берём самого старого, но никогда - текущий активный
+            victim = None
+            for v in self._lru_loaded:
+                if v is not keep_active:
+                    victim = v
+                    break
+            if victim is None:
+                return
+            victim.unload()
+            self._lru_loaded.remove(victim)
 
     def on_global_filter_changed(self):
         if self.updating_ui:
@@ -474,16 +526,30 @@ class MainWindow(QMainWindow):
             super().dropEvent(event)
 
     def restore_session(self):
+        """Восстанавливает табы из settings.json. Чтобы не грузить все логи
+        сразу при старте (легко съесть RAM при 4+ больших логах), создаём
+        их в lazy-режиме - таб виден, имя файла видно, но парсинг не идёт.
+        Файл загружается только при первой активации таба
+        (см. on_active_tab_changed → viewer.ensure_loaded())."""
         files_left = self.settings.get("files_left", [])
         files_right = self.settings.get("files_right", [])
 
         for f in files_left:
             if os.path.exists(f):
-                self.load_file(f, side="left")
+                self.load_file(f, side="left", lazy=True)
 
         for f in files_right:
             if os.path.exists(f):
-                self.load_file(f, side="right")
+                self.load_file(f, side="right", lazy=True)
+
+        # После всех silent-add'ов активируем верхний таб - его юзер увидит
+        # первым, его и грузим (один файл, остальные остаются lazy и ждут
+        # клика). Если оба сплита пусты - ничего не делаем.
+        current = (self.split_manager.right_tabs.currentWidget()
+                   if self.split_manager.right_tabs.isVisible()
+                   else None) or self.split_manager.left_tabs.currentWidget()
+        if isinstance(current, LogViewerWidget):
+            self.split_manager.activeTabChanged.emit(current)
 
     def save_current_settings(self):
         files_left, files_right = self.split_manager.get_open_files()

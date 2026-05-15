@@ -344,7 +344,11 @@ class SplitManager(QSplitter):
             else:
                 self.activeTabChanged.emit(None)
 
-    def add_tab(self, widget, title, side="active"):
+    def add_tab(self, widget, title, side="active", silent=False):
+        """Добавляет вкладку и - если silent=False - испускает activeTabChanged.
+        silent=True используется при restore_session: иначе для каждого
+        добавляемого lazy-таба отработает сигнал → ensure_loaded() → все
+        логи загрузятся один за другим (lazy перестанет работать)."""
         target = self.active_group
 
         if side == "left":
@@ -362,7 +366,8 @@ class SplitManager(QSplitter):
 
         target.setFocus()
         self.active_group = target
-        self.activeTabChanged.emit(widget)
+        if not silent:
+            self.activeTabChanged.emit(widget)
 
     def get_open_files(self):
         files_left = []
