@@ -689,12 +689,33 @@ class LogViewerWidget(QWidget):
     # ----- Дерево партий во вкладке "Партии" -----
 
     @staticmethod
-    def _classify_for_stats(line):
+    def _classify_for_stats(entry):
         """Считаем по тем же сигналам, которые показывает отчёт smartl2 при
         остановке сериализации (Напечатано / Прочитано / NoRead / Верифицировано /
-        Отбраковано). Возвращает ключ счётчика или None."""
-        # Статус кода → Printed = напечатан, → PrintConfirmed = верифицирован.
-        # Прямые строки smartl2 - самый надёжный источник.
+        Отбраковано). Возвращает ключ счётчика или None.
+
+        ВАЖНО: каждый physical event имеет ровно ОДНУ "сильную" строку лога.
+        Сканер NoRead/успех пишет HIKROBOT.run; результат печати/верификации/
+        отбраковки - DataService с переходом статуса. Если ловить событие
+        дополнительно по «эхо»-строкам других сервисов (например
+        SerializationService.manageCode пишет code=NoRead для каждого скана) -
+        получается двойной счёт. Поэтому проверяем строго по логгеру."""
+        line = entry.full_line
+        logger = entry.logger or ''
+        lower = line.lower()
+
+        # 1) Скан HIKROBOT - один физический скан = одна строка HIKROBOT.run.
+        # SerializationService.manageCode/code=NoRead для статистики игнорируем.
+        if logger == 'HIKROBOT' and '.run' in line:
+            if 'noread' in lower or 'не прочитан' in lower:
+                return 'noread'
+            if 'получены данные' in lower:
+                return 'scanned'
+            return None
+
+        # 2) Статус-переходы кода - однозначный сигнал из DataService.
+        # Не используем свободно-текстовые fallback'и («отбракован», «verification
+        # failed»), чтобы избежать дубля с тем же кодом из другого места лога.
         if 'изменён на Printed' in line or 'изменен на Printed' in line:
             return 'printed'
         if ('изменён на PrintConfirmed' in line
@@ -703,14 +724,15 @@ class LogViewerWidget(QWidget):
             return 'verified'
         if 'изменён на Rejected' in line or 'изменен на Rejected' in line:
             return 'rejected'
-        # Hikrobot события
-        if 'Hikrobot получены данные' in line:
-            return 'scanned'
-        lower = line.lower()
-        if 'hikrobot noread' in lower or 'noread' in lower or 'не прочитан камерой' in lower:
-            return 'noread'
-        if 'отбракован' in lower or 'rejection' in lower:
+
+        # 3) Команда отбраковки от PLC - реальное физическое выбрасывание
+        # упаковки. Один rejectCode = одно событие. Игнорируем настройки
+        # отбраковки (enableReject / setRejectDelay / isRejectMode) - они
+        # тоже содержат «reject», но не являются событием отбраковки кода.
+        if (logger == 'PLCService' and '.rejectCode' in line
+                and '[отбраковать]: true' in line):
             return 'rejected'
+
         if 'не верифицирован' in lower:
             return 'not_verified'
         return None
@@ -730,7 +752,7 @@ class LogViewerWidget(QWidget):
 
         stats = {}
         for i, e in enumerate(entries):
-            key = self._classify_for_stats(e.full_line)
+            key = self._classify_for_stats(e)
             if not key:
                 continue
             bid = bfi[i] if i < len(bfi) else NO_BATCH
@@ -1458,11 +1480,11 @@ class LogViewerWidget(QWidget):
     def _update_match_case_tooltip(self):
         if self.btn_match_case.isChecked():
             self.btn_match_case.setToolTip(
-                "Match case: ВКЛ — регистр учитывается.\nНажмите чтобы выключить."
+                "Match case: ВКЛ — регистр учитывается.\nError ≠ ERROR ≠ error — каждый ищется отдельно\nНажмите чтобы выключить."
             )
         else:
             self.btn_match_case.setToolTip(
-                "Match case: ВЫКЛ — регистр игнорируется.\nНажмите чтобы включить."
+                "Match case: ВЫКЛ — регистр игнорируется. \nError, ERROR, error — всё одно и то же\nНажмите чтобы включить."
             )
 
     def _on_use_regex_toggled(self, _checked):
