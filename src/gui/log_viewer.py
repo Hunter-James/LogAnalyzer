@@ -1037,6 +1037,30 @@ class LogViewerWidget(QWidget):
             self.code_history_status.setText(
                 "Дерево устарело — переключитесь на вкладку, чтобы перестроить.")
 
+    def release_heavy_caches(self):
+        """Освобождает тяжёлые кэши, которые не нужны для неактивной вкладки.
+        Вызывается MainWindow.on_active_tab_changed для всех viewer'ов,
+        КРОМЕ только что активированного. _entries сохраняются - модель
+        не пересоздаём, только освобождаем _code_history_index (он может
+        весить сотни MB на больших логах).
+
+        Не трогаем, если юзер прямо сейчас смотрит подвкладку «История
+        кода» - иначе у него под рукой исчезнет наполнение и понадобится
+        повторный билд при возврате на этот таб."""
+        if not hasattr(self, 'batches_container'):
+            return
+        # 1 = "История кода" по порядку addTab в setup_ui
+        if self.batches_container.currentIndex() == 1:
+            return
+        if self._code_history_index is None:
+            return  # уже освобождён
+        self._code_history_index = None
+        self._code_history_tree_built = False
+        if hasattr(self, 'code_history_tree'):
+            self.code_history_tree.clear()
+            self.code_history_status.setText(
+                "Откройте вкладку, чтобы построить дерево кодов.")
+
     def _on_batches_container_changed(self, index):
         """Подвкладка переключилась. Если открыли «История кода» и дерево
         не построено — строим лениво."""
@@ -1051,13 +1075,23 @@ class LogViewerWidget(QWidget):
     def _build_code_history_index(self):
         """Сканирует все entries, извлекает коды (SGTIN / групповой / SSCC)
         и собирает индекс {batch_id: {code: [(real_index, label, kind)]}}.
-        Тяжёлая операция - вызывать только при первом обращении / после reload."""
+        Тяжёлая операция - вызывать только при первом обращении / после reload.
+
+        ОПТИМИЗАЦИЯ ПАМЯТИ:
+        - sys.intern(code) для каждой строки кода. Один и тот же SGTIN может
+          встречаться в разных партиях; без intern dict держит N копий, с
+          intern - ровно одну ссылку на строку. На больших логах экономит
+          десятки MB.
+        - label/kind тоже интернируются - их всего ~15 уникальных значений
+          («Напечатан» / «Считан камерой» / ...), а ссылок на них миллионы."""
+        import sys as _sys
         from core.models import SGTIN_CODE_RE, GROUP_CODE_RE, NO_BATCH
 
         entries = self.model._entries
         bfi = self.model._batch_for_index
 
         index = {}
+        intern = _sys.intern
         sgtin_find = SGTIN_CODE_RE.findall
         group_find = GROUP_CODE_RE.findall
         sscc_find = self._SSCC_RE.findall
@@ -1073,8 +1107,10 @@ class LogViewerWidget(QWidget):
             bid = bfi[i] if i < len(bfi) else NO_BATCH
             bucket = index.setdefault(bid, {})
             label, kind = self._classify_event_for_code(e, line)
+            label = intern(label)
+            kind = intern(kind)
             for c in codes:
-                bucket.setdefault(c, []).append((i, label, kind))
+                bucket.setdefault(intern(c), []).append((i, label, kind))
 
         self._code_history_index = index
 

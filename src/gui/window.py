@@ -409,6 +409,15 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{viewer.file_path} - Log Analyzer v{APP_VERSION}")
         else:
             self.setWindowTitle(f"Log Analyzer v{APP_VERSION}")
+        # Освобождаем тяжёлые кэши (индекс «История кода») у НЕактивных
+        # viewer'ов. На 4 логах это легко спасает 300-600 MB RAM.
+        for group in (self.split_manager.left_tabs, self.split_manager.right_tabs):
+            for i in range(group.count()):
+                w = group.widget(i)
+                if w is viewer:
+                    continue
+                if isinstance(w, LogViewerWidget):
+                    w.release_heavy_caches()
 
     def on_global_filter_changed(self):
         if self.updating_ui:

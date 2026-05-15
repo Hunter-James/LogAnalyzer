@@ -1,6 +1,7 @@
 import re
 import os
 import io
+import sys
 import time
 import gzip
 import zipfile
@@ -47,25 +48,34 @@ class IncrementalLogParser:
 
     def feed_lines(self, lines):
         """Скармливает строки парсеру, возвращает список ЗАКРЫТЫХ записей.
-        Открытая запись остаётся в self.open_entry до прихода следующего таймстампа."""
+        Открытая запись остаётся в self.open_entry до прихода следующего таймстампа.
+
+        ОПТИМИЗАЦИЯ ПАМЯТИ:
+        - sys.intern(level) и sys.intern(logger) - всего ~5 уровней и десятки
+          логгеров на лог. Без intern каждая запись держит свою копию строки,
+          с intern все одинаковые ссылки сводятся к одной.
+        - full_line больше не хранится отдельно (см. LogEntry), поэтому
+          continuation lines дописываются только в message."""
         new_closed = []
+        intern = sys.intern  # локальный alias для скорости в горячем цикле
         for line in lines:
             m = LINE_PATTERN.match(line)
             if m:
                 if self.open_entry is not None:
                     new_closed.append(self.open_entry)
-                ts, lvl, lg = m.group(1), m.group(2), m.group(3)
+                ts = m.group(1)
+                lvl = intern(m.group(2))
+                lg = intern(m.group(3))
                 if lvl in self.stats:
                     self.stats[lvl] += 1
-                self.open_entry = LogEntry(ts, lvl, lg, line.strip(), line)
+                self.open_entry = LogEntry(ts, lvl, lg, line.strip())
             else:
                 if self.open_entry is not None:
                     if len(self.open_entry.message) < 50000:
                         self.open_entry.message += "\n" + line.strip()
-                    self.open_entry.full_line += line
                 else:
                     # Файл начинается с продолжения - заворачиваем в UNKNOWN
-                    self.open_entry = LogEntry("", "UNKNOWN", "", line.strip(), line)
+                    self.open_entry = LogEntry("", intern("UNKNOWN"), "", line.strip())
         return new_closed
 
     def take_open(self):
