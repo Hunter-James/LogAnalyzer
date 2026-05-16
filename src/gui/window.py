@@ -105,9 +105,14 @@ class MainWindow(QMainWindow):
         self._ram_timer.start()
         self._update_ram_indicator()
 
-        sc_snapshot = QShortcut(QKeySequence("Ctrl+Shift+M"), self)
-        sc_snapshot.setContext(Qt.ShortcutContext.WindowShortcut)
-        sc_snapshot.activated.connect(self._take_memory_snapshot)
+        # Сохраняем ссылку на хоткей чтобы потом включать/выключать через
+        # настройку «Режим разработчика» (debug_panel).
+        self._sc_snapshot = QShortcut(QKeySequence("Ctrl+Shift+M"), self)
+        self._sc_snapshot.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._sc_snapshot.activated.connect(self._take_memory_snapshot)
+
+        # Стартовая видимость debug-панели согласно настройкам
+        self._apply_debug_panel_visibility()
 
         # Restore session
         self.restore_session()
@@ -391,6 +396,24 @@ class MainWindow(QMainWindow):
         # При скрытии глобально снимаем галочку, иначе фильтр продолжит группировать
         if not self.ui_features.get("group_dupes", True) and self.chk_group.isChecked():
             self.chk_group.setChecked(False)
+        # Режим разработчика
+        self._apply_debug_panel_visibility()
+
+    def _apply_debug_panel_visibility(self):
+        """Показывает/скрывает RAM-индикатор и хоткей Ctrl+Shift+M согласно
+        ui_features['debug_panel']. По умолчанию выключено."""
+        on = bool(self.ui_features.get("debug_panel", False))
+        if hasattr(self, 'lbl_ram'):
+            self.lbl_ram.setVisible(on)
+        if hasattr(self, '_ram_timer'):
+            if on:
+                if not self._ram_timer.isActive():
+                    self._ram_timer.start()
+                self._update_ram_indicator()
+            else:
+                self._ram_timer.stop()
+        if hasattr(self, '_sc_snapshot'):
+            self._sc_snapshot.setEnabled(on)
 
         for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
             for i in range(group.count()):
@@ -488,14 +511,39 @@ class MainWindow(QMainWindow):
             self._lru_touch(viewer)
 
         # Освобождаем тяжёлые кэши (индекс «История кода») у НЕактивных
-        # viewer'ов. Дополнительно к LRU-выгрузке полных модели - дешёвая мера.
+        # viewer'ов. На больших логах clear() дерева с десятками тысяч
+        # QTreeWidgetItem занимает заметное время + само освобождение dict
+        # с миллионом ссылок не мгновенно - под busy чтобы окно не выглядело
+        # «не отвечает». Сначала определим, есть ли что чистить.
+        needs_release = False
         for group in (self.split_manager.left_tabs, self.split_manager.right_tabs):
             for i in range(group.count()):
                 w = group.widget(i)
-                if w is viewer:
+                if w is viewer or not isinstance(w, LogViewerWidget):
                     continue
-                if isinstance(w, LogViewerWidget):
-                    w.release_heavy_caches()
+                if getattr(w, '_code_history_index', None) is not None:
+                    needs_release = True
+                    break
+            if needs_release:
+                break
+
+        if needs_release:
+            self.show_busy("Освобождение памяти от неактивных вкладок ...")
+        try:
+            for group in (self.split_manager.left_tabs, self.split_manager.right_tabs):
+                for i in range(group.count()):
+                    w = group.widget(i)
+                    if w is viewer:
+                        continue
+                    if isinstance(w, LogViewerWidget):
+                        w.release_heavy_caches()
+        finally:
+            if needs_release:
+                # Если в этом тике ещё не запускается ensure_loaded (viewer уже
+                # был loaded) - скрываем busy здесь. Иначе busy скроется в
+                # on_loading_finished для нового активного.
+                if isinstance(viewer, LogViewerWidget) and viewer._loaded:
+                    self.hide_busy()
 
     def _lru_touch(self, viewer):
         """Делает viewer самым «свежим» в LRU; запускает eviction, если

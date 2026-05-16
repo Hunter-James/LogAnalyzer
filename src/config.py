@@ -21,6 +21,10 @@ DEFAULT_UI_FEATURES = {
     "json_format": True,
     "selection_info": True,
     "scrollbar_markers": True,
+    # Режим разработчика: RAM-индикатор в статус-баре + хоткей Ctrl+Shift+M
+    # для tracemalloc-снапшота. По умолчанию выключен - обычному
+    # пользователю эти цифры только захламляют интерфейс.
+    "debug_panel": False,
 }
 
 UI_FEATURE_LABELS = {
@@ -35,6 +39,7 @@ UI_FEATURE_LABELS = {
     "json_format": "Кнопка «{ } JSON» (форматирование JSON)",
     "selection_info": "Δt и информация о выделении в статус-баре",
     "scrollbar_markers": "Метки ERROR/WARN на скроллбаре",
+    "debug_panel": "Режим разработчика (RAM-индикатор в статус-баре + Ctrl+Shift+M снапшот)",
 }
 
 # --- Settings Management ---
