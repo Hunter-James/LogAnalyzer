@@ -2,9 +2,106 @@ import re
 
 from PyQt6.QtWidgets import (QListView, QTextEdit, QScrollBar, QStyle,
                              QStyleOptionSlider, QPlainTextEdit, QWidget)
-from PyQt6.QtCore import pyqtSignal, Qt, QRect, QSize
+from PyQt6.QtCore import pyqtSignal, Qt, QRect, QSize, QTimer
 from PyQt6.QtGui import (QWheelEvent, QPainter, QColor, QSyntaxHighlighter,
                          QTextCharFormat, QFont, QMouseEvent)
+
+
+# --- Busy overlay ---
+class BusyOverlay(QWidget):
+    """Полупрозрачный затеняющий слой поверх главного окна с текстом и
+    анимированным spinner-кружком в центре. Показывается при долгих
+    операциях (парсинг файла, построение индекса истории кода, наполнение
+    больших деревьев), чтобы юзер видел что приложение работает - а не
+    зависло намертво.
+
+    Использование:
+      overlay = BusyOverlay(main_window)
+      overlay.show_with("Парсинг application.log ...")
+      ...  # длинная операция
+      overlay.hide()
+
+    Геометрия автоматически растягивается на родительский виджет (см.
+    parent.resizeEvent → overlay.resize)."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._text = ""
+        self._angle = 0
+        # Перехватываем клики на оверлее - чтобы юзер случайно ничего не нажал
+        # под полупрозрачным слоем во время блокирующей операции.
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        # Spinner крутится по таймеру; запускается в show_with(), останавливается
+        # в hide() - чтобы не тратить CPU когда оверлей скрыт.
+        self._timer = QTimer(self)
+        self._timer.setInterval(40)  # ~25 fps - плавно и недорого
+        self._timer.timeout.connect(self._tick)
+        self.hide()
+
+    def show_with(self, text):
+        """Показывает оверлей с указанным текстом. Растягивает по родителю."""
+        self._text = text or ""
+        if self.parent() is not None:
+            self.resize(self.parent().size())
+        self.raise_()
+        self.show()
+        self._angle = 0
+        self._timer.start()
+        # Принудительно обновляем frame: операция, которая последует, может
+        # надолго заблокировать UI-поток - покажем хотя бы первый кадр.
+        self.repaint()
+
+    def set_text(self, text):
+        """Обновить только текст (например прогресс «X / Y» в долгом цикле)."""
+        if text == self._text:
+            return
+        self._text = text or ""
+        self.update()
+
+    def hide(self):
+        self._timer.stop()
+        super().hide()
+
+    def _tick(self):
+        self._angle = (self._angle + 12) % 360
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        # Полупрозрачная подложка - почти весь интерфейс позади виден,
+        # но кликнуть нельзя.
+        p.fillRect(self.rect(), QColor(0, 0, 0, 130))
+
+        # Центр - белый круг spinner'а
+        cx = self.width() // 2
+        cy = self.height() // 2 - 16
+        radius = 22
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen_bg = p.pen()
+        pen_bg.setColor(QColor(255, 255, 255, 60))
+        pen_bg.setWidth(4)
+        p.setPen(pen_bg)
+        p.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
+
+        # Активная дуга вращается
+        pen_fg = p.pen()
+        pen_fg.setColor(QColor("#2A82DA"))
+        pen_fg.setWidth(4)
+        p.setPen(pen_fg)
+        # drawArc принимает start_angle и span в 1/16-х долях градуса
+        p.drawArc(cx - radius, cy - radius, radius * 2, radius * 2,
+                  -self._angle * 16, -90 * 16)
+
+        # Текст подсказки под spinner'ом
+        if self._text:
+            p.setPen(QColor(255, 255, 255))
+            font = p.font()
+            font.setPointSize(11)
+            p.setFont(font)
+            rect = QRect(0, cy + radius + 10, self.width(), 40)
+            p.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), self._text)
+        p.end()
+
 
 # --- Custom Widgets for Zooming ---
 

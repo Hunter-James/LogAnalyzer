@@ -22,6 +22,7 @@ from gui.log_viewer import LogViewerWidget
 from gui.tab_manager import SplitManager
 from gui.settings import SettingsDialog
 from gui.help_dialog import HelpDialog
+from gui.custom_widgets import BusyOverlay
 
 
 def resource_path(relative_path):
@@ -79,6 +80,12 @@ class MainWindow(QMainWindow):
 
         # Применяем стартовые UI-фичи (для chk_group в главном окне)
         self.chk_group.setVisible(self.ui_features.get("group_dupes", True))
+
+        # --- Busy overlay для долгих операций ---
+        # Создаём с parent=self чтобы overlay тянулся под весь центральный
+        # виджет. Геометрия обновляется в resizeEvent ниже.
+        self._busy_overlay = BusyOverlay(self)
+        self._busy_overlay.hide()
 
         # --- RAM-монитор в строке статуса ---
         # psutil для текущего RSS процесса; tracemalloc для snapshot top-N
@@ -444,10 +451,17 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(True)
             self.btn_open.setEnabled(False)
             self._lru_touch(viewer)
+            # Busy-оверлей с понятным текстом, чтобы юзер видел что
+            # приложение не зависло, а парсит файл.
+            self.show_busy(
+                f"Загрузка {os.path.basename(file_path)} ...\n"
+                f"Большие логи могут парситься несколько секунд."
+            )
 
     def on_loading_finished(self):
         self.progress_bar.setVisible(False)
         self.btn_open.setEnabled(True)
+        self.hide_busy()
 
     def on_active_tab_changed(self, viewer):
         # Показываем полный путь активного файла в заголовке окна (стиль Notepad++)
@@ -523,6 +537,30 @@ class MainWindow(QMainWindow):
             self.lbl_ram.setText(f"{rss_text}  |  Entries: {' + '.join(counts)}")
         else:
             self.lbl_ram.setText(rss_text)
+
+    # ----- Busy overlay -----
+
+    def show_busy(self, text):
+        """Показать полупрозрачный оверлей «занято» с текстом. Покажется
+        поверх всего окна, мышь под ним перехватывается чтобы юзер не
+        кликнул случайно во время блокирующей операции."""
+        self._busy_overlay.show_with(text)
+        # processEvents - чтобы кадр оверлея отрисовался ДО того, как
+        # начнётся блокирующая операция.
+        QApplication.processEvents()
+
+    def set_busy_text(self, text):
+        """Обновить текст без скрытия/показа (для прогресса 'X / Y')."""
+        self._busy_overlay.set_text(text)
+        QApplication.processEvents()
+
+    def hide_busy(self):
+        self._busy_overlay.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_busy_overlay') and self._busy_overlay is not None:
+            self._busy_overlay.resize(self.size())
 
     def _take_memory_snapshot(self):
         """Сохраняет tracemalloc-snapshot в файл рядом с .exe (или с main.py

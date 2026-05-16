@@ -1142,14 +1142,24 @@ class LogViewerWidget(QWidget):
 
     def _on_batches_container_changed(self, index):
         """Подвкладка переключилась. Если открыли «История кода» и дерево
-        не построено — строим лениво."""
+        не построено — строим лениво. На больших логах эти операции занимают
+        несколько секунд - показываем busy-оверлей."""
         if index < 0:
             return
         w = self.batches_container.widget(index)
         if w is self.code_history_widget and not self._code_history_tree_built:
-            self._build_code_history_index()
-            self._populate_code_history_tree()
-            self._code_history_tree_built = True
+            window = self.window()
+            try:
+                if hasattr(window, 'show_busy'):
+                    window.show_busy("Сканирование лога на коды (SGTIN / SSCC / агрегаты) ...")
+                self._build_code_history_index()
+                if hasattr(window, 'set_busy_text'):
+                    window.set_busy_text("Построение дерева Партия → Код → События ...")
+                self._populate_code_history_tree()
+                self._code_history_tree_built = True
+            finally:
+                if hasattr(window, 'hide_busy'):
+                    window.hide_busy()
 
     def _build_code_history_index(self):
         """Сканирует все entries, извлекает коды (SGTIN / групповой / SSCC)
@@ -1214,6 +1224,16 @@ class LogViewerWidget(QWidget):
         ordered = list(batches_summary) + extra
 
         total_codes = 0
+        window = self.window()
+        has_busy = hasattr(window, 'set_busy_text')
+        # Сколько узлов добавили подряд - после порога вызываем processEvents,
+        # чтобы UI-поток успевал отрисовать кадр busy-оверлея и не выглядел
+        # зависшим. 2000 - компромисс: меньше = плавнее, но дольше суммарно.
+        BATCH = 2000
+        added_since_pump = 0
+        batches_done = 0
+        total_batches = len([b for b, _c, _f, _l in ordered if index.get(b)])
+
         self.code_history_tree.setUpdatesEnabled(False)
         try:
             for bid, _count, _f, _l in ordered:
@@ -1243,6 +1263,17 @@ class LogViewerWidget(QWidget):
                     placeholder = QTreeWidgetItem(c_item, ["…", "", ""])
                     placeholder.setData(0, Qt.ItemDataRole.UserRole,
                                         ('placeholder', None))
+                    added_since_pump += 2
+                    if added_since_pump >= BATCH:
+                        added_since_pump = 0
+                        if has_busy:
+                            window.set_busy_text(
+                                f"Построение дерева … "
+                                f"партия {batches_done + 1} / {total_batches}, "
+                                f"кодов добавлено: {total_codes:,}"
+                            )
+                        else:
+                            QApplication.processEvents()
 
                 if len(bucket) > self.MAX_CODES_PER_BATCH:
                     hidden = len(bucket) - self.MAX_CODES_PER_BATCH
@@ -1251,6 +1282,7 @@ class LogViewerWidget(QWidget):
                         "", ""
                     ])
                     note.setData(0, Qt.ItemDataRole.UserRole, ('note', None))
+                batches_done += 1
         finally:
             self.code_history_tree.setUpdatesEnabled(True)
 
