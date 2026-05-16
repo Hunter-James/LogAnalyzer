@@ -371,7 +371,13 @@ class MainWindow(QMainWindow):
         )
         dlg.previewChanged.connect(self._preview_appearance)
 
-        if dlg.exec():
+        result = dlg.exec()
+        # Останавливаем debounce-таймер - иначе запланированное pending-
+        # превью может сработать ПОСЛЕ apply_theme ниже и затереть результат.
+        if hasattr(self, '_preview_timer') and self._preview_timer is not None:
+            self._preview_timer.stop()
+
+        if result:
             theme, size, features = dlg.get_settings()
             self.current_font_size = size
             self.ui_features = features
@@ -379,13 +385,36 @@ class MainWindow(QMainWindow):
             self._apply_ui_features_everywhere()
             self.save_current_settings()
         else:
-            # Откатываем live-превью на исходные настройки (без сохранения)
-            self.current_font_size = original_font_size
-            self.apply_theme(original_theme)
+            # Откатываем live-превью на исходные настройки (без сохранения).
+            # apply_theme зовём только если что-то реально менялось.
+            if (self.current_theme_name != original_theme
+                    or self.current_font_size != original_font_size):
+                self.current_font_size = original_font_size
+                self.apply_theme(original_theme)
 
     def _preview_appearance(self, theme_name, font_size):
         """Слот live-превью из SettingsDialog: применяет тему и размер шрифта
-        прямо во время выбора, без сохранения в settings.json."""
+        прямо во время выбора, без сохранения в settings.json.
+
+        ДЕБАУНС: apply_theme - тяжёлая операция (перестраивает layouts окна
+        и зовёт apply_theme у всех viewer'ов с пересборкой стилей). Если
+        юзер крутит спин шрифта 8→9→10→11, нельзя пересчитывать тему 4
+        раза. Запоминаем последний выбор и применяем через 200мс после
+        паузы."""
+        self._pending_preview_theme = theme_name
+        self._pending_preview_font_size = font_size
+        if not hasattr(self, '_preview_timer') or self._preview_timer is None:
+            self._preview_timer = QTimer(self)
+            self._preview_timer.setSingleShot(True)
+            self._preview_timer.setInterval(200)
+            self._preview_timer.timeout.connect(self._apply_pending_preview)
+        self._preview_timer.start()
+
+    def _apply_pending_preview(self):
+        theme_name = getattr(self, '_pending_preview_theme', None)
+        font_size = getattr(self, '_pending_preview_font_size', None)
+        if theme_name is None or font_size is None:
+            return
         self.current_font_size = font_size
         self.apply_theme(theme_name)
 

@@ -346,9 +346,16 @@ class SplitManager(QSplitter):
 
     def add_tab(self, widget, title, side="active", silent=False):
         """Добавляет вкладку и - если silent=False - испускает activeTabChanged.
+
         silent=True используется при restore_session: иначе для каждого
         добавляемого lazy-таба отработает сигнал → ensure_loaded() → все
-        логи загрузятся один за другим (lazy перестанет работать)."""
+        логи загрузятся один за другим.
+
+        ВАЖНО: помимо нашего ручного emit (в конце метода) есть ещё Qt-сигнал
+        currentChanged, который испускается setCurrentIndex и каскадно дёргает
+        on_current_changed → tabActivated → SplitManager.on_tab_activated →
+        activeTabChanged. Чтобы silent действительно был silent, временно
+        блокируем сигналы у target через blockSignals."""
         target = self.active_group
 
         if side == "left":
@@ -358,8 +365,14 @@ class SplitManager(QSplitter):
         elif not self.right_tabs.isVisible():
             target = self.left_tabs
 
-        index = target.addTab(widget, title)
-        target.setCurrentIndex(index)
+        if silent:
+            target.blockSignals(True)
+        try:
+            index = target.addTab(widget, title)
+            target.setCurrentIndex(index)
+        finally:
+            if silent:
+                target.blockSignals(False)
 
         if not target.isVisible():
             target.show()
