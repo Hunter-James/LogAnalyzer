@@ -472,7 +472,14 @@ class MainWindow(QMainWindow):
 
         # Lazy-load: если активировали виджет, который не загружен (после
         # restore_session или после LRU-выгрузки) - грузим его сейчас.
+        # Здесь обязательно показываем busy: ensure_loaded() запускает парсинг
+        # ассинхронно в QThread, но UI всё равно может казаться зависшим
+        # (особенно если сразу после показывается прогресс-бар и тулбар).
         if isinstance(viewer, LogViewerWidget) and not viewer._loaded:
+            self.show_busy(
+                f"Загрузка {os.path.basename(viewer.file_path)} ...\n"
+                f"Большие логи могут парситься несколько секунд."
+            )
             viewer.ensure_loaded()
             self.progress_bar.setVisible(True)
             self.btn_open.setEnabled(False)
@@ -713,6 +720,18 @@ class MainWindow(QMainWindow):
         files_left = self.settings.get("files_left", [])
         files_right = self.settings.get("files_right", [])
 
+        total = (len([f for f in files_left if os.path.exists(f)])
+                 + len([f for f in files_right if os.path.exists(f)]))
+        if total > 0:
+            # Создание lazy-табов само по себе быстрое, но плюс верхний таб
+            # будет реально грузиться сразу. Показываем оверлей сразу, чтобы
+            # юзер видел «что-то происходит» - финальный hide_busy случится
+            # в on_loading_finished активного таба.
+            self.show_busy(
+                f"Восстановление сессии: {total} файл(ов) ...\n"
+                f"Загружается только активная вкладка, остальные ждут клика."
+            )
+
         for f in files_left:
             if os.path.exists(f):
                 self.load_file(f, side="left", lazy=True)
@@ -729,6 +748,9 @@ class MainWindow(QMainWindow):
                    else None) or self.split_manager.left_tabs.currentWidget()
         if isinstance(current, LogViewerWidget):
             self.split_manager.activeTabChanged.emit(current)
+        elif total > 0:
+            # Если активного viewer'а нет (теоретически), busy всё равно надо скрыть
+            self.hide_busy()
 
     def save_current_settings(self):
         files_left, files_right = self.split_manager.get_open_files()
