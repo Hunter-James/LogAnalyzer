@@ -14,6 +14,8 @@ class SettingsDialog(QDialog):
 
     def __init__(self, current_theme, current_font_size, current_features,
                  current_group_layout='splitter', parent=None):
+        # current_group_layout оставлен для backward-compat вызывающего кода,
+        # но в текущей итерации не используется (Stack-режим - единственный).
         super().__init__(parent)
         self.setWindowTitle("Настройки")
         self.resize(460, 540)
@@ -42,19 +44,8 @@ class SettingsDialog(QDialog):
         self.theme_combo.currentTextChanged.connect(self._emit_preview)
         self.font_spin.valueChanged.connect(self._emit_preview)
 
-        # Режим расположения групп: Splitter (рядом) / Stack (стек, переключение
-        # по клику на плашку). Применяется по OK (не live).
-        self.group_layout_combo = QComboBox()
-        self.group_layout_combo.addItem("Рядом (Splitter)", "splitter")
-        self.group_layout_combo.addItem("Стек (одна активна)", "stack")
-        idx = self.group_layout_combo.findData(current_group_layout or 'splitter')
-        if idx < 0:
-            idx = 0
-        self.group_layout_combo.setCurrentIndex(idx)
-
         form.addRow("Тема:", self.theme_combo)
         form.addRow("Размер шрифта:", self.font_spin)
-        form.addRow("Расположение групп:", self.group_layout_combo)
         appearance_group.setLayout(form)
         layout.addWidget(appearance_group)
 
@@ -138,8 +129,9 @@ class SettingsDialog(QDialog):
 
     def get_settings(self):
         features = {key: cb.isChecked() for key, cb in self.feature_checkboxes.items()}
-        group_layout = self.group_layout_combo.currentData() or 'splitter'
+        # group_layout зарезервирован под будущий Splitter-режим;
+        # пока всегда 'stack' (это единственный поддерживаемый режим).
         return (self.theme_combo.currentText(),
                 self.font_spin.value(),
                 features,
-                group_layout)
+                'stack')
