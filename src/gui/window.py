@@ -12,8 +12,8 @@ except ImportError:  # pragma: no cover
     _HAS_PSUTIL = False
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                             QLineEdit, QLabel, QFileDialog, QProgressBar,
-                             QMessageBox, QStyle, QFrame, QCheckBox, QApplication)
+                             QLineEdit, QLabel, QFileDialog, QProgressBar, QToolButton,
+                             QMessageBox, QStyle, QFrame, QCheckBox, QApplication, QMenu)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QIcon, QKeySequence, QCloseEvent, QShortcut
 
@@ -131,14 +131,16 @@ class MainWindow(QMainWindow):
         self.create_widgets()
 
         # Main content is now the SplitManager - с конфигами групп
-        # (имя + цвет) из settings.json. По умолчанию «Группа 1» + «Группа 2»
-        # с дефолтными цветами.
+        # (имя + цвет + collapsed) из settings.json.
         self.split_manager = SplitManager(
             group_configs=self.settings.get("group_configs"),
         )
         self.split_manager.activeTabChanged.connect(self.on_active_tab_changed)
-        # Когда юзер переименовал группу или сменил цвет - сохраняем в settings.
         self.split_manager.groupConfigChanged.connect(self.save_current_settings)
+        self.split_manager.archiveChanged.connect(self._on_archive_changed)
+
+        # Восстанавливаем архив из settings (список выгруженных групп)
+        self.split_manager.set_archive(self.settings.get("archived_groups", []))
 
     def create_widgets(self):
         self.btn_open = QPushButton("Открыть файл")
@@ -148,6 +150,19 @@ class MainWindow(QMainWindow):
         self.btn_help = QPushButton("Справка")
         self.btn_help.setToolTip("Открыть окно со справкой по функционалу (F1)")
         self.btn_help.clicked.connect(self.open_help)
+
+        # Кнопка «Архив» - выпадающее меню со списком выгруженных групп.
+        # Скрыта пока в архиве пусто, чтобы не захламлять тулбар.
+        self.btn_archive = QToolButton()
+        self.btn_archive.setText("📦 Архив")
+        self.btn_archive.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.btn_archive.setToolTip(
+            "Архивированные группы: пути файлов сохранены, но сами файлы "
+            "выгружены из памяти. Клик по группе — вернуть в UI как lazy-табы."
+        )
+        self._archive_menu = QMenu(self)
+        self.btn_archive.setMenu(self._archive_menu)
+        self.btn_archive.setVisible(False)
 
         self.chk_info = QCheckBox("INFO")
         self.chk_info.setChecked(True)
@@ -174,7 +189,7 @@ class MainWindow(QMainWindow):
 
     def detach_widgets(self):
         widgets = [
-            self.btn_open, self.btn_settings, self.btn_help,
+            self.btn_open, self.btn_settings, self.btn_help, self.btn_archive,
             self.chk_info, self.chk_debug, self.chk_warn, self.chk_error,
             self.chk_group,
             self.progress_bar,
@@ -239,6 +254,7 @@ class MainWindow(QMainWindow):
         tb_layout.addWidget(self.btn_open)
         tb_layout.addWidget(self.btn_settings)
         tb_layout.addWidget(self.btn_help)
+        tb_layout.addWidget(self.btn_archive)
         tb_layout.addSpacing(20)
         tb_layout.addWidget(self.chk_info)
         tb_layout.addWidget(self.chk_debug)
@@ -273,6 +289,7 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.btn_open)
         sb_layout.addWidget(self.btn_settings)
         sb_layout.addWidget(self.btn_help)
+        sb_layout.addWidget(self.btn_archive)
         sb_layout.addSpacing(10)
         sb_layout.addWidget(QLabel("ФИЛЬТРЫ"))
         sb_layout.addWidget(self.chk_info)
@@ -455,6 +472,53 @@ class MainWindow(QMainWindow):
                 viewer = group.widget(i)
                 if isinstance(viewer, LogViewerWidget):
                     viewer.apply_ui_features(self.ui_features)
+
+    def _on_archive_changed(self):
+        """Перестраивает меню «Архив» когда SplitManager эмитит archiveChanged.
+        Показывает/скрывает кнопку «Архив» в зависимости от наличия элементов."""
+        archive = self.split_manager.get_archive()
+        self._archive_menu.clear()
+        if not archive:
+            self.btn_archive.setVisible(False)
+            return
+        self.btn_archive.setText(f"📦 Архив ({len(archive)})")
+        self.btn_archive.setVisible(True)
+        for i, entry in enumerate(archive):
+            n_files = len(entry.get('files') or [])
+            label = f"{entry['name']}  —  {n_files} файл(ов)"
+            action = self._archive_menu.addAction(label)
+            action.triggered.connect(
+                lambda _checked=False, idx=i: self._restore_archived_group(idx))
+        self._archive_menu.addSeparator()
+        act_clear = self._archive_menu.addAction("Очистить архив")
+        act_clear.triggered.connect(self._clear_archive)
+
+    def _restore_archived_group(self, index):
+        """Восстанавливает группу из архива: добавляет новую панель и
+        раскладывает её файлы в lazy-режиме (как restore_session)."""
+        result = self.split_manager.restore_from_archive(index)
+        if not result:
+            return
+        panel, files = result
+        # Активируем эту панель, чтобы load_file(side="active") клал в неё
+        self.split_manager.active_group = panel.tabs
+        for f in files:
+            if os.path.exists(f):
+                self.load_file(f, side="active", lazy=True)
+        self.save_current_settings()
+
+    def _clear_archive(self):
+        r = QMessageBox.question(
+            self, "Очистить архив",
+            "Удалить все архивированные группы навсегда?\n"
+            "Файлы на диске не пострадают, потеряются только их группировки.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        self.split_manager.set_archive([])
+        self.save_current_settings()
 
     def open_help(self):
         dlg = HelpDialog(self.current_theme_name, self)
@@ -890,9 +954,12 @@ class MainWindow(QMainWindow):
             "files_per_group": files_per_group,
             "bookmarks": bookmarks,
             "ui_features": self.ui_features,
-            # Имена и цвета групп - сохраняются при переименовании / смене
-            # цвета через меню плашки, а также при выходе из приложения.
+            # Имена / цвета / collapsed групп - сохраняются при переименовании,
+            # смене цвета, свёртывании и при выходе из приложения.
             "group_configs": self.split_manager.get_group_configs(),
+            # Архив выгруженных групп: {name, color, files} - файлы не в RAM,
+            # только пути для будущего восстановления.
+            "archived_groups": self.split_manager.get_archive(),
         }
         save_settings(data)
         # Обновляем кеш в self.settings, чтобы load_file тут же увидел свежие закладки

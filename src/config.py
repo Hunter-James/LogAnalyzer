@@ -87,20 +87,45 @@ def load_settings():
                            for k, v in user_features.items() if k in DEFAULT_UI_FEATURES})
     defaults["ui_features"] = merged_features
 
-    # Нормализуем group_configs: список из двух dict-ов с name+color.
+    # Нормализуем group_configs: произвольная длина (>=2), каждая запись
+    # {name, color, collapsed}.
     raw_groups = defaults.get("group_configs") or []
     fallback = [
         {"name": "Группа 1", "color": "#E53935"},
         {"name": "Группа 2", "color": "#43A047"},
     ]
     normalized = []
-    for i in range(2):
-        src = raw_groups[i] if i < len(raw_groups) and isinstance(raw_groups[i], dict) else {}
+    target_len = max(2, len(raw_groups))
+    for i in range(target_len):
+        src = (raw_groups[i] if i < len(raw_groups)
+               and isinstance(raw_groups[i], dict) else {})
+        if i < 2:
+            name_def = fallback[i]["name"]
+            color_def = fallback[i]["color"]
+        else:
+            name_def = f"Группа {i + 1}"
+            color_def = "#1E88E5"
         normalized.append({
-            "name": str(src.get("name") or fallback[i]["name"]),
-            "color": str(src.get("color") or fallback[i]["color"]),
+            "name": str(src.get("name") or name_def),
+            "color": str(src.get("color") or color_def),
+            "collapsed": bool(src.get("collapsed", False)),
         })
     defaults["group_configs"] = normalized
+
+    # Архив групп (выгруженных через меню «Архивировать»)
+    archived = defaults.get("archived_groups") or []
+    normalized_archive = []
+    if isinstance(archived, list):
+        for entry in archived:
+            if not isinstance(entry, dict):
+                continue
+            normalized_archive.append({
+                "name": str(entry.get("name") or "Группа"),
+                "color": str(entry.get("color") or "#888888"),
+                "files": list(entry.get("files") or []),
+            })
+    defaults["archived_groups"] = normalized_archive
+
     return defaults
 
 

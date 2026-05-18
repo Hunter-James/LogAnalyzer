@@ -31,21 +31,25 @@ class GroupHeader(QFrame):
       colorRequested(str)        - юзер выбрал новый цвет (hex)
       addGroupRequested()        - меню «Добавить группу справа» / кнопка «+»
       removeGroupRequested()     - меню «Удалить группу»
+      collapseToggled()          - меню «Свернуть/Развернуть» / кнопка «▼/▲»
+      archiveRequested()         - меню «Архивировать»
     """
 
     renameRequested = pyqtSignal(str)
     colorRequested = pyqtSignal(str)
     addGroupRequested = pyqtSignal()
     removeGroupRequested = pyqtSignal()
+    collapseToggled = pyqtSignal()
+    archiveRequested = pyqtSignal()
 
     def __init__(self, name, color, parent=None):
         super().__init__(parent)
         self._name = name
         self._color = color
         self._can_remove = True
+        self._collapsed = False
         self.setFixedHeight(28)
         self.setFrameShape(QFrame.Shape.NoFrame)
-        # Контекстное меню по правой кнопке
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_menu)
 
@@ -57,6 +61,14 @@ class GroupHeader(QFrame):
         self.lbl_name.setStyleSheet("color: white; font-weight: bold;")
         h.addWidget(self.lbl_name)
         h.addStretch()
+
+        # Кнопка свернуть/развернуть «▼/▲»
+        self.btn_collapse = QToolButton()
+        self.btn_collapse.setText("▼")
+        self.btn_collapse.setFixedSize(22, 22)
+        self.btn_collapse.setToolTip("Свернуть группу")
+        self.btn_collapse.clicked.connect(self.collapseToggled.emit)
+        h.addWidget(self.btn_collapse)
 
         # Кнопка «+» - добавить новую группу справа от этой
         self.btn_add = QToolButton()
@@ -94,9 +106,19 @@ class GroupHeader(QFrame):
         )
         self.btn_menu.setStyleSheet(btn_css)
         self.btn_add.setStyleSheet(btn_css)
+        self.btn_collapse.setStyleSheet(btn_css)
 
     def set_can_remove(self, can_remove):
         self._can_remove = bool(can_remove)
+
+    def set_collapsed(self, collapsed):
+        """Меняет visual-индикатор collapse-кнопки: ▼ когда развёрнута,
+        ▲ когда свёрнута. Сам collapse выполняет GroupPanel."""
+        self._collapsed = bool(collapsed)
+        self.btn_collapse.setText("▲" if self._collapsed else "▼")
+        self.btn_collapse.setToolTip(
+            "Развернуть группу" if self._collapsed else "Свернуть группу"
+        )
 
     @property
     def name(self):
@@ -133,11 +155,17 @@ class GroupHeader(QFrame):
         act_rename = menu.addAction("Переименовать …")
         act_color = menu.addAction("Сменить цвет …")
         menu.addSeparator()
+        act_collapse = menu.addAction(
+            "Развернуть" if self._collapsed else "Свернуть")
+        act_archive = menu.addAction("Архивировать (выгрузить файлы)")
+        menu.addSeparator()
         act_add = menu.addAction("Добавить группу справа")
         act_remove = menu.addAction("Удалить группу")
         act_remove.setEnabled(self._can_remove)
         act_rename.triggered.connect(self._do_rename)
         act_color.triggered.connect(self._do_change_color)
+        act_collapse.triggered.connect(self.collapseToggled.emit)
+        act_archive.triggered.connect(self.archiveRequested.emit)
         act_add.triggered.connect(self.addGroupRequested.emit)
         act_remove.triggered.connect(self.removeGroupRequested.emit)
         return menu
@@ -161,13 +189,16 @@ class GroupHeader(QFrame):
 class GroupPanel(QWidget):
     """Один «слот группы» в SplitManager: заголовок-плашка сверху + TabWidget с
     табами под ним. Пробрасывает сигналы header'а наружу - чтобы SplitManager
-    мог реагировать на «Добавить» / «Удалить группу» от любой панели."""
+    мог реагировать на «Добавить» / «Удалить» / «Свернуть» / «Архивировать»."""
 
     addGroupRequested = pyqtSignal()
     removeGroupRequested = pyqtSignal()
+    collapseToggled = pyqtSignal()
+    archiveRequested = pyqtSignal()
 
     def __init__(self, name, color, parent=None):
         super().__init__(parent)
+        self._collapsed = False
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(2)
@@ -180,6 +211,29 @@ class GroupPanel(QWidget):
 
         self.header.addGroupRequested.connect(self.addGroupRequested.emit)
         self.header.removeGroupRequested.connect(self.removeGroupRequested.emit)
+        self.header.collapseToggled.connect(self.collapseToggled.emit)
+        self.header.archiveRequested.connect(self.archiveRequested.emit)
+
+    @property
+    def collapsed(self):
+        return self._collapsed
+
+    def set_collapsed(self, collapsed):
+        """Свернуть/развернуть группу. Файлы внутри остаются loaded -
+        просто скрывается виджет табов. Заголовок остаётся видимым.
+        Сама панель в QSplitter сжимается до высоты заголовка."""
+        collapsed = bool(collapsed)
+        if collapsed == self._collapsed:
+            return
+        self._collapsed = collapsed
+        self.tabs.setVisible(not collapsed)
+        self.header.set_collapsed(collapsed)
+        # Когда сворачиваем - фиксируем высоту панели до высоты заголовка,
+        # чтобы splitter «сжал» её. При развороте снимаем ограничение.
+        if collapsed:
+            self.setMaximumHeight(self.header.height())
+        else:
+            self.setMaximumHeight(16777215)  # Qt-дефолт = неограничено
 
 
 class DraggableTabBar(QTabBar):
@@ -490,11 +544,14 @@ class SplitManager(QSplitter):
 
     Сигналы:
       activeTabChanged(widget) - сменился активный таб;
-      groupConfigChanged()     - имена/цвета/состав групп изменились
-                                  (MainWindow подписан → сохраняет settings)."""
+      groupConfigChanged()     - имена/цвета/состав/collapsed групп изменились
+                                  (MainWindow подписан → сохраняет settings);
+      archiveChanged()         - группа уехала в архив или вернулась обратно.
+                                  MainWindow перерисовывает меню «Архив»."""
 
     activeTabChanged = pyqtSignal(object)
     groupConfigChanged = pyqtSignal()
+    archiveChanged = pyqtSignal()
 
     def __init__(self, parent=None, group_configs=None):
         super().__init__(Qt.Orientation.Horizontal, parent)
@@ -509,11 +566,17 @@ class SplitManager(QSplitter):
             ]
 
         self.panels = []  # список GroupPanel в порядке отображения
+        # Архив: список словарей с {name, color, files} - выгруженных групп.
+        # Файлы НЕ хранятся в RAM, только пути. Восстанавливаются как lazy-табы.
+        self._archive = []
         for i, cfg in enumerate(cfgs):
             name = (cfg or {}).get('name') or f'Группа {i + 1}'
             color = (cfg or {}).get('color') or DEFAULT_GROUP_COLORS[
                 i % len(DEFAULT_GROUP_COLORS)]
-            self._add_panel(name, color)
+            panel = self._add_panel(name, color)
+            # Восстанавливаем collapsed-состояние если сохранено
+            if (cfg or {}).get('collapsed'):
+                panel.set_collapsed(True)
 
         # Скрываем все панели начиная со второй пока в них нет табов -
         # как раньше right_panel был hidden по умолчанию.
@@ -568,8 +631,114 @@ class SplitManager(QSplitter):
             lambda p=panel: self._add_group_after(p))
         panel.removeGroupRequested.connect(
             lambda p=panel: self._remove_panel(p))
+        panel.collapseToggled.connect(
+            lambda p=panel: self._toggle_collapse(p))
+        panel.archiveRequested.connect(
+            lambda p=panel: self._archive_panel(p))
         self._update_remove_enabled()
         return panel
+
+    def _toggle_collapse(self, panel):
+        """Переключает collapsed-режим панели. Файлы остаются loaded -
+        пользователь просто временно прячет табы. Сохраняется в settings
+        через groupConfigChanged."""
+        panel.set_collapsed(not panel.collapsed)
+        self.groupConfigChanged.emit()
+
+    def _archive_panel(self, panel):
+        """Архивирует группу: все файлы группы unload'ятся (memory высвобождается),
+        конфиг (имя/цвет/список файлов) кладётся в self._archive, панель
+        удаляется из UI. Если в архиве остаётся только эта группа в UI - блокируем
+        (минимум 1 группа должна остаться видимой; пусть переименует/добавит)."""
+        if len(self.panels) <= 1:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "Архивировать",
+                "Это единственная группа - её нельзя архивировать.\n"
+                "Создайте ещё одну группу через «+», тогда эту можно будет архивировать."
+            )
+            return
+
+        # Собираем пути к файлам
+        files = []
+        for i in range(panel.tabs.count()):
+            w = panel.tabs.widget(i)
+            if isinstance(w, LogViewerWidget):
+                files.append(w.file_path)
+
+        if files:
+            from PyQt6.QtWidgets import QMessageBox
+            r = QMessageBox.question(
+                self, "Архивировать группу",
+                f"Группа «{panel.header.name}»: {len(files)} файл(ов).\n"
+                f"Все файлы будут выгружены из памяти. Группа уедет в меню «Архив» -\n"
+                f"оттуда её можно вернуть в любой момент.\n\n"
+                f"Архивировать?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                return
+
+        # Сохраняем конфиг и закрываем виджеты табов (unload через deleteLater
+        # вызовет нашу LogViewerWidget без задержки освободит ресурсы).
+        entry = {
+            'name': panel.header.name,
+            'color': panel.header.color,
+            'files': files,
+        }
+        was_active = (self.active_group is panel.tabs)
+        while panel.tabs.count() > 0:
+            w = panel.tabs.widget(0)
+            panel.tabs.removeTab(0)
+            if w is not None:
+                # Перед удалением вызываем unload() чтобы корректно остановить
+                # потоки и освободить кэши, если у viewer'а они есть.
+                if hasattr(w, 'unload'):
+                    try:
+                        w.unload()
+                    except Exception:
+                        pass
+                w.deleteLater()
+
+        try:
+            self.panels.remove(panel)
+        except ValueError:
+            pass
+        panel.setParent(None)
+        panel.deleteLater()
+
+        self._archive.append(entry)
+
+        if was_active and self.panels:
+            self.active_group = self.panels[0].tabs
+            self.activeTabChanged.emit(self.active_group.currentWidget())
+        self._update_remove_enabled()
+        self.archiveChanged.emit()
+        self.groupConfigChanged.emit()
+
+    def get_archive(self):
+        """Возвращает копию списка архивированных групп - для отображения
+        в меню «Архив» и для сохранения в settings."""
+        return [dict(entry) for entry in self._archive]
+
+    def set_archive(self, archive_list):
+        """Загружает архив из settings (при запуске приложения)."""
+        self._archive = [dict(e) for e in (archive_list or [])]
+        self.archiveChanged.emit()
+
+    def restore_from_archive(self, index):
+        """Восстанавливает группу из архива: создаёт новую панель с её именем,
+        цветом и списком файлов (lazy). Возвращает (panel, files) либо None."""
+        if not (0 <= index < len(self._archive)):
+            return None
+        entry = self._archive.pop(index)
+        panel = self._add_panel(entry['name'], entry['color'])
+        panel.show()
+        self._update_remove_enabled()
+        self.archiveChanged.emit()
+        self.groupConfigChanged.emit()
+        return panel, entry.get('files') or []
 
     def add_group(self, name=None, color=None):
         """Создаёт новую группу в конце. Возвращает GroupPanel."""
@@ -685,9 +854,13 @@ class SplitManager(QSplitter):
         self.groupConfigChanged.emit()
 
     def get_group_configs(self):
-        """Возвращает [{name, color}, ...] - для сохранения в settings."""
+        """Возвращает [{name, color, collapsed}, ...] - для сохранения в settings."""
         return [
-            {'name': p.header.name, 'color': p.header.color}
+            {
+                'name': p.header.name,
+                'color': p.header.color,
+                'collapsed': p.collapsed,
+            }
             for p in self.panels
         ]
 
