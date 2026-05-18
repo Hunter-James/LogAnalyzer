@@ -138,9 +138,13 @@ class MainWindow(QMainWindow):
         self.split_manager.activeTabChanged.connect(self.on_active_tab_changed)
         self.split_manager.groupConfigChanged.connect(self.save_current_settings)
         self.split_manager.archiveChanged.connect(self._on_archive_changed)
+        self.split_manager.filesDroppedOnGroup.connect(self._on_files_dropped_on_group)
 
         # Восстанавливаем архив из settings (список выгруженных групп)
         self.split_manager.set_archive(self.settings.get("archived_groups", []))
+        # Применяем сохранённый режим Stack/Splitter
+        if self.settings.get("group_layout_mode") == "stack":
+            self.split_manager.set_stack_mode(True)
 
     def create_widgets(self):
         self.btn_open = QPushButton("Открыть файл")
@@ -389,8 +393,10 @@ class MainWindow(QMainWindow):
         original_theme = self.current_theme_name
         original_font_size = self.current_font_size
 
+        current_group_layout = self.settings.get("group_layout_mode", "splitter")
         dlg = SettingsDialog(
-            self.current_theme_name, self.current_font_size, self.ui_features, self
+            self.current_theme_name, self.current_font_size, self.ui_features,
+            current_group_layout=current_group_layout, parent=self,
         )
         dlg.previewChanged.connect(self._preview_appearance)
 
@@ -401,11 +407,14 @@ class MainWindow(QMainWindow):
             self._preview_timer.stop()
 
         if result:
-            theme, size, features = dlg.get_settings()
+            theme, size, features, group_layout = dlg.get_settings()
             self.current_font_size = size
             self.ui_features = features
             self.apply_theme(theme)
             self._apply_ui_features_everywhere()
+            # Применяем режим расположения групп
+            self.split_manager.set_stack_mode(group_layout == 'stack')
+            self.settings["group_layout_mode"] = group_layout
             self.save_current_settings()
         else:
             # Откатываем live-превью на исходные настройки (без сохранения).
@@ -472,6 +481,18 @@ class MainWindow(QMainWindow):
                 viewer = group.widget(i)
                 if isinstance(viewer, LogViewerWidget):
                     viewer.apply_ui_features(self.ui_features)
+
+    def _on_files_dropped_on_group(self, panel_index, paths):
+        """Юзер бросил файл(ы) на плашку группы #panel_index.
+        Делаем эту группу активной и грузим файл туда."""
+        try:
+            target_panel = self.split_manager.panels[panel_index]
+        except (IndexError, AttributeError):
+            return
+        self.split_manager.active_group = target_panel.tabs
+        for p in paths:
+            if os.path.exists(p):
+                self.load_file(p, side="active")
 
     def _on_archive_changed(self):
         """Перестраивает меню «Архив» когда SplitManager эмитит archiveChanged.
@@ -960,6 +981,8 @@ class MainWindow(QMainWindow):
             # Архив выгруженных групп: {name, color, files} - файлы не в RAM,
             # только пути для будущего восстановления.
             "archived_groups": self.split_manager.get_archive(),
+            # Режим расположения групп: 'splitter' или 'stack'.
+            "group_layout_mode": self.settings.get("group_layout_mode", "splitter"),
         }
         save_settings(data)
         # Обновляем кеш в self.settings, чтобы load_file тут же увидел свежие закладки

@@ -112,6 +112,13 @@ def load_settings():
         })
     defaults["group_configs"] = normalized
 
+    # Режим расположения групп: 'splitter' (рядом, как сейчас) или
+    # 'stack' (видна только одна, остальные через клик по плашке).
+    mode = str(defaults.get("group_layout_mode") or "splitter").lower()
+    if mode not in ("splitter", "stack"):
+        mode = "splitter"
+    defaults["group_layout_mode"] = mode
+
     # Архив групп (выгруженных через меню «Архивировать»)
     archived = defaults.get("archived_groups") or []
     normalized_archive = []

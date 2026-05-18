@@ -41,6 +41,8 @@ class GroupHeader(QFrame):
     removeGroupRequested = pyqtSignal()
     collapseToggled = pyqtSignal()
     archiveRequested = pyqtSignal()
+    filesDropped = pyqtSignal(list)  # drop'нуты пути файлов прямо на плашку
+    activateRequested = pyqtSignal()  # клик по плашке - сделать группу активной
 
     def __init__(self, name, color, parent=None):
         super().__init__(parent)
@@ -48,10 +50,14 @@ class GroupHeader(QFrame):
         self._color = color
         self._can_remove = True
         self._collapsed = False
+        self._drag_hover = False
         self.setFixedHeight(28)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_menu)
+        # Принимаем drop файлов прямо на плашку - так юзер может бросить
+        # .log в конкретную группу, не в активную по умолчанию.
+        self.setAcceptDrops(True)
 
         h = QHBoxLayout(self)
         h.setContentsMargins(10, 0, 4, 0)
@@ -88,12 +94,19 @@ class GroupHeader(QFrame):
         self._apply_color()
 
     def _apply_color(self):
-        """Применяет цвет фона. Текст автоматически белый/чёрный по яркости."""
+        """Применяет цвет фона. Текст автоматически белый/чёрный по яркости.
+        Во время drag-hover добавляется яркая жёлтая рамка - сигнал
+        пользователю «сюда можно бросать»."""
         c = QColor(self._color)
         lum = (c.red() * 299 + c.green() * 587 + c.blue() * 114) / 1000
         text_color = '#000000' if lum > 160 else '#FFFFFF'
+        if self._drag_hover:
+            border = "border: 2px solid #FFD600;"
+        else:
+            border = ""
         self.setStyleSheet(
-            f"GroupHeader {{ background-color: {self._color}; border-radius: 3px; }}"
+            f"GroupHeader {{ background-color: {self._color}; "
+            f"border-radius: 3px; {border} }}"
         )
         self.lbl_name.setStyleSheet(
             f"color: {text_color}; font-weight: bold; background: transparent;"
@@ -119,6 +132,44 @@ class GroupHeader(QFrame):
         self.btn_collapse.setToolTip(
             "Развернуть группу" if self._collapsed else "Свернуть группу"
         )
+
+    # ----- Drop файлов на плашку -----
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            # Принимаем только если есть хоть один локальный файл
+            if any(u.isLocalFile() for u in urls):
+                self._drag_hover = True
+                self._apply_color()  # перерисовать с подсветкой границы
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._drag_hover = False
+        self._apply_color()
+        event.accept()
+
+    def dropEvent(self, event):
+        self._drag_hover = False
+        self._apply_color()
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+        if paths:
+            self.filesDropped.emit(paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def mousePressEvent(self, event):
+        # Левый клик по плашке - просим SplitManager сделать эту группу активной
+        # (полезно в Stack-режиме, где это переключает видимый контент).
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.activateRequested.emit()
+        super().mousePressEvent(event)
 
     @property
     def name(self):
@@ -195,6 +246,8 @@ class GroupPanel(QWidget):
     removeGroupRequested = pyqtSignal()
     collapseToggled = pyqtSignal()
     archiveRequested = pyqtSignal()
+    filesDropped = pyqtSignal(list)
+    activateRequested = pyqtSignal()
 
     def __init__(self, name, color, parent=None):
         super().__init__(parent)
@@ -213,6 +266,8 @@ class GroupPanel(QWidget):
         self.header.removeGroupRequested.connect(self.removeGroupRequested.emit)
         self.header.collapseToggled.connect(self.collapseToggled.emit)
         self.header.archiveRequested.connect(self.archiveRequested.emit)
+        self.header.filesDropped.connect(self.filesDropped.emit)
+        self.header.activateRequested.connect(self.activateRequested.emit)
 
     @property
     def collapsed(self):
@@ -552,6 +607,9 @@ class SplitManager(QSplitter):
     activeTabChanged = pyqtSignal(object)
     groupConfigChanged = pyqtSignal()
     archiveChanged = pyqtSignal()
+    # filesDroppedOnGroup(panel_index, list_of_paths) - drop файлов на плашку
+    # конкретной группы. MainWindow подписан и делает load_file в эту группу.
+    filesDroppedOnGroup = pyqtSignal(int, list)
 
     def __init__(self, parent=None, group_configs=None):
         super().__init__(Qt.Orientation.Horizontal, parent)
@@ -569,6 +627,10 @@ class SplitManager(QSplitter):
         # Архив: список словарей с {name, color, files} - выгруженных групп.
         # Файлы НЕ хранятся в RAM, только пути. Восстанавливаются как lazy-табы.
         self._archive = []
+        # Stack-режим: только одна группа видна одновременно, остальные
+        # скрыты. Клик по плашке (через activateRequested) переключает
+        # активную. По умолчанию Splitter - все группы рядом.
+        self._stack_mode = False
         for i, cfg in enumerate(cfgs):
             name = (cfg or {}).get('name') or f'Группа {i + 1}'
             color = (cfg or {}).get('color') or DEFAULT_GROUP_COLORS[
@@ -635,8 +697,32 @@ class SplitManager(QSplitter):
             lambda p=panel: self._toggle_collapse(p))
         panel.archiveRequested.connect(
             lambda p=panel: self._archive_panel(p))
+        panel.filesDropped.connect(
+            lambda paths, p=panel: self._on_files_dropped_on_panel(p, paths))
+        panel.activateRequested.connect(
+            lambda p=panel: self._on_panel_activate_requested(p))
         self._update_remove_enabled()
         return panel
+
+    def _on_files_dropped_on_panel(self, panel, paths):
+        """Транслирует drop файлов на плашку наверх с индексом панели."""
+        try:
+            idx = self.panels.index(panel)
+        except ValueError:
+            return
+        self.filesDroppedOnGroup.emit(idx, list(paths))
+
+    def _on_panel_activate_requested(self, panel):
+        """Левый клик по плашке. В Splitter-режиме просто делаем эту группу
+        активной (для load_file(side='active') и для текущего viewer'а).
+        В Stack-режиме - переключаемся на эту панель."""
+        self.active_group = panel.tabs
+        # Если включён Stack-режим - показываем только эту панель
+        if getattr(self, '_stack_mode', False):
+            self._apply_stack_visibility()
+        cur = panel.tabs.currentWidget()
+        if cur is not None:
+            self.activeTabChanged.emit(cur)
 
     def _toggle_collapse(self, panel):
         """Переключает collapsed-режим панели. Файлы остаются loaded -
@@ -726,6 +812,45 @@ class SplitManager(QSplitter):
         """Загружает архив из settings (при запуске приложения)."""
         self._archive = [dict(e) for e in (archive_list or [])]
         self.archiveChanged.emit()
+
+    # ----- Stack / Splitter режим -----
+
+    def set_stack_mode(self, stack):
+        """True - режим Stack (видна только active_group), False - Splitter
+        (все группы рядом). В Stack-режиме все плашки остаются видимыми (они
+        ведь в самих панелях), но видна только активная группа целиком."""
+        stack = bool(stack)
+        if stack == self._stack_mode:
+            return
+        self._stack_mode = stack
+        self._apply_stack_visibility()
+
+    def _apply_stack_visibility(self):
+        """В Stack: скрываем все панели кроме active_group.parent (GroupPanel).
+        В Splitter: показываем все, кроме архивированных и тех, что
+        check_visibility прятала по причине пустоты (мы их не трогаем)."""
+        if self._stack_mode:
+            # Находим панель, владеющую active_group
+            active_panel = None
+            for p in self.panels:
+                if p.tabs is self.active_group:
+                    active_panel = p
+                    break
+            if active_panel is None and self.panels:
+                active_panel = self.panels[0]
+                self.active_group = active_panel.tabs
+            for p in self.panels:
+                p.setVisible(p is active_panel)
+        else:
+            # Splitter-режим - показываем все панели (кроме первой остаются как
+            # были; первая всегда видна).
+            for i, p in enumerate(self.panels):
+                if i == 0:
+                    p.show()
+                else:
+                    # Скрываем только пустые - check_visibility-логика
+                    if p.tabs.count() > 0:
+                        p.show()
 
     def restore_from_archive(self, index):
         """Восстанавливает группу из архива: создаёт новую панель с её именем,
