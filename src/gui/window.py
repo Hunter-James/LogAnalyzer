@@ -137,14 +137,7 @@ class MainWindow(QMainWindow):
         )
         self.split_manager.activeTabChanged.connect(self.on_active_tab_changed)
         self.split_manager.groupConfigChanged.connect(self.save_current_settings)
-        # archiveChanged больше не открывает popup-меню - управление через
-        # отдельный диалог GroupsManagerDialog. Но мы всё равно подписываемся,
-        # чтобы сохранять settings при изменении архива.
-        self.split_manager.archiveChanged.connect(self.save_current_settings)
         self.split_manager.filesDroppedOnGroup.connect(self._on_files_dropped_on_group)
-
-        # Восстанавливаем архив из settings (список выгруженных групп)
-        self.split_manager.set_archive(self.settings.get("archived_groups", []))
         # Применяем сохранённый режим Stack/Splitter
         if self.settings.get("group_layout_mode") == "stack":
             self.split_manager.set_stack_mode(True)
@@ -159,12 +152,12 @@ class MainWindow(QMainWindow):
         self.btn_help.clicked.connect(self.open_help)
 
         # Кнопка «🗂 Группы» - открывает диалог управления всеми группами
-        # (показать/скрыть, удалить, добавить, архивировать, восстановить).
-        # Старая кнопка «📦 Архив» поглощена этим диалогом.
+        # (показать/скрыть, переименовать, цвет, удалить + список файлов
+        # выбранной группы).
         self.btn_groups = QPushButton("🗂 Группы")
         self.btn_groups.setToolTip(
-            "Управление группами: показать/скрыть, добавить, удалить, "
-            "архивировать; список архива с восстановлением."
+            "Управление группами: показать/скрыть, переименовать, цвет, "
+            "удалить + список файлов выбранной группы."
         )
         self.btn_groups.clicked.connect(self.open_groups_manager)
 
@@ -495,8 +488,7 @@ class MainWindow(QMainWindow):
                 self.load_file(p, side="active")
 
     def open_groups_manager(self):
-        """Открывает диалог управления группами. Восстановление архива
-        делается прямо внутри диалога."""
+        """Открывает диалог управления группами."""
         from gui.groups_dialog import GroupsManagerDialog
         dlg = GroupsManagerDialog(self, self)
         dlg.exec()
@@ -940,9 +932,6 @@ class MainWindow(QMainWindow):
             # Имена / цвета / collapsed групп - сохраняются при переименовании,
             # смене цвета, свёртывании и при выходе из приложения.
             "group_configs": self.split_manager.get_group_configs(),
-            # Архив выгруженных групп: {name, color, files} - файлы не в RAM,
-            # только пути для будущего восстановления.
-            "archived_groups": self.split_manager.get_archive(),
             # Режим расположения групп: 'splitter' или 'stack'.
             "group_layout_mode": self.settings.get("group_layout_mode", "splitter"),
         }

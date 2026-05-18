@@ -1,35 +1,65 @@
 """Диалог управления группами табов.
 
-Открывается из кнопки «🗂 Группы» в главном тулбаре. Содержит:
-- список всех активных групп с операциями:
-    показать/скрыть, переименовать, цвет, архивировать, удалить;
-- список архивированных групп с операцией «Восстановить» / «Удалить навсегда»;
-- кнопку «Добавить группу».
+Открывается из кнопки «🗂 Группы» в главном тулбаре.
 
-Работает напрямую с SplitManager через переданные коллбэки/методы:
-- split_manager.iter_panels() / get_archive() для чтения;
-- split_manager.set_group_hidden(panel, hidden) для скрытия;
-- split_manager._archive_panel(panel) для архивации;
-- split_manager._remove_panel(panel) для удаления;
-- split_manager.add_group() для создания;
-- split_manager.restore_from_archive(idx) для восстановления.
+Структура:
+  ┌── Группы ─────────────────────────────────┐
+  │ [●] Группа 1   [Скрыть][Переим][Цвет][Удалить] │
+  │ [●] Группа 2   [Показать][Переим][Цвет][Удалить] │   ← клик выбирает строку
+  │ [➕ Добавить новую группу]                 │
+  ├── Файлы выбранной группы ─────────────────┤
+  │ Имя         Размер   Изменён    Путь      │
+  │ app.log     3.5 MB   2026-05-12 C:/.../   │   ← таблица файлов
+  │ app2.log    1.2 MB   2026-05-11 C:/.../   │
+  └────────────────────────────────────────────┘
 """
+import os
+import datetime
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QScrollArea, QWidget, QGroupBox, QMessageBox,
+    QScrollArea, QWidget, QGroupBox, QMessageBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QAbstractItemView, QInputDialog,
+    QColorDialog,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 
 
+def _format_size(num_bytes):
+    """Удобный формат размера: 3.5 MB / 187 KB / 42 B."""
+    if num_bytes is None:
+        return "—"
+    n = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(n)} {unit}"
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{num_bytes} B"
+
+
+def _format_mtime(ts):
+    if ts is None:
+        return "—"
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
 class _GroupRow(QFrame):
-    """Одна строка в списке: цветной квадратик + имя + кнопки операций."""
+    """Одна строка группы. Клик по строке (любому месту кроме кнопок)
+    эмитит clicked → диалог переключает таблицу файлов на эту группу."""
+
+    clicked = pyqtSignal()
 
     def __init__(self, name, color, hidden, n_files, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._selected = False
+
         h = QHBoxLayout(self)
-        h.setContentsMargins(6, 4, 6, 4)
+        h.setContentsMargins(8, 4, 8, 4)
         h.setSpacing(8)
 
         # Цветной квадратик
@@ -45,48 +75,38 @@ class _GroupRow(QFrame):
             info.setStyleSheet("color: #888888; font-style: italic;")
         h.addWidget(info, 1)
 
+        # Кнопки операций
         self.btn_toggle_visible = QPushButton(
             "Показать" if hidden else "Скрыть")
         self.btn_toggle_visible.setFixedWidth(85)
         h.addWidget(self.btn_toggle_visible)
 
-        self.btn_archive = QPushButton("Архивировать")
-        self.btn_archive.setFixedWidth(110)
-        h.addWidget(self.btn_archive)
+        self.btn_rename = QPushButton("Переименовать")
+        self.btn_rename.setFixedWidth(120)
+        h.addWidget(self.btn_rename)
+
+        self.btn_color = QPushButton("Цвет")
+        self.btn_color.setFixedWidth(60)
+        h.addWidget(self.btn_color)
 
         self.btn_remove = QPushButton("Удалить")
-        self.btn_remove.setFixedWidth(85)
+        self.btn_remove.setFixedWidth(80)
         h.addWidget(self.btn_remove)
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
-class _ArchiveRow(QFrame):
-    """Одна строка в списке архива: цвет + имя + N файлов + Восстановить / Удалить."""
-
-    def __init__(self, name, color, n_files, parent=None):
-        super().__init__(parent)
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        h = QHBoxLayout(self)
-        h.setContentsMargins(6, 4, 6, 4)
-        h.setSpacing(8)
-
-        swatch = QLabel()
-        swatch.setFixedSize(18, 18)
-        swatch.setStyleSheet(
-            f"background-color: {color}; border-radius: 3px;"
-        )
-        h.addWidget(swatch)
-
-        info = QLabel(f"{name}  —  {n_files} файл(ов)")
-        info.setStyleSheet("color: #AAAAAA; font-style: italic;")
-        h.addWidget(info, 1)
-
-        self.btn_restore = QPushButton("Восстановить")
-        self.btn_restore.setFixedWidth(110)
-        h.addWidget(self.btn_restore)
-
-        self.btn_delete = QPushButton("Удалить")
-        self.btn_delete.setFixedWidth(85)
-        h.addWidget(self.btn_delete)
+    def set_selected(self, selected):
+        self._selected = bool(selected)
+        if selected:
+            self.setStyleSheet(
+                "_GroupRow { background-color: rgba(42, 130, 218, 60); "
+                "border: 1px solid #2A82DA; border-radius: 3px; }"
+            )
+        else:
+            self.setStyleSheet("")
 
 
 class GroupsManagerDialog(QDialog):
@@ -96,13 +116,16 @@ class GroupsManagerDialog(QDialog):
         super().__init__(parent)
         self.main_window = main_window
         self.setWindowTitle("Управление группами")
-        self.resize(620, 520)
+        self.resize(820, 560)
+
+        self._row_widgets = []  # для подсветки выделенной строки
+        self._selected_index = 0  # индекс выбранной группы (default - первая)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
-        # --- Активные группы ---
+        # --- Группы (верхняя секция) ---
         active_group = QGroupBox("Группы")
         ag_layout = QVBoxLayout(active_group)
         self._active_container = QWidget()
@@ -121,20 +144,28 @@ class GroupsManagerDialog(QDialog):
 
         root.addWidget(active_group, 1)
 
-        # --- Архив ---
-        archive_group = QGroupBox("Архив (файлы выгружены)")
-        arc_layout = QVBoxLayout(archive_group)
-        self._archive_container = QWidget()
-        self._archive_layout = QVBoxLayout(self._archive_container)
-        self._archive_layout.setContentsMargins(0, 0, 0, 0)
-        self._archive_layout.setSpacing(4)
-
-        scroll2 = QScrollArea()
-        scroll2.setWidgetResizable(True)
-        scroll2.setWidget(self._archive_container)
-        arc_layout.addWidget(scroll2, 1)
-
-        root.addWidget(archive_group, 1)
+        # --- Файлы выбранной группы (нижняя секция) ---
+        files_group = QGroupBox("Файлы выбранной группы")
+        fg_layout = QVBoxLayout(files_group)
+        self._files_table = QTableWidget(0, 4)
+        self._files_table.setHorizontalHeaderLabels(
+            ["Имя", "Размер", "Изменён", "Путь"])
+        self._files_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents)
+        self._files_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents)
+        self._files_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents)
+        self._files_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch)
+        self._files_table.verticalHeader().setVisible(False)
+        self._files_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self._files_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._files_table.setAlternatingRowColors(True)
+        fg_layout.addWidget(self._files_table)
+        root.addWidget(files_group, 1)
 
         # --- Кнопка закрыть ---
         btn_row = QHBoxLayout()
@@ -146,6 +177,8 @@ class GroupsManagerDialog(QDialog):
 
         self._refresh()
 
+    # ----- Утилиты -----
+
     def _clear_layout(self, layout):
         while layout.count() > 0:
             item = layout.takeAt(0)
@@ -154,50 +187,82 @@ class GroupsManagerDialog(QDialog):
                 w.deleteLater()
 
     def _refresh(self):
-        """Пересоздаёт списки активных и архивных групп с актуальными
-        кнопками-обработчиками."""
+        """Пересоздаёт список групп и обновляет таблицу файлов."""
         sm = self.main_window.split_manager
-
-        # ----- Активные группы -----
         self._clear_layout(self._active_layout)
+        self._row_widgets = []
+
         panels = sm.iter_panels()
         for i, panel in enumerate(panels):
-            # Достаём данные из chip соответствующей группы
             chip = sm._groups[i]['chip']
             n_files = panel.tabs.count()
             hidden = bool(getattr(panel, '_hidden', False))
             row = _GroupRow(chip.name, chip.color, hidden, n_files)
+            row.clicked.connect(
+                lambda idx=i: self._on_row_clicked(idx))
             row.btn_toggle_visible.clicked.connect(
                 lambda _checked=False, p=panel, h=hidden:
                 self._on_toggle_hidden(p, not h))
-            row.btn_archive.clicked.connect(
-                lambda _checked=False, p=panel: self._on_archive(p))
-            # Удалить - блокируем если осталась 1 группа
+            row.btn_rename.clicked.connect(
+                lambda _checked=False, p=panel: self._on_rename(p))
+            row.btn_color.clicked.connect(
+                lambda _checked=False, p=panel: self._on_change_color(p))
             row.btn_remove.setEnabled(len(panels) > 1)
             row.btn_remove.clicked.connect(
                 lambda _checked=False, p=panel: self._on_remove(p))
             self._active_layout.addWidget(row)
+            self._row_widgets.append(row)
         self._active_layout.addStretch(1)
 
-        # ----- Архив -----
-        self._clear_layout(self._archive_layout)
-        archive = sm.get_archive()
-        if not archive:
-            empty = QLabel("(архив пуст)")
-            empty.setStyleSheet("color: #888888; padding: 8px;")
-            self._archive_layout.addWidget(empty)
-        else:
-            for idx, entry in enumerate(archive):
-                n = len(entry.get('files') or [])
-                row = _ArchiveRow(entry['name'], entry['color'], n)
-                row.btn_restore.clicked.connect(
-                    lambda _checked=False, i=idx: self._on_restore(i))
-                row.btn_delete.clicked.connect(
-                    lambda _checked=False, i=idx: self._on_delete_archived(i))
-                self._archive_layout.addWidget(row)
-        self._archive_layout.addStretch(1)
+        # Корректируем индекс выделенной группы (если группу удалили)
+        if not self._row_widgets:
+            self._selected_index = -1
+        elif self._selected_index < 0 or self._selected_index >= len(self._row_widgets):
+            self._selected_index = 0
+
+        self._highlight_selected()
+        self._refresh_files_table()
+
+    def _highlight_selected(self):
+        for i, row in enumerate(self._row_widgets):
+            row.set_selected(i == self._selected_index)
+
+    def _refresh_files_table(self):
+        """Заполняет таблицу файлов выбранной группы."""
+        self._files_table.setRowCount(0)
+        sm = self.main_window.split_manager
+        if not (0 <= self._selected_index < len(sm._groups)):
+            return
+        panel = sm._groups[self._selected_index]['panel']
+        # Собираем file_path из всех виджетов в tabs
+        files = []
+        for i in range(panel.tabs.count()):
+            w = panel.tabs.widget(i)
+            file_path = getattr(w, 'file_path', None)
+            if file_path:
+                files.append(file_path)
+
+        self._files_table.setRowCount(len(files))
+        for row, path in enumerate(files):
+            name = os.path.basename(path)
+            try:
+                st = os.stat(path)
+                size = st.st_size
+                mtime = st.st_mtime
+            except OSError:
+                size = None
+                mtime = None
+            self._files_table.setItem(row, 0, QTableWidgetItem(name))
+            self._files_table.setItem(row, 1, QTableWidgetItem(_format_size(size)))
+            self._files_table.setItem(row, 2, QTableWidgetItem(_format_mtime(mtime)))
+            self._files_table.setItem(row, 3, QTableWidgetItem(path))
 
     # ----- Обработчики -----
+
+    def _on_row_clicked(self, idx):
+        self._selected_index = idx
+        self._highlight_selected()
+        self._refresh_files_table()
 
     def _on_add(self):
         self.main_window.split_manager.add_group()
@@ -207,39 +272,42 @@ class GroupsManagerDialog(QDialog):
         self.main_window.split_manager.set_group_hidden(panel, hidden)
         self._refresh()
 
-    def _on_archive(self, panel):
-        self.main_window.split_manager._archive_panel(panel)
-        self._refresh()
+    def _on_rename(self, panel):
+        sm = self.main_window.split_manager
+        # Находим chip
+        chip = None
+        for g in sm._groups:
+            if g['panel'] is panel:
+                chip = g['chip']
+                break
+        if chip is None:
+            return
+        new, ok = QInputDialog.getText(
+            self, "Переименовать группу", "Новое название:",
+            text=chip.name,
+        )
+        if ok and new.strip():
+            chip.set_name(new.strip())
+            panel._group_name = new.strip()
+            sm.groupConfigChanged.emit()
+            self._refresh()
+
+    def _on_change_color(self, panel):
+        sm = self.main_window.split_manager
+        chip = None
+        for g in sm._groups:
+            if g['panel'] is panel:
+                chip = g['chip']
+                break
+        if chip is None:
+            return
+        col = QColorDialog.getColor(QColor(chip.color), self, "Цвет группы")
+        if col.isValid():
+            chip.set_color(col.name())
+            panel._group_color = col.name()
+            sm.groupConfigChanged.emit()
+            self._refresh()
 
     def _on_remove(self, panel):
         self.main_window.split_manager._remove_panel(panel)
-        self._refresh()
-
-    def _on_restore(self, index):
-        result = self.main_window.split_manager.restore_from_archive(index)
-        if result:
-            panel, files = result
-            # Раскладываем файлы lazy
-            import os
-            self.main_window.split_manager.active_group = panel.tabs
-            for f in files:
-                if os.path.exists(f):
-                    self.main_window.load_file(f, side="active", lazy=True)
-        self._refresh()
-
-    def _on_delete_archived(self, index):
-        r = QMessageBox.question(
-            self, "Удалить из архива",
-            "Удалить группу из архива безвозвратно?\n"
-            "Файлы на диске не пострадают, потеряется только её группировка.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if r != QMessageBox.StandardButton.Yes:
-            return
-        sm = self.main_window.split_manager
-        archive = sm.get_archive()
-        if 0 <= index < len(archive):
-            del archive[index]
-            sm.set_archive(archive)
         self._refresh()

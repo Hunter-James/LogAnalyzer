@@ -119,19 +119,10 @@ def load_settings():
         mode = "splitter"
     defaults["group_layout_mode"] = mode
 
-    # Архив групп (выгруженных через меню «Архивировать»)
-    archived = defaults.get("archived_groups") or []
-    normalized_archive = []
-    if isinstance(archived, list):
-        for entry in archived:
-            if not isinstance(entry, dict):
-                continue
-            normalized_archive.append({
-                "name": str(entry.get("name") or "Группа"),
-                "color": str(entry.get("color") or "#888888"),
-                "files": list(entry.get("files") or []),
-            })
-    defaults["archived_groups"] = normalized_archive
+    # archived_groups больше не поддерживается (архивирование убрано в
+    # пользу единой операции «Скрыть»). Чтобы не падать на старых settings.json -
+    # просто игнорируем ключ если он там есть.
+    defaults.pop("archived_groups", None)
 
     return defaults
 

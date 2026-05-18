@@ -40,7 +40,7 @@ class GroupHeader(QFrame):
     colorRequested = pyqtSignal(str)
     addGroupRequested = pyqtSignal()
     removeGroupRequested = pyqtSignal()
-    archiveRequested = pyqtSignal()
+    hideRequested = pyqtSignal()  # скрыть группу (chip уходит, файлы в RAM сохраняются)
     filesDropped = pyqtSignal(list)  # drop'нуты пути файлов прямо на плашку
     activateRequested = pyqtSignal()  # клик по плашке - сделать группу активной
     # Drop таба из другой группы (через DraggableTabBar): source - EditorTabWidget,
@@ -282,14 +282,15 @@ class GroupHeader(QFrame):
         act_rename = menu.addAction("Переименовать …")
         act_color = menu.addAction("Сменить цвет …")
         menu.addSeparator()
-        act_archive = menu.addAction("Архивировать (выгрузить файлы)")
+        act_hide = menu.addAction("Скрыть из bar'а")
+        act_hide.setToolTip("Chip пропадёт из строки. Вернуть через кнопку «🗂 Группы».")
         menu.addSeparator()
         act_add = menu.addAction("Добавить группу")
         act_remove = menu.addAction("Удалить группу")
         act_remove.setEnabled(self._can_remove)
         act_rename.triggered.connect(self._do_rename)
         act_color.triggered.connect(self._do_change_color)
-        act_archive.triggered.connect(self.archiveRequested.emit)
+        act_hide.triggered.connect(self.hideRequested.emit)
         act_add.triggered.connect(self.addGroupRequested.emit)
         act_remove.triggered.connect(self.removeGroupRequested.emit)
         return menu
@@ -686,12 +687,10 @@ class SplitManager(QWidget):
     Сигналы:
       activeTabChanged(widget) - сменился активный таб;
       groupConfigChanged()     - имена/цвета/состав групп изменились;
-      archiveChanged()         - архив изменился;
       filesDroppedOnGroup(idx, paths) - drop файлов на плашку конкретной группы."""
 
     activeTabChanged = pyqtSignal(object)
     groupConfigChanged = pyqtSignal()
-    archiveChanged = pyqtSignal()
     filesDroppedOnGroup = pyqtSignal(int, list)
 
     def __init__(self, parent=None, group_configs=None):
@@ -712,7 +711,6 @@ class SplitManager(QWidget):
         # Каждая группа представлена парой (chip, panel) - храним их в одном
         # списке в порядке отображения. panel - GroupPanel с tabs.
         self._groups = []  # list of dict: {'chip': GroupHeader, 'panel': GroupPanel}
-        self._archive = []  # архивированные группы (без UI), см. set_archive()
 
         cfgs = list(group_configs or [])
         if len(cfgs) < 1:
@@ -796,8 +794,8 @@ class SplitManager(QWidget):
         chip.addGroupRequested.connect(self.add_group)
         chip.removeGroupRequested.connect(
             lambda p=panel: self._remove_panel(p))
-        chip.archiveRequested.connect(
-            lambda p=panel: self._archive_panel(p))
+        chip.hideRequested.connect(
+            lambda p=panel: self.set_group_hidden(p, True))
         chip.activateRequested.connect(
             lambda p=panel: self._on_chip_clicked(p))
         chip.filesDropped.connect(
@@ -863,12 +861,18 @@ class SplitManager(QWidget):
 
     def _set_active_group(self, index, emit_signal=True):
         """Делает группу с указанным индексом активной: переключает стэк
-        и подсветку плашек."""
+        и подсветку плашек. Файлы НЕактивных групп выгружаются из RAM
+        (lazy подхватит при возврате)."""
         if not (0 <= index < len(self._groups)):
             return
+        previously_active = self._stack.currentIndex()
         self._stack.setCurrentIndex(index)
         for i, g in enumerate(self._groups):
             g['chip'].set_active(i == index)
+        # Если переключились на ДРУГУЮ группу - unload файлы старой.
+        # Это семантика «только активная группа держит файлы в RAM».
+        if previously_active != index:
+            self._unload_inactive_groups(keep_index=index)
         if emit_signal:
             tabs = self._groups[index]['panel'].tabs
             cur = tabs.currentWidget()
@@ -876,6 +880,21 @@ class SplitManager(QWidget):
                 self.activeTabChanged.emit(cur)
             else:
                 self.activeTabChanged.emit(None)
+
+    def _unload_inactive_groups(self, keep_index):
+        """Вызывает viewer.unload() у всех viewer'ов в НЕ-активных группах.
+        Это освобождает RAM; при возврате на группу файлы lazy-перезагрузятся."""
+        for i, g in enumerate(self._groups):
+            if i == keep_index:
+                continue
+            tabs = g['panel'].tabs
+            for j in range(tabs.count()):
+                w = tabs.widget(j)
+                if hasattr(w, 'unload') and getattr(w, '_loaded', False):
+                    try:
+                        w.unload()
+                    except Exception:
+                        pass
 
     def _on_chip_clicked(self, panel):
         idx = self._stack.indexOf(panel)
@@ -952,75 +971,6 @@ class SplitManager(QWidget):
         if new_active >= 0:
             self._set_active_group(new_active)
         self._update_remove_enabled()
-        self.groupConfigChanged.emit()
-
-    def _archive_panel(self, panel):
-        """Архивирует группу: unload файлов + конфиг в self._archive."""
-        if len(self._groups) <= 1:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self, "Архивировать",
-                "Это единственная группа - её нельзя архивировать.\n"
-                "Создайте ещё одну через «+», тогда эту можно будет архивировать."
-            )
-            return
-        # Находим группу
-        group_idx = None
-        for i, g in enumerate(self._groups):
-            if g['panel'] is panel:
-                group_idx = i
-                break
-        if group_idx is None:
-            return
-        group = self._groups[group_idx]
-
-        files = []
-        for i in range(panel.tabs.count()):
-            w = panel.tabs.widget(i)
-            if isinstance(w, LogViewerWidget):
-                files.append(w.file_path)
-
-        if files:
-            from PyQt6.QtWidgets import QMessageBox
-            r = QMessageBox.question(
-                self, "Архивировать группу",
-                f"Группа «{group['chip'].name}»: {len(files)} файл(ов).\n"
-                f"Все файлы будут выгружены из памяти. Группа уедет в меню «Архив» -\n"
-                f"оттуда её можно вернуть в любой момент.\n\nАрхивировать?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes
-            )
-            if r != QMessageBox.StandardButton.Yes:
-                return
-
-        entry = {
-            'name': group['chip'].name,
-            'color': group['chip'].color,
-            'files': files,
-        }
-        # Закрываем все виджеты табов
-        while panel.tabs.count() > 0:
-            w = panel.tabs.widget(0)
-            panel.tabs.removeTab(0)
-            if w is not None:
-                if hasattr(w, 'unload'):
-                    try:
-                        w.unload()
-                    except Exception:
-                        pass
-                w.deleteLater()
-        # Убираем из UI
-        self._bar.remove_chip(group['chip'])
-        self._stack.removeWidget(panel)
-        panel.deleteLater()
-        self._groups.pop(group_idx)
-        # Активируем следующую
-        new_active = min(group_idx, len(self._groups) - 1)
-        if new_active >= 0:
-            self._set_active_group(new_active)
-        self._update_remove_enabled()
-        self._archive.append(entry)
-        self.archiveChanged.emit()
         self.groupConfigChanged.emit()
 
     def _update_remove_enabled(self):
@@ -1109,26 +1059,6 @@ class SplitManager(QWidget):
         new_idx = self._stack.indexOf(target_panel)
         if new_idx >= 0:
             self._set_active_group(new_idx)
-
-    # ----- Archive -----
-
-    def get_archive(self):
-        return [dict(entry) for entry in self._archive]
-
-    def set_archive(self, archive_list):
-        self._archive = [dict(e) for e in (archive_list or [])]
-        self.archiveChanged.emit()
-
-    def restore_from_archive(self, index):
-        if not (0 <= index < len(self._archive)):
-            return None
-        entry = self._archive.pop(index)
-        panel = self._add_group_internal(entry['name'], entry['color'])
-        idx = self._stack.indexOf(panel)
-        self._set_active_group(idx)
-        self.archiveChanged.emit()
-        self.groupConfigChanged.emit()
-        return panel, entry.get('files') or []
 
     # ----- Конфигурация для save/restore -----
 
