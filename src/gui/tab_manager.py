@@ -43,6 +43,11 @@ class GroupHeader(QFrame):
     archiveRequested = pyqtSignal()
     filesDropped = pyqtSignal(list)  # drop'нуты пути файлов прямо на плашку
     activateRequested = pyqtSignal()  # клик по плашке - сделать группу активной
+    # Drop таба из другой группы (через DraggableTabBar): source - EditorTabWidget,
+    # tab_index - индекс в нём. SplitManager перенесёт widget в свою группу.
+    tabDroppedFromOther = pyqtSignal(object, int)
+    # Drop ДРУГОЙ плашки (reorder групп) - источник по object id'у self
+    groupDroppedHere = pyqtSignal(object)
 
     def __init__(self, name, color, parent=None):
         super().__init__(parent)
@@ -128,18 +133,41 @@ class GroupHeader(QFrame):
         self._active = bool(active)
         self._apply_color()
 
-    # ----- Drop файлов на плашку -----
+    # ----- Drop файлов / табов на плашку -----
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            # Принимаем только если есть хоть один локальный файл
+        md = event.mimeData()
+        # Drop другой плашки (reorder) - принимаем, но не от самой себя
+        if md.hasFormat("application/x-loganalyzer-group"):
+            if GroupHeader._drag_source_chip is not self:
+                self._drag_hover = True
+                self._apply_color()
+                event.acceptProposedAction()
+                return
+        # Drop таба из другой группы - принимаем
+        if md.hasFormat("application/x-loganalyzer-tab"):
+            self._drag_hover = True
+            self._apply_color()
+            event.acceptProposedAction()
+            return
+        # Drop файлов с диска - принимаем
+        if md.hasUrls():
+            urls = md.urls()
             if any(u.isLocalFile() for u in urls):
                 self._drag_hover = True
-                self._apply_color()  # перерисовать с подсветкой границы
+                self._apply_color()
                 event.acceptProposedAction()
                 return
         event.ignore()
+
+    def dragMoveEvent(self, event):
+        md = event.mimeData()
+        if (md.hasFormat("application/x-loganalyzer-tab")
+                or md.hasFormat("application/x-loganalyzer-group")
+                or (md.hasUrls() and any(u.isLocalFile() for u in md.urls()))):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def dragLeaveEvent(self, event):
         self._drag_hover = False
@@ -149,22 +177,75 @@ class GroupHeader(QFrame):
     def dropEvent(self, event):
         self._drag_hover = False
         self._apply_color()
-        if not event.mimeData().hasUrls():
-            event.ignore()
-            return
-        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
-        if paths:
-            self.filesDropped.emit(paths)
+        md = event.mimeData()
+        # 0) Drop другой плашки - reorder групп
+        if md.hasFormat("application/x-loganalyzer-group"):
+            source = GroupHeader._drag_source_chip
+            if source is None or source is self:
+                event.ignore()
+                return
+            self.groupDroppedHere.emit(source)
             event.acceptProposedAction()
-        else:
-            event.ignore()
+            return
+        # 1) Drop таба из другой группы. DraggableTabBar кладёт индекс таба
+        # в mime.text(), а сам source widget сохраняет в EditorTabWidget._drag_source.
+        if md.hasFormat("application/x-loganalyzer-tab"):
+            source = EditorTabWidget._drag_source
+            if source is None:
+                event.ignore()
+                return
+            try:
+                idx = int(md.text())
+            except (ValueError, TypeError):
+                event.ignore()
+                return
+            self.tabDroppedFromOther.emit(source, idx)
+            event.acceptProposedAction()
+            return
+        # 2) Drop файлов
+        if md.hasUrls():
+            paths = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+            if paths:
+                self.filesDropped.emit(paths)
+                event.acceptProposedAction()
+                return
+        event.ignore()
 
     def mousePressEvent(self, event):
         # Левый клик по плашке - просим SplitManager сделать эту группу активной
         # (полезно в Stack-режиме, где это переключает видимый контент).
         if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.pos()
             self.activateRequested.emit()
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        # Начало QDrag для перестановки группы. Должно сработать только если
+        # юзер удерживает ЛКМ и сместил курсор достаточно далеко.
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if not getattr(self, '_drag_start_pos', None):
+            return
+        if (event.pos() - self._drag_start_pos).manhattanLength() < QApplication.startDragDistance():
+            return
+        # Сохраняем источник для drop-target'а на уровне класса (similar to
+        # EditorTabWidget._drag_source).
+        GroupHeader._drag_source_chip = self
+
+        drag = QDrag(self)
+        md = QMimeData()
+        md.setData("application/x-loganalyzer-group", b"chip")
+        md.setText(self._name)
+        drag.setMimeData(md)
+        # Pixmap самой плашки в качестве drag-картинки
+        drag.setPixmap(self.grab(self.rect()))
+        drag.setHotSpot(event.pos() - self.rect().topLeft())
+        drag.exec(Qt.DropAction.MoveAction)
+        GroupHeader._drag_source_chip = None
+        super().mouseMoveEvent(event)
+
+    # На уровне класса: используется как глобальная переменная во время drag.
+    _drag_source_chip = None
 
     @property
     def name(self):
@@ -643,11 +724,14 @@ class SplitManager(QWidget):
             name = (cfg or {}).get('name') or f'Группа {i + 1}'
             color = (cfg or {}).get('color') or DEFAULT_GROUP_COLORS[
                 i % len(DEFAULT_GROUP_COLORS)]
-            self._add_group_internal(name, color)
+            hidden = bool((cfg or {}).get('hidden', False))
+            self._add_group_internal(name, color, hidden=hidden)
 
-        # Активируем первую группу
-        if self._groups:
-            self._set_active_group(0, emit_signal=False)
+        # Активируем первую НЕскрытую группу
+        for i, g in enumerate(self._groups):
+            if not getattr(g['panel'], '_hidden', False):
+                self._set_active_group(i, emit_signal=False)
+                break
 
     # ----- Backward-compat: left_tabs / right_tabs / left_panel / right_panel -----
 
@@ -696,10 +780,13 @@ class SplitManager(QWidget):
 
     # ----- Управление группами -----
 
-    def _add_group_internal(self, name, color):
-        """Создаёт пару (chip, panel) и регистрирует в bar+stack."""
+    def _add_group_internal(self, name, color, hidden=False):
+        """Создаёт пару (chip, panel) и регистрирует в bar+stack.
+        hidden=True - chip создаётся, но не показывается в bar'е (юзер вернёт
+        его через диалог управления). Stack-страница тоже скрывается."""
         chip = GroupHeader(name, color)
         panel = GroupPanel(name, color)
+        panel._hidden = bool(hidden)
 
         # Подписываемся на сигналы chip'а
         chip.renameRequested.connect(
@@ -715,6 +802,10 @@ class SplitManager(QWidget):
             lambda p=panel: self._on_chip_clicked(p))
         chip.filesDropped.connect(
             lambda paths, p=panel: self._on_files_dropped_on_panel(p, paths))
+        chip.tabDroppedFromOther.connect(
+            lambda src, idx, p=panel: self._on_tab_dropped_on_panel(p, src, idx))
+        chip.groupDroppedHere.connect(
+            lambda src_chip, t=chip: self._on_group_dropped_here(src_chip, t))
 
         # И от tabs - tabActivated сигнализирует что юзер кликнул внутри
         panel.tabs.tabActivated.connect(self._on_tab_activated_in_panel)
@@ -723,8 +814,38 @@ class SplitManager(QWidget):
         self._bar.add_chip(chip)
         self._stack.addWidget(panel)
         self._groups.append({'chip': chip, 'panel': panel})
+        if panel._hidden:
+            chip.setVisible(False)
         self._update_remove_enabled()
         return panel
+
+    def set_group_hidden(self, panel, hidden):
+        """Скрывает / показывает группу. Скрытая = chip убран из bar'а,
+        панель не в стэке, но всё остаётся в памяти. Вернуть можно через
+        диалог управления."""
+        if panel not in [g['panel'] for g in self._groups]:
+            return
+        panel._hidden = bool(hidden)
+        # Найдём chip
+        chip = None
+        for g in self._groups:
+            if g['panel'] is panel:
+                chip = g['chip']
+                break
+        if chip is None:
+            return
+        chip.setVisible(not panel._hidden)
+        # Если скрыли активную - переключаемся на следующую видимую
+        if panel._hidden:
+            cur_idx = self._stack.currentIndex()
+            cur_panel = self._stack.widget(cur_idx)
+            if cur_panel is panel:
+                # Ищем первую видимую группу
+                for i, g in enumerate(self._groups):
+                    if not g['panel']._hidden and g['panel'] is not panel:
+                        self._set_active_group(i)
+                        break
+        self.groupConfigChanged.emit()
 
     def add_group(self, name=None, color=None):
         """Создаёт новую группу и сразу делает её активной."""
@@ -912,6 +1033,83 @@ class SplitManager(QWidget):
         if idx >= 0:
             self.filesDroppedOnGroup.emit(idx, list(paths))
 
+    def _on_group_dropped_here(self, source_chip, target_chip):
+        """Перетаскивание ПЛАШКИ source_chip на плашку target_chip - меняем
+        порядок групп. Кидаем source перед target (или после, если source был
+        слева от target)."""
+        src_idx = None
+        tgt_idx = None
+        for i, g in enumerate(self._groups):
+            if g['chip'] is source_chip:
+                src_idx = i
+            if g['chip'] is target_chip:
+                tgt_idx = i
+        if src_idx is None or tgt_idx is None or src_idx == tgt_idx:
+            return
+        # Перемещаем элемент в _groups
+        item = self._groups.pop(src_idx)
+        # Корректируем target после удаления source
+        new_tgt = tgt_idx if src_idx > tgt_idx else tgt_idx - 1
+        # Вставляем "над" target если source был ниже, иначе "под"
+        insert_at = new_tgt if src_idx > tgt_idx else new_tgt + 1
+        self._groups.insert(insert_at, item)
+
+        # Перебираем виджеты в bar'е и стэке в новом порядке
+        # Для chips - убрать всех из bar'а и добавить заново
+        for g in self._groups:
+            self._bar._chips_layout.removeWidget(g['chip'])
+        for g in self._groups:
+            self._bar._chips_layout.addWidget(g['chip'])
+
+        # Для stack - порядок виджетов в QStackedWidget не критичен
+        # (виджеты идентифицируются индексом, но мы пересоберём)
+        # Восстановим активную группу по индексу в _groups
+        active_panel = item['panel']  # та что перетаскивали
+        new_active_idx = self._groups.index(item)
+        # QStackedWidget автоматически рендерит виджет по setCurrentIndex,
+        # но индекс там по порядку addWidget. Поэтому пересоберём stack:
+        # сохраним current viewport widget, потом перестроим stack.
+        cur_widget = self._stack.currentWidget()
+        # Уберём всех и добавим в новом порядке
+        # ВАЖНО: removeWidget не удаляет виджет, только из стэка
+        for g in self._groups:
+            self._stack.removeWidget(g['panel'])
+        for g in self._groups:
+            self._stack.addWidget(g['panel'])
+        # Восстанавливаем активную панель
+        if cur_widget is not None:
+            cur_idx = self._stack.indexOf(cur_widget)
+            if cur_idx >= 0:
+                self._stack.setCurrentIndex(cur_idx)
+                # Обновим визуальную подсветку chip'ов
+                for i, g in enumerate(self._groups):
+                    g['chip'].set_active(i == cur_idx)
+        else:
+            self._set_active_group(new_active_idx, emit_signal=False)
+
+        self.groupConfigChanged.emit()
+
+    def _on_tab_dropped_on_panel(self, target_panel, source_tabs, tab_index):
+        """Перетаскивание таба с панели source_tabs в target_panel.
+        Если source - та же панель что target, ничего не делаем (иначе
+        переключение в ту же группу + срабатывание визуальных эффектов
+        выглядит как dup-операция)."""
+        if source_tabs is target_panel.tabs:
+            return
+        if not (0 <= tab_index < source_tabs.count()):
+            return
+        widget = source_tabs.widget(tab_index)
+        title = source_tabs.tabText(tab_index)
+        if widget is None:
+            return
+        source_tabs.removeTab(tab_index)
+        target_panel.tabs.addTab(widget, title)
+        target_panel.tabs.setCurrentWidget(widget)
+        # Делаем target_panel активной чтобы юзер видел результат
+        new_idx = self._stack.indexOf(target_panel)
+        if new_idx >= 0:
+            self._set_active_group(new_idx)
+
     # ----- Archive -----
 
     def get_archive(self):
@@ -936,7 +1134,11 @@ class SplitManager(QWidget):
 
     def get_group_configs(self):
         return [
-            {'name': g['chip'].name, 'color': g['chip'].color}
+            {
+                'name': g['chip'].name,
+                'color': g['chip'].color,
+                'hidden': bool(getattr(g['panel'], '_hidden', False)),
+            }
             for g in self._groups
         ]
 

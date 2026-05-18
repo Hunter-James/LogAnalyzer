@@ -137,7 +137,10 @@ class MainWindow(QMainWindow):
         )
         self.split_manager.activeTabChanged.connect(self.on_active_tab_changed)
         self.split_manager.groupConfigChanged.connect(self.save_current_settings)
-        self.split_manager.archiveChanged.connect(self._on_archive_changed)
+        # archiveChanged больше не открывает popup-меню - управление через
+        # отдельный диалог GroupsManagerDialog. Но мы всё равно подписываемся,
+        # чтобы сохранять settings при изменении архива.
+        self.split_manager.archiveChanged.connect(self.save_current_settings)
         self.split_manager.filesDroppedOnGroup.connect(self._on_files_dropped_on_group)
 
         # Восстанавливаем архив из settings (список выгруженных групп)
@@ -155,18 +158,15 @@ class MainWindow(QMainWindow):
         self.btn_help.setToolTip("Открыть окно со справкой по функционалу (F1)")
         self.btn_help.clicked.connect(self.open_help)
 
-        # Кнопка «Архив» - выпадающее меню со списком выгруженных групп.
-        # Скрыта пока в архиве пусто, чтобы не захламлять тулбар.
-        self.btn_archive = QToolButton()
-        self.btn_archive.setText("📦 Архив")
-        self.btn_archive.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.btn_archive.setToolTip(
-            "Архивированные группы: пути файлов сохранены, но сами файлы "
-            "выгружены из памяти. Клик по группе — вернуть в UI как lazy-табы."
+        # Кнопка «🗂 Группы» - открывает диалог управления всеми группами
+        # (показать/скрыть, удалить, добавить, архивировать, восстановить).
+        # Старая кнопка «📦 Архив» поглощена этим диалогом.
+        self.btn_groups = QPushButton("🗂 Группы")
+        self.btn_groups.setToolTip(
+            "Управление группами: показать/скрыть, добавить, удалить, "
+            "архивировать; список архива с восстановлением."
         )
-        self._archive_menu = QMenu(self)
-        self.btn_archive.setMenu(self._archive_menu)
-        self.btn_archive.setVisible(False)
+        self.btn_groups.clicked.connect(self.open_groups_manager)
 
         self.chk_info = QCheckBox("INFO")
         self.chk_info.setChecked(True)
@@ -193,7 +193,7 @@ class MainWindow(QMainWindow):
 
     def detach_widgets(self):
         widgets = [
-            self.btn_open, self.btn_settings, self.btn_help, self.btn_archive,
+            self.btn_open, self.btn_settings, self.btn_help, self.btn_groups,
             self.chk_info, self.chk_debug, self.chk_warn, self.chk_error,
             self.chk_group,
             self.progress_bar,
@@ -258,7 +258,7 @@ class MainWindow(QMainWindow):
         tb_layout.addWidget(self.btn_open)
         tb_layout.addWidget(self.btn_settings)
         tb_layout.addWidget(self.btn_help)
-        tb_layout.addWidget(self.btn_archive)
+        tb_layout.addWidget(self.btn_groups)
         tb_layout.addSpacing(20)
         tb_layout.addWidget(self.chk_info)
         tb_layout.addWidget(self.chk_debug)
@@ -293,7 +293,7 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.btn_open)
         sb_layout.addWidget(self.btn_settings)
         sb_layout.addWidget(self.btn_help)
-        sb_layout.addWidget(self.btn_archive)
+        sb_layout.addWidget(self.btn_groups)
         sb_layout.addSpacing(10)
         sb_layout.addWidget(QLabel("ФИЛЬТРЫ"))
         sb_layout.addWidget(self.chk_info)
@@ -494,51 +494,13 @@ class MainWindow(QMainWindow):
             if os.path.exists(p):
                 self.load_file(p, side="active")
 
-    def _on_archive_changed(self):
-        """Перестраивает меню «Архив» когда SplitManager эмитит archiveChanged.
-        Показывает/скрывает кнопку «Архив» в зависимости от наличия элементов."""
-        archive = self.split_manager.get_archive()
-        self._archive_menu.clear()
-        if not archive:
-            self.btn_archive.setVisible(False)
-            return
-        self.btn_archive.setText(f"📦 Архив ({len(archive)})")
-        self.btn_archive.setVisible(True)
-        for i, entry in enumerate(archive):
-            n_files = len(entry.get('files') or [])
-            label = f"{entry['name']}  —  {n_files} файл(ов)"
-            action = self._archive_menu.addAction(label)
-            action.triggered.connect(
-                lambda _checked=False, idx=i: self._restore_archived_group(idx))
-        self._archive_menu.addSeparator()
-        act_clear = self._archive_menu.addAction("Очистить архив")
-        act_clear.triggered.connect(self._clear_archive)
-
-    def _restore_archived_group(self, index):
-        """Восстанавливает группу из архива: добавляет новую панель и
-        раскладывает её файлы в lazy-режиме (как restore_session)."""
-        result = self.split_manager.restore_from_archive(index)
-        if not result:
-            return
-        panel, files = result
-        # Активируем эту панель, чтобы load_file(side="active") клал в неё
-        self.split_manager.active_group = panel.tabs
-        for f in files:
-            if os.path.exists(f):
-                self.load_file(f, side="active", lazy=True)
-        self.save_current_settings()
-
-    def _clear_archive(self):
-        r = QMessageBox.question(
-            self, "Очистить архив",
-            "Удалить все архивированные группы навсегда?\n"
-            "Файлы на диске не пострадают, потеряются только их группировки.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        if r != QMessageBox.StandardButton.Yes:
-            return
-        self.split_manager.set_archive([])
+    def open_groups_manager(self):
+        """Открывает диалог управления группами. Восстановление архива
+        делается прямо внутри диалога."""
+        from gui.groups_dialog import GroupsManagerDialog
+        dlg = GroupsManagerDialog(self, self)
+        dlg.exec()
+        # После закрытия диалога сохраняем состояние - могли быть изменения
         self.save_current_settings()
 
     def open_help(self):
