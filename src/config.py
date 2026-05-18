@@ -62,6 +62,13 @@ def load_settings():
         "files_left": [],
         "files_right": [],
         "ui_features": dict(DEFAULT_UI_FEATURES),
+        # Конфигурация двух групп табов: имена и цвета (раунд 1).
+        # В следующих раундах будет произвольное число групп - тогда
+        # эта структура расширится в groups: [...].
+        "group_configs": [
+            {"name": "Группа 1", "color": "#E53935"},
+            {"name": "Группа 2", "color": "#43A047"},
+        ],
     }
 
     if os.path.exists(path):
@@ -79,6 +86,21 @@ def load_settings():
     merged_features.update({k: bool(v)
                            for k, v in user_features.items() if k in DEFAULT_UI_FEATURES})
     defaults["ui_features"] = merged_features
+
+    # Нормализуем group_configs: список из двух dict-ов с name+color.
+    raw_groups = defaults.get("group_configs") or []
+    fallback = [
+        {"name": "Группа 1", "color": "#E53935"},
+        {"name": "Группа 2", "color": "#43A047"},
+    ]
+    normalized = []
+    for i in range(2):
+        src = raw_groups[i] if i < len(raw_groups) and isinstance(raw_groups[i], dict) else {}
+        normalized.append({
+            "name": str(src.get("name") or fallback[i]["name"]),
+            "color": str(src.get("color") or fallback[i]["color"]),
+        })
+    defaults["group_configs"] = normalized
     return defaults
 
 

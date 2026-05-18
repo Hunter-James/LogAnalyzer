@@ -2,11 +2,161 @@ import os
 import sys
 import ctypes
 import subprocess
-from PyQt6.QtWidgets import (QTabWidget, QSplitter, QWidget, QVBoxLayout, QMenu,
-                             QTabBar, QApplication)
+from PyQt6.QtWidgets import (QTabWidget, QSplitter, QWidget, QVBoxLayout, QHBoxLayout, QMenu,
+                             QTabBar, QApplication, QLabel, QToolButton, QFrame,
+                             QInputDialog, QColorDialog)
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QTimer
 from PyQt6.QtGui import QDrag, QPixmap, QCursor, QPainter, QColor
 from gui.log_viewer import LogViewerWidget
+
+
+# Палитра цветов по умолчанию для новых групп (Material-подобные тёплые).
+DEFAULT_GROUP_COLORS = [
+    '#E53935',  # красный
+    '#43A047',  # зелёный
+    '#1E88E5',  # синий
+    '#FB8C00',  # оранжевый
+    '#8E24AA',  # фиолетовый
+    '#00897B',  # бирюзовый
+    '#5E35B1',  # индиго
+    '#FDD835',  # жёлтый
+]
+
+
+class GroupHeader(QFrame):
+    """Плашка-заголовок группы табов: цветной фон + имя + кнопка меню.
+
+    Сигналы:
+      renameRequested(str) - юзер ввёл новое имя
+      colorRequested(str)  - юзер выбрал новый цвет (hex)
+    """
+
+    renameRequested = pyqtSignal(str)
+    colorRequested = pyqtSignal(str)
+
+    def __init__(self, name, color, parent=None):
+        super().__init__(parent)
+        self._name = name
+        self._color = color
+        self.setFixedHeight(28)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        # Контекстное меню по правой кнопке
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_menu)
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(10, 0, 4, 0)
+        h.setSpacing(6)
+
+        self.lbl_name = QLabel(name)
+        self.lbl_name.setStyleSheet("color: white; font-weight: bold;")
+        h.addWidget(self.lbl_name)
+        h.addStretch()
+
+        # Кнопка меню "⋮"
+        self.btn_menu = QToolButton()
+        self.btn_menu.setText("⋮")
+        self.btn_menu.setFixedSize(22, 22)
+        self.btn_menu.setStyleSheet(
+            "QToolButton { color: white; background: transparent; border: none; "
+            "font-size: 16px; font-weight: bold; }"
+            "QToolButton:hover { background: rgba(255,255,255,40); border-radius: 3px; }"
+        )
+        self.btn_menu.clicked.connect(self._show_menu_at_button)
+        h.addWidget(self.btn_menu)
+
+        self._apply_color()
+
+    def _apply_color(self):
+        """Применяет цвет фона. Текст автоматически белый/чёрный по яркости."""
+        c = QColor(self._color)
+        # Простая luminance для выбора цвета текста
+        lum = (c.red() * 299 + c.green() * 587 + c.blue() * 114) / 1000
+        text_color = '#000000' if lum > 160 else '#FFFFFF'
+        self.setStyleSheet(
+            f"GroupHeader {{ background-color: {self._color}; border-radius: 3px; }}"
+        )
+        self.lbl_name.setStyleSheet(
+            f"color: {text_color}; font-weight: bold; background: transparent;"
+        )
+        # Кнопке меню тоже подкрашиваем
+        hover_bg = "rgba(0,0,0,40)" if lum > 160 else "rgba(255,255,255,40)"
+        self.btn_menu.setStyleSheet(
+            f"QToolButton {{ color: {text_color}; background: transparent; "
+            "border: none; font-size: 16px; font-weight: bold; }}"
+            f"QToolButton:hover {{ background: {hover_bg}; border-radius: 3px; }}"
+        )
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def color(self):
+        return self._color
+
+    def set_name(self, name):
+        self._name = name
+        self.lbl_name.setText(name)
+
+    def set_color(self, color):
+        self._color = color
+        self._apply_color()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._do_rename()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+    def _show_menu_at_button(self):
+        pos = self.btn_menu.mapToGlobal(QPoint(0, self.btn_menu.height()))
+        self._build_menu().exec(pos)
+
+    def _show_menu(self, pos):
+        self._build_menu().exec(self.mapToGlobal(pos))
+
+    def _build_menu(self):
+        menu = QMenu(self)
+        act_rename = menu.addAction("Переименовать …")
+        act_color = menu.addAction("Сменить цвет …")
+        act_rename.triggered.connect(self._do_rename)
+        act_color.triggered.connect(self._do_change_color)
+        return menu
+
+    def _do_rename(self):
+        new, ok = QInputDialog.getText(
+            self, "Переименовать группу", "Новое название группы:",
+            text=self._name)
+        if ok and new.strip():
+            self.set_name(new.strip())
+            self.renameRequested.emit(new.strip())
+
+    def _do_change_color(self):
+        col = QColorDialog.getColor(QColor(self._color), self, "Цвет группы")
+        if col.isValid():
+            hex_color = col.name()
+            self.set_color(hex_color)
+            self.colorRequested.emit(hex_color)
+
+
+class GroupPanel(QWidget):
+    """Один «слот группы» в SplitManager: заголовок-плашка сверху + TabWidget с
+    табами под ним. Заменяет голый EditorTabWidget в сплиттере, чтобы было
+    видно к какой группе относятся файлы."""
+
+    def __init__(self, name, color, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(2)
+
+        self.header = GroupHeader(name, color)
+        self.tabs = EditorTabWidget()
+
+        v.addWidget(self.header)
+        v.addWidget(self.tabs, 1)
 
 
 class DraggableTabBar(QTabBar):
@@ -308,18 +458,44 @@ class EditorTabWidget(QTabWidget):
 
 
 class SplitManager(QSplitter):
-    activeTabChanged = pyqtSignal(object)
+    """Контейнер двух «групп» табов. В этой итерации - всё ещё фиксированно
+    две группы (раньше left_tabs / right_tabs), но каждая получила цветную
+    плашку-заголовок (GroupPanel) с именем и цветом. Атрибуты left_tabs /
+    right_tabs сохранены для совместимости с остальным кодом - указывают на
+    .tabs внутри соответствующей панели.
 
-    def __init__(self, parent=None):
+    Сигнал groupConfigChanged эмитится когда юзер переименовал группу или
+    сменил её цвет - MainWindow подписан на него, чтобы сохранить в settings."""
+
+    activeTabChanged = pyqtSignal(object)
+    groupConfigChanged = pyqtSignal()  # имя/цвет одной из групп изменились
+
+    def __init__(self, parent=None, group_configs=None):
         super().__init__(Qt.Orientation.Horizontal, parent)
 
-        self.left_tabs = EditorTabWidget()
-        self.right_tabs = EditorTabWidget()
+        # group_configs - список из 2 dict-ов с ключами name, color.
+        # Если None или мало элементов - подставляем дефолты.
+        cfgs = list(group_configs or [])
+        while len(cfgs) < 2:
+            cfgs.append(None)
+        cfg_left = cfgs[0] or {}
+        cfg_right = cfgs[1] or {}
+        name_left = cfg_left.get('name') or 'Группа 1'
+        color_left = cfg_left.get('color') or DEFAULT_GROUP_COLORS[0]
+        name_right = cfg_right.get('name') or 'Группа 2'
+        color_right = cfg_right.get('color') or DEFAULT_GROUP_COLORS[1]
 
-        self.addWidget(self.left_tabs)
-        self.addWidget(self.right_tabs)
+        self.left_panel = GroupPanel(name_left, color_left)
+        self.right_panel = GroupPanel(name_right, color_right)
 
-        self.right_tabs.hide()
+        # Обратная совместимость API: код снаружи использует left_tabs/right_tabs.
+        self.left_tabs = self.left_panel.tabs
+        self.right_tabs = self.right_panel.tabs
+
+        self.addWidget(self.left_panel)
+        self.addWidget(self.right_panel)
+
+        self.right_panel.hide()
 
         self.left_tabs.moveTabRequested.connect(self.move_to_right)
         self.right_tabs.moveTabRequested.connect(self.move_to_left)
@@ -330,11 +506,31 @@ class SplitManager(QSplitter):
         self.left_tabs.tabDropped.connect(self.check_visibility)
         self.right_tabs.tabDropped.connect(self.check_visibility)
 
+        # Подписываемся на изменения header'ов - эмитим groupConfigChanged
+        # чтобы MainWindow сохранил настройки.
+        for header in (self.left_panel.header, self.right_panel.header):
+            header.renameRequested.connect(self._on_group_config_changed)
+            header.colorRequested.connect(self._on_group_config_changed)
+
         self.active_group = self.left_tabs
 
+    def _on_group_config_changed(self, *_args):
+        self.groupConfigChanged.emit()
+
+    def get_group_configs(self):
+        """Возвращает [{name, color}, {name, color}] - для сохранения в settings."""
+        return [
+            {'name': self.left_panel.header.name,
+             'color': self.left_panel.header.color},
+            {'name': self.right_panel.header.name,
+             'color': self.right_panel.header.color},
+        ]
+
     def check_visibility(self):
+        # Скрываем/показываем целиком ПАНЕЛЬ (header + tabs), а не только tabs:
+        # иначе заголовок-плашка остаётся торчать над пустым местом.
         if self.right_tabs.count() == 0:
-            self.right_tabs.hide()
+            self.right_panel.hide()
 
         if self.active_group.count() == 0:
             other = self.right_tabs if self.active_group == self.left_tabs else self.left_tabs
@@ -362,7 +558,7 @@ class SplitManager(QSplitter):
             target = self.left_tabs
         elif side == "right":
             target = self.right_tabs
-        elif not self.right_tabs.isVisible():
+        elif not self.right_panel.isVisible():
             target = self.left_tabs
 
         if silent:
@@ -374,8 +570,11 @@ class SplitManager(QSplitter):
             if silent:
                 target.blockSignals(False)
 
-        if not target.isVisible():
-            target.show()
+        # Показываем целиком панель (header + tabs), а не только сами tabs.
+        owner_panel = (self.left_panel if target is self.left_tabs
+                       else self.right_panel)
+        if not owner_panel.isVisible():
+            owner_panel.show()
 
         target.setFocus()
         self.active_group = target

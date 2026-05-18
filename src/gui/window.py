@@ -130,9 +130,15 @@ class MainWindow(QMainWindow):
 
         self.create_widgets()
 
-        # Main content is now the SplitManager
-        self.split_manager = SplitManager()
+        # Main content is now the SplitManager - с конфигами групп
+        # (имя + цвет) из settings.json. По умолчанию «Группа 1» + «Группа 2»
+        # с дефолтными цветами.
+        self.split_manager = SplitManager(
+            group_configs=self.settings.get("group_configs"),
+        )
         self.split_manager.activeTabChanged.connect(self.on_active_tab_changed)
+        # Когда юзер переименовал группу или сменил цвет - сохраняем в settings.
+        self.split_manager.groupConfigChanged.connect(self.save_current_settings)
 
     def create_widgets(self):
         self.btn_open = QPushButton("Открыть файл")
@@ -856,6 +862,9 @@ class MainWindow(QMainWindow):
             "files_right": files_right,
             "bookmarks": bookmarks,
             "ui_features": self.ui_features,
+            # Имена и цвета групп - сохраняются при переименовании / смене
+            # цвета через меню плашки, а также при выходе из приложения.
+            "group_configs": self.split_manager.get_group_configs(),
         }
         save_settings(data)
         # Обновляем кеш в self.settings, чтобы load_file тут же увидел свежие закладки
