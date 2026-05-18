@@ -214,7 +214,7 @@ class MainWindow(QMainWindow):
 
     def update_fonts(self):
         # Update all open viewers
-        for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
+        for group in self.split_manager.iter_groups():
             for i in range(group.count()):
                 viewer = group.widget(i)
                 if isinstance(viewer, LogViewerWidget):
@@ -450,7 +450,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_sc_snapshot'):
             self._sc_snapshot.setEnabled(on)
 
-        for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
+        for group in self.split_manager.iter_groups():
             for i in range(group.count()):
                 viewer = group.widget(i)
                 if isinstance(viewer, LogViewerWidget):
@@ -551,7 +551,7 @@ class MainWindow(QMainWindow):
         # с миллионом ссылок не мгновенно - под busy чтобы окно не выглядело
         # «не отвечает». Сначала определим, есть ли что чистить.
         needs_release = False
-        for group in (self.split_manager.left_tabs, self.split_manager.right_tabs):
+        for group in self.split_manager.iter_groups():
             for i in range(group.count()):
                 w = group.widget(i)
                 if w is viewer or not isinstance(w, LogViewerWidget):
@@ -565,7 +565,7 @@ class MainWindow(QMainWindow):
         if needs_release:
             self.show_busy("Освобождение памяти от неактивных вкладок ...")
         try:
-            for group in (self.split_manager.left_tabs, self.split_manager.right_tabs):
+            for group in self.split_manager.iter_groups():
                 for i in range(group.count()):
                     w = group.widget(i)
                     if w is viewer:
@@ -612,8 +612,7 @@ class MainWindow(QMainWindow):
 
         counts = []
         if hasattr(self, 'split_manager'):
-            for group in (self.split_manager.left_tabs,
-                          self.split_manager.right_tabs):
+            for group in self.split_manager.iter_groups():
                 for i in range(group.count()):
                     w = group.widget(i)
                     if isinstance(w, LogViewerWidget):
@@ -689,11 +688,10 @@ class MainWindow(QMainWindow):
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(f"Memory snapshot @ {ts}\n")
                 f.write(f"{header_rss}\n")
-                # Сводка по табам
-                for group_name, group in (
-                    ("left", self.split_manager.left_tabs),
-                    ("right", self.split_manager.right_tabs),
-                ):
+                # Сводка по табам - по каждой группе
+                for panel in self.split_manager.iter_panels():
+                    group = panel.tabs
+                    group_name = panel.header.name
                     for i in range(group.count()):
                         w = group.widget(i)
                         if isinstance(w, LogViewerWidget):
@@ -751,7 +749,7 @@ class MainWindow(QMainWindow):
         error = self.chk_error.isChecked()
         group_dupes = self.chk_group.isChecked()
 
-        for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
+        for group in self.split_manager.iter_groups():
             for i in range(group.count()):
                 viewer = group.widget(i)
                 if isinstance(viewer, LogViewerWidget):
@@ -777,12 +775,15 @@ class MainWindow(QMainWindow):
 
             mapped_pos = self.split_manager.mapFrom(self, drop_pos)
 
+            # Для пары первых групп оставляем legacy side="left"/"right".
+            # Drop на плашки прочих групп - тема раунда 4.
             side = "active"
-
-            if self.split_manager.right_tabs.isVisible():
-                if self.split_manager.left_tabs.geometry().contains(mapped_pos):
+            lp = self.split_manager.left_panel
+            rp = self.split_manager.right_panel
+            if rp is not None and rp.isVisible():
+                if lp is not None and lp.geometry().contains(mapped_pos):
                     side = "left"
-                elif self.split_manager.right_tabs.geometry().contains(mapped_pos):
+                elif rp.geometry().contains(mapped_pos):
                     side = "right"
 
             for url in event.mimeData().urls():
@@ -795,52 +796,74 @@ class MainWindow(QMainWindow):
             super().dropEvent(event)
 
     def restore_session(self):
-        """Восстанавливает табы из settings.json. Чтобы не грузить все логи
-        сразу при старте (легко съесть RAM при 4+ больших логах), создаём
-        их в lazy-режиме - таб виден, имя файла видно, но парсинг не идёт.
-        Файл загружается только при первой активации таба
-        (см. on_active_tab_changed → viewer.ensure_loaded())."""
-        files_left = self.settings.get("files_left", [])
-        files_right = self.settings.get("files_right", [])
+        """Восстанавливает табы из settings.json в lazy-режиме.
+        Источник истины - files_per_group (список списков по группам).
+        Legacy files_left / files_right поддерживается как fallback для
+        старых settings.json без полей per-group."""
+        per_group = self.settings.get("files_per_group")
+        if not per_group:
+            # Legacy: собираем из files_left / files_right
+            files_left = self.settings.get("files_left", [])
+            files_right = self.settings.get("files_right", [])
+            per_group = [files_left, files_right]
 
-        total = (len([f for f in files_left if os.path.exists(f)])
-                 + len([f for f in files_right if os.path.exists(f)]))
+        # Количество существующих файлов всего - для busy-оверлея
+        total = sum(
+            len([f for f in group_files if os.path.exists(f)])
+            for group_files in per_group
+        )
         if total > 0:
-            # Создание lazy-табов само по себе быстрое, но плюс верхний таб
-            # будет реально грузиться сразу. Показываем оверлей сразу, чтобы
-            # юзер видел «что-то происходит» - финальный hide_busy случится
-            # в on_loading_finished активного таба.
             self.show_busy(
                 f"Восстановление сессии: {total} файл(ов) ...\n"
                 f"Загружается только активная вкладка, остальные ждут клика."
             )
 
-        for f in files_left:
-            if os.path.exists(f):
-                self.load_file(f, side="left", lazy=True)
+        # Дозагружаем недостающие группы в SplitManager если в settings
+        # сохранено больше групп чем сейчас есть в UI.
+        while len(self.split_manager.panels) < len(per_group):
+            self.split_manager.add_group()
 
-        for f in files_right:
-            if os.path.exists(f):
-                self.load_file(f, side="right", lazy=True)
+        # Раскладываем файлы по группам по индексу (group_index = индекс
+        # панели в split_manager.panels).
+        for group_index, group_files in enumerate(per_group):
+            for f in group_files:
+                if not os.path.exists(f):
+                    continue
+                # side="left" → группа 0, "right" → группа 1, для остальных
+                # пока нет специального side: используем active с заранее
+                # выставленной активной группой.
+                if group_index == 0:
+                    self.load_file(f, side="left", lazy=True)
+                elif group_index == 1:
+                    self.load_file(f, side="right", lazy=True)
+                else:
+                    # Для групп 3+ - временно делаем нужную панель активной
+                    target_panel = self.split_manager.panels[group_index]
+                    target_panel.show()
+                    self.split_manager.active_group = target_panel.tabs
+                    self.load_file(f, side="active", lazy=True)
 
         # После всех silent-add'ов активируем верхний таб - его юзер увидит
         # первым, его и грузим (один файл, остальные остаются lazy и ждут
-        # клика). Если оба сплита пусты - ничего не делаем.
-        current = (self.split_manager.right_tabs.currentWidget()
-                   if self.split_manager.right_tabs.isVisible()
-                   else None) or self.split_manager.left_tabs.currentWidget()
+        # клика). Берём первый таб из первой видимой непустой группы.
+        current = None
+        for panel in self.split_manager.iter_panels():
+            if panel.isVisible() and panel.tabs.count() > 0:
+                current = panel.tabs.currentWidget()
+                if current is not None:
+                    break
         if isinstance(current, LogViewerWidget):
             self.split_manager.activeTabChanged.emit(current)
         elif total > 0:
-            # Если активного viewer'а нет (теоретически), busy всё равно надо скрыть
             self.hide_busy()
 
     def save_current_settings(self):
         files_left, files_right = self.split_manager.get_open_files()
+        files_per_group = self.split_manager.get_open_files_per_group()
 
         # Собираем закладки со всех открытых вкладок
         bookmarks = {}
-        for group in [self.split_manager.left_tabs, self.split_manager.right_tabs]:
+        for group in self.split_manager.iter_groups():
             for i in range(group.count()):
                 viewer = group.widget(i)
                 if isinstance(viewer, LogViewerWidget):
@@ -858,8 +881,13 @@ class MainWindow(QMainWindow):
         data = {
             "theme": self.current_theme_name,
             "font_size": self.current_font_size,
+            # Legacy для совместимости со старыми версиями приложения - первые
+            # две группы записываются в files_left/files_right.
             "files_left": files_left,
             "files_right": files_right,
+            # Новый формат - список путей по каждой группе в порядке panels.
+            # Если групп больше двух, восстанавливать сессию нужно отсюда.
+            "files_per_group": files_per_group,
             "bookmarks": bookmarks,
             "ui_features": self.ui_features,
             # Имена и цвета групп - сохраняются при переименовании / смене

@@ -24,20 +24,25 @@ DEFAULT_GROUP_COLORS = [
 
 
 class GroupHeader(QFrame):
-    """Плашка-заголовок группы табов: цветной фон + имя + кнопка меню.
+    """Плашка-заголовок группы табов: цветной фон + имя + кнопки «+» и «⋮».
 
     Сигналы:
-      renameRequested(str) - юзер ввёл новое имя
-      colorRequested(str)  - юзер выбрал новый цвет (hex)
+      renameRequested(str)       - юзер ввёл новое имя
+      colorRequested(str)        - юзер выбрал новый цвет (hex)
+      addGroupRequested()        - меню «Добавить группу справа» / кнопка «+»
+      removeGroupRequested()     - меню «Удалить группу»
     """
 
     renameRequested = pyqtSignal(str)
     colorRequested = pyqtSignal(str)
+    addGroupRequested = pyqtSignal()
+    removeGroupRequested = pyqtSignal()
 
     def __init__(self, name, color, parent=None):
         super().__init__(parent)
         self._name = name
         self._color = color
+        self._can_remove = True
         self.setFixedHeight(28)
         self.setFrameShape(QFrame.Shape.NoFrame)
         # Контекстное меню по правой кнопке
@@ -46,22 +51,25 @@ class GroupHeader(QFrame):
 
         h = QHBoxLayout(self)
         h.setContentsMargins(10, 0, 4, 0)
-        h.setSpacing(6)
+        h.setSpacing(4)
 
         self.lbl_name = QLabel(name)
         self.lbl_name.setStyleSheet("color: white; font-weight: bold;")
         h.addWidget(self.lbl_name)
         h.addStretch()
 
+        # Кнопка «+» - добавить новую группу справа от этой
+        self.btn_add = QToolButton()
+        self.btn_add.setText("+")
+        self.btn_add.setFixedSize(22, 22)
+        self.btn_add.setToolTip("Добавить группу справа")
+        self.btn_add.clicked.connect(self.addGroupRequested.emit)
+        h.addWidget(self.btn_add)
+
         # Кнопка меню "⋮"
         self.btn_menu = QToolButton()
         self.btn_menu.setText("⋮")
         self.btn_menu.setFixedSize(22, 22)
-        self.btn_menu.setStyleSheet(
-            "QToolButton { color: white; background: transparent; border: none; "
-            "font-size: 16px; font-weight: bold; }"
-            "QToolButton:hover { background: rgba(255,255,255,40); border-radius: 3px; }"
-        )
         self.btn_menu.clicked.connect(self._show_menu_at_button)
         h.addWidget(self.btn_menu)
 
@@ -70,7 +78,6 @@ class GroupHeader(QFrame):
     def _apply_color(self):
         """Применяет цвет фона. Текст автоматически белый/чёрный по яркости."""
         c = QColor(self._color)
-        # Простая luminance для выбора цвета текста
         lum = (c.red() * 299 + c.green() * 587 + c.blue() * 114) / 1000
         text_color = '#000000' if lum > 160 else '#FFFFFF'
         self.setStyleSheet(
@@ -79,13 +86,17 @@ class GroupHeader(QFrame):
         self.lbl_name.setStyleSheet(
             f"color: {text_color}; font-weight: bold; background: transparent;"
         )
-        # Кнопке меню тоже подкрашиваем
         hover_bg = "rgba(0,0,0,40)" if lum > 160 else "rgba(255,255,255,40)"
-        self.btn_menu.setStyleSheet(
+        btn_css = (
             f"QToolButton {{ color: {text_color}; background: transparent; "
             "border: none; font-size: 16px; font-weight: bold; }}"
             f"QToolButton:hover {{ background: {hover_bg}; border-radius: 3px; }}"
         )
+        self.btn_menu.setStyleSheet(btn_css)
+        self.btn_add.setStyleSheet(btn_css)
+
+    def set_can_remove(self, can_remove):
+        self._can_remove = bool(can_remove)
 
     @property
     def name(self):
@@ -121,8 +132,14 @@ class GroupHeader(QFrame):
         menu = QMenu(self)
         act_rename = menu.addAction("Переименовать …")
         act_color = menu.addAction("Сменить цвет …")
+        menu.addSeparator()
+        act_add = menu.addAction("Добавить группу справа")
+        act_remove = menu.addAction("Удалить группу")
+        act_remove.setEnabled(self._can_remove)
         act_rename.triggered.connect(self._do_rename)
         act_color.triggered.connect(self._do_change_color)
+        act_add.triggered.connect(self.addGroupRequested.emit)
+        act_remove.triggered.connect(self.removeGroupRequested.emit)
         return menu
 
     def _do_rename(self):
@@ -143,8 +160,11 @@ class GroupHeader(QFrame):
 
 class GroupPanel(QWidget):
     """Один «слот группы» в SplitManager: заголовок-плашка сверху + TabWidget с
-    табами под ним. Заменяет голый EditorTabWidget в сплиттере, чтобы было
-    видно к какой группе относятся файлы."""
+    табами под ним. Пробрасывает сигналы header'а наружу - чтобы SplitManager
+    мог реагировать на «Добавить» / «Удалить группу» от любой панели."""
+
+    addGroupRequested = pyqtSignal()
+    removeGroupRequested = pyqtSignal()
 
     def __init__(self, name, color, parent=None):
         super().__init__(parent)
@@ -157,6 +177,9 @@ class GroupPanel(QWidget):
 
         v.addWidget(self.header)
         v.addWidget(self.tabs, 1)
+
+        self.header.addGroupRequested.connect(self.addGroupRequested.emit)
+        self.header.removeGroupRequested.connect(self.removeGroupRequested.emit)
 
 
 class DraggableTabBar(QTabBar):
@@ -458,83 +481,234 @@ class EditorTabWidget(QTabWidget):
 
 
 class SplitManager(QSplitter):
-    """Контейнер двух «групп» табов. В этой итерации - всё ещё фиксированно
-    две группы (раньше left_tabs / right_tabs), но каждая получила цветную
-    плашку-заголовок (GroupPanel) с именем и цветом. Атрибуты left_tabs /
-    right_tabs сохранены для совместимости с остальным кодом - указывают на
-    .tabs внутри соответствующей панели.
+    """Контейнер «групп» табов. С раунда 2 - произвольное число групп
+    (минимум 1, добавлять через add_group / удалять через remove_group).
+    Каждая группа представлена GroupPanel'ью внутри сплиттера.
 
-    Сигнал groupConfigChanged эмитится когда юзер переименовал группу или
-    сменил её цвет - MainWindow подписан на него, чтобы сохранить в settings."""
+    Атрибуты left_tabs / right_tabs сохранены для backward-compat - указывают
+    на первую и вторую панели соответственно (или None если их меньше).
+
+    Сигналы:
+      activeTabChanged(widget) - сменился активный таб;
+      groupConfigChanged()     - имена/цвета/состав групп изменились
+                                  (MainWindow подписан → сохраняет settings)."""
 
     activeTabChanged = pyqtSignal(object)
-    groupConfigChanged = pyqtSignal()  # имя/цвет одной из групп изменились
+    groupConfigChanged = pyqtSignal()
 
     def __init__(self, parent=None, group_configs=None):
         super().__init__(Qt.Orientation.Horizontal, parent)
 
-        # group_configs - список из 2 dict-ов с ключами name, color.
-        # Если None или мало элементов - подставляем дефолты.
+        # group_configs - список dict-ов с ключами name, color. Если пусто -
+        # стартуем с двух дефолтных групп.
         cfgs = list(group_configs or [])
-        while len(cfgs) < 2:
-            cfgs.append(None)
-        cfg_left = cfgs[0] or {}
-        cfg_right = cfgs[1] or {}
-        name_left = cfg_left.get('name') or 'Группа 1'
-        color_left = cfg_left.get('color') or DEFAULT_GROUP_COLORS[0]
-        name_right = cfg_right.get('name') or 'Группа 2'
-        color_right = cfg_right.get('color') or DEFAULT_GROUP_COLORS[1]
+        if len(cfgs) < 1:
+            cfgs = [
+                {'name': 'Группа 1', 'color': DEFAULT_GROUP_COLORS[0]},
+                {'name': 'Группа 2', 'color': DEFAULT_GROUP_COLORS[1]},
+            ]
 
-        self.left_panel = GroupPanel(name_left, color_left)
-        self.right_panel = GroupPanel(name_right, color_right)
+        self.panels = []  # список GroupPanel в порядке отображения
+        for i, cfg in enumerate(cfgs):
+            name = (cfg or {}).get('name') or f'Группа {i + 1}'
+            color = (cfg or {}).get('color') or DEFAULT_GROUP_COLORS[
+                i % len(DEFAULT_GROUP_COLORS)]
+            self._add_panel(name, color)
 
-        # Обратная совместимость API: код снаружи использует left_tabs/right_tabs.
-        self.left_tabs = self.left_panel.tabs
-        self.right_tabs = self.right_panel.tabs
+        # Скрываем все панели начиная со второй пока в них нет табов -
+        # как раньше right_panel был hidden по умолчанию.
+        for panel in self.panels[1:]:
+            if panel.tabs.count() == 0:
+                panel.hide()
 
-        self.addWidget(self.left_panel)
-        self.addWidget(self.right_panel)
+        self.active_group = self.panels[0].tabs
 
-        self.right_panel.hide()
+    # ----- Backward-compat: left_tabs / right_tabs / left_panel / right_panel -----
+    @property
+    def left_tabs(self):
+        return self.panels[0].tabs if self.panels else None
 
-        self.left_tabs.moveTabRequested.connect(self.move_to_right)
-        self.right_tabs.moveTabRequested.connect(self.move_to_left)
+    @property
+    def right_tabs(self):
+        return self.panels[1].tabs if len(self.panels) >= 2 else None
 
-        self.left_tabs.tabActivated.connect(self.on_tab_activated)
-        self.right_tabs.tabActivated.connect(self.on_tab_activated)
+    @property
+    def left_panel(self):
+        return self.panels[0] if self.panels else None
 
-        self.left_tabs.tabDropped.connect(self.check_visibility)
-        self.right_tabs.tabDropped.connect(self.check_visibility)
+    @property
+    def right_panel(self):
+        return self.panels[1] if len(self.panels) >= 2 else None
 
-        # Подписываемся на изменения header'ов - эмитим groupConfigChanged
-        # чтобы MainWindow сохранил настройки.
-        for header in (self.left_panel.header, self.right_panel.header):
-            header.renameRequested.connect(self._on_group_config_changed)
-            header.colorRequested.connect(self._on_group_config_changed)
+    # ----- Управление группами -----
 
-        self.active_group = self.left_tabs
+    def iter_groups(self):
+        """Итератор по всем активным TabWidget'ам (по одному на группу).
+        Заменяет жёсткое (left_tabs, right_tabs) в потребителях."""
+        for panel in self.panels:
+            yield panel.tabs
+
+    def iter_panels(self):
+        return list(self.panels)
+
+    def _add_panel(self, name, color, position=None):
+        """Создаёт GroupPanel и регистрирует его в сплиттере + подписывает
+        сигналы. Возвращает созданную панель."""
+        panel = GroupPanel(name, color)
+        idx = position if position is not None else len(self.panels)
+        self.panels.insert(idx, panel)
+        self.insertWidget(idx, panel)
+
+        panel.tabs.moveTabRequested.connect(self._on_move_tab_requested)
+        panel.tabs.tabActivated.connect(self.on_tab_activated)
+        panel.tabs.tabDropped.connect(self.check_visibility)
+        panel.header.renameRequested.connect(self._on_group_config_changed)
+        panel.header.colorRequested.connect(self._on_group_config_changed)
+        panel.addGroupRequested.connect(
+            lambda p=panel: self._add_group_after(p))
+        panel.removeGroupRequested.connect(
+            lambda p=panel: self._remove_panel(p))
+        self._update_remove_enabled()
+        return panel
+
+    def add_group(self, name=None, color=None):
+        """Создаёт новую группу в конце. Возвращает GroupPanel."""
+        n = len(self.panels) + 1
+        if name is None:
+            name = f'Группа {n}'
+        if color is None:
+            color = DEFAULT_GROUP_COLORS[(n - 1) % len(DEFAULT_GROUP_COLORS)]
+        panel = self._add_panel(name, color)
+        panel.show()
+        self._update_remove_enabled()
+        self.groupConfigChanged.emit()
+        return panel
+
+    def _add_group_after(self, anchor_panel):
+        """Создаёт новую группу прямо после anchor_panel (вызывается из
+        контекстного меню «Добавить группу справа»)."""
+        try:
+            idx = self.panels.index(anchor_panel)
+        except ValueError:
+            return self.add_group()
+        n = len(self.panels) + 1
+        name = f'Группа {n}'
+        color = DEFAULT_GROUP_COLORS[(n - 1) % len(DEFAULT_GROUP_COLORS)]
+        panel = self._add_panel(name, color, position=idx + 1)
+        panel.show()
+        self._update_remove_enabled()
+        self.groupConfigChanged.emit()
+        return panel
+
+    def _remove_panel(self, panel):
+        """Удаляет группу. Если в группе есть файлы - спрашиваем подтверждение."""
+        if len(self.panels) <= 1:
+            return  # Нельзя удалять последнюю
+        from PyQt6.QtWidgets import QMessageBox
+        n_files = panel.tabs.count()
+        if n_files > 0:
+            r = QMessageBox.question(
+                self, "Удалить группу",
+                f"В группе «{panel.header.name}» открыто {n_files} файл(ов).\n"
+                f"Удалить группу и закрыть эти файлы?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                return
+        # Закрываем все табы
+        while panel.tabs.count() > 0:
+            w = panel.tabs.widget(0)
+            panel.tabs.removeTab(0)
+            if w is not None:
+                w.deleteLater()
+        # Если активная группа была этой - переключаемся на первую оставшуюся
+        was_active = (self.active_group is panel.tabs)
+        try:
+            self.panels.remove(panel)
+        except ValueError:
+            pass
+        panel.setParent(None)
+        panel.deleteLater()
+        if was_active and self.panels:
+            self.active_group = self.panels[0].tabs
+            self.activeTabChanged.emit(self.active_group.currentWidget())
+        self._update_remove_enabled()
+        self.groupConfigChanged.emit()
+
+    def _update_remove_enabled(self):
+        """Disable «Удалить группу» в меню если осталась 1 группа."""
+        can_remove = len(self.panels) > 1
+        for p in self.panels:
+            p.header.set_can_remove(can_remove)
+
+    def _on_move_tab_requested(self):
+        """Старый left_tabs.moveTabRequested → move_to_right, и наоборот.
+        При произвольном числе групп - перемещаем в следующую справа,
+        а если это последняя группа, кидаем в первую."""
+        sender = self.sender()
+        # Найти панель-источник
+        src_idx = None
+        for i, p in enumerate(self.panels):
+            if p.tabs is sender:
+                src_idx = i
+                break
+        if src_idx is None:
+            return
+        # Назначение: следующая справа, иначе - предыдущая слева
+        if src_idx + 1 < len(self.panels):
+            dst_idx = src_idx + 1
+        elif src_idx > 0:
+            dst_idx = src_idx - 1
+        else:
+            return  # одна группа всего - двигать некуда
+        self._move_current_tab(src_idx, dst_idx)
+
+    def _move_current_tab(self, src_idx, dst_idx):
+        src = self.panels[src_idx].tabs
+        dst = self.panels[dst_idx].tabs
+        idx = src.currentIndex()
+        if idx < 0:
+            return
+        widget = src.widget(idx)
+        text = src.tabText(idx)
+        src.removeTab(idx)
+        dst.addTab(widget, text)
+        dst.setCurrentWidget(widget)
+        # Показываем целевую панель если была скрыта
+        dst_panel = self.panels[dst_idx]
+        if not dst_panel.isVisible():
+            dst_panel.show()
+        self.check_visibility()
 
     def _on_group_config_changed(self, *_args):
         self.groupConfigChanged.emit()
 
     def get_group_configs(self):
-        """Возвращает [{name, color}, {name, color}] - для сохранения в settings."""
+        """Возвращает [{name, color}, ...] - для сохранения в settings."""
         return [
-            {'name': self.left_panel.header.name,
-             'color': self.left_panel.header.color},
-            {'name': self.right_panel.header.name,
-             'color': self.right_panel.header.color},
+            {'name': p.header.name, 'color': p.header.color}
+            for p in self.panels
         ]
 
     def check_visibility(self):
-        # Скрываем/показываем целиком ПАНЕЛЬ (header + tabs), а не только tabs:
-        # иначе заголовок-плашка остаётся торчать над пустым местом.
-        if self.right_tabs.count() == 0:
-            self.right_panel.hide()
+        # Скрываем целиком панель (header + tabs) если в ней не осталось
+        # табов. Первую (panels[0]) не трогаем - она всегда видна, даже
+        # если пуста, иначе пользователь потеряет точку для drop'а.
+        for i, panel in enumerate(self.panels):
+            if i == 0:
+                continue
+            if panel.tabs.count() == 0:
+                panel.hide()
 
-        if self.active_group.count() == 0:
-            other = self.right_tabs if self.active_group == self.left_tabs else self.left_tabs
-            if other.isVisible() and other.count() > 0:
+        if self.active_group is not None and self.active_group.count() == 0:
+            # Ищем другую панель с табами
+            other = None
+            for p in self.panels:
+                if p.tabs is not self.active_group and p.tabs.count() > 0 and p.isVisible():
+                    other = p.tabs
+                    break
+            if other is not None:
                 self.active_group = other
                 self.activeTabChanged.emit(other.currentWidget())
             else:
@@ -557,8 +731,12 @@ class SplitManager(QSplitter):
         if side == "left":
             target = self.left_tabs
         elif side == "right":
-            target = self.right_tabs
-        elif not self.right_panel.isVisible():
+            target = self.right_tabs or self.left_tabs
+        elif (self.right_panel is None) or (not self.right_panel.isVisible()):
+            # Если правая панель ещё не существует / скрыта - кладём в первую.
+            target = self.left_tabs
+
+        if target is None:
             target = self.left_tabs
 
         if silent:
@@ -571,9 +749,9 @@ class SplitManager(QSplitter):
                 target.blockSignals(False)
 
         # Показываем целиком панель (header + tabs), а не только сами tabs.
-        owner_panel = (self.left_panel if target is self.left_tabs
-                       else self.right_panel)
-        if not owner_panel.isVisible():
+        owner_panel = next(
+            (p for p in self.panels if p.tabs is target), None)
+        if owner_panel is not None and not owner_panel.isVisible():
             owner_panel.show()
 
         target.setFocus()
@@ -581,26 +759,37 @@ class SplitManager(QSplitter):
         if not silent:
             self.activeTabChanged.emit(widget)
 
+    def get_open_files_per_group(self):
+        """Возвращает список списков путей файлов - по одному списку на
+        группу, в порядке self.panels."""
+        per_group = []
+        for panel in self.panels:
+            files = []
+            for i in range(panel.tabs.count()):
+                w = panel.tabs.widget(i)
+                if isinstance(w, LogViewerWidget):
+                    files.append(w.file_path)
+            per_group.append(files)
+        return per_group
+
     def get_open_files(self):
-        files_left = []
-        files_right = []
-
-        for i in range(self.left_tabs.count()):
-            widget = self.left_tabs.widget(i)
-            if isinstance(widget, LogViewerWidget):
-                files_left.append(widget.file_path)
-
-        for i in range(self.right_tabs.count()):
-            widget = self.right_tabs.widget(i)
-            if isinstance(widget, LogViewerWidget):
-                files_right.append(widget.file_path)
-
+        """Legacy: возвращает (files_left, files_right) - только первые две
+        группы. Для произвольного числа групп используй get_open_files_per_group()."""
+        per_group = self.get_open_files_per_group()
+        files_left = per_group[0] if len(per_group) >= 1 else []
+        files_right = per_group[1] if len(per_group) >= 2 else []
         return files_left, files_right
 
+    # Legacy-обёртки (используются внешним кодом / тестами). Делегируют на
+    # новый _move_current_tab, который работает с произвольным числом групп.
     def move_to_right(self, index):
+        if len(self.panels) < 2:
+            return
         self._move_tab(index, self.left_tabs, self.right_tabs)
 
     def move_to_left(self, index):
+        if len(self.panels) < 2:
+            return
         self._move_tab(index, self.right_tabs, self.left_tabs)
 
     def _move_tab(self, index, source, target):
@@ -611,14 +800,28 @@ class SplitManager(QSplitter):
         new_index = target.addTab(widget, text)
         target.setCurrentIndex(new_index)
 
-        if source.count() == 0 and source == self.right_tabs:
-            source.hide()
+        # Скрываем целую панель источника если последний таб ушёл -
+        # но только для НЕпервой группы (первая всегда видна).
+        if source.count() == 0 and source is not self.left_tabs:
+            src_panel = next(
+                (p for p in self.panels if p.tabs is source), None)
+            if src_panel is not None:
+                src_panel.hide()
 
-        was_hidden = not target.isVisible()
-        if was_hidden:
-            target.show()
-            half_width = self.width() // 2
-            self.setSizes([half_width, half_width])
+        # Показываем панель назначения если была скрыта
+        dst_panel = next(
+            (p for p in self.panels if p.tabs is target), None)
+        if dst_panel is not None and not dst_panel.isVisible():
+            dst_panel.show()
+            # Перераспределяем ширину равномерно по всем видимым панелям
+            sizes = []
+            total = self.width()
+            visible = [p for p in self.panels if p.isVisible()]
+            if visible:
+                per = total // len(visible)
+                for p in self.panels:
+                    sizes.append(per if p.isVisible() else 0)
+                self.setSizes(sizes)
 
         self.active_group = target
         target.setFocus()
