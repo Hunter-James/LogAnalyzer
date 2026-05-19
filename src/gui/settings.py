@@ -1,10 +1,47 @@
 import sys
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QComboBox, QSpinBox,
                              QFrame, QLabel, QPushButton, QHBoxLayout, QCheckBox,
-                             QGroupBox, QScrollArea, QWidget)
+                             QGroupBox, QScrollArea, QWidget, QSizePolicy)
 from config import (THEMES, APP_VERSION, DEFAULT_UI_FEATURES, UI_FEATURE_LABELS,
                     UI_FEATURE_CATEGORIES)
+
+
+class _WrapCheckBox(QWidget):
+    """QCheckBox с переносом длинной подписи по словам.
+
+    Стандартный QCheckBox не умеет word-wrap (текст уходит в одну строку и
+    обрезается / появляется горизонтальный скроллбар). Обходим: рядом с
+    голым чекбоксом кладём QLabel(wordWrap=True). Клик по label тоже
+    переключает чекбокс - так юзер привычно тыкает в текст."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        self._checkbox = QCheckBox()
+        self._checkbox.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._label = QLabel(text)
+        self._label.setWordWrap(True)
+        self._label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        # Клик по label = toggle чекбокса (привычное поведение)
+        self._label.mousePressEvent = self._on_label_click
+        h.addWidget(self._checkbox, 0, Qt.AlignmentFlag.AlignTop)
+        h.addWidget(self._label, 1)
+
+    def _on_label_click(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._checkbox.toggle()
+        event.accept()
+
+    def isChecked(self):
+        return self._checkbox.isChecked()
+
+    def setChecked(self, value):
+        self._checkbox.setChecked(bool(value))
 
 
 # --- Settings Dialog ---
@@ -19,7 +56,10 @@ class SettingsDialog(QDialog):
         # но в текущей итерации не используется (Stack-режим - единственный).
         super().__init__(parent)
         self.setWindowTitle("Настройки")
-        self.resize(460, 540)
+        # Увеличенный дефолтный размер: все 4 категории видны без скролла,
+        # а длинные подписи (вроде «Режим разработчика (RAM-индикатор + ...)»)
+        # переносятся на следующую строку благодаря _WrapCheckBox.
+        self.resize(560, 720)
 
         # Стиль сам диалога зависит от темы; применяем в отдельном методе,
         # чтобы пере-применять при live-превью (иначе старая стилизация
@@ -72,7 +112,7 @@ class SettingsDialog(QDialog):
             for key in feature_keys:
                 if key not in DEFAULT_UI_FEATURES:
                     continue  # пропускаем несуществующие в дефолтах
-                cb = QCheckBox(UI_FEATURE_LABELS.get(key, key))
+                cb = _WrapCheckBox(UI_FEATURE_LABELS.get(key, key))
                 cb.setChecked(bool(
                     current_features.get(key, DEFAULT_UI_FEATURES[key])))
                 self.feature_checkboxes[key] = cb
@@ -90,7 +130,7 @@ class SettingsDialog(QDialog):
             misc_layout.setContentsMargins(10, 8, 10, 8)
             misc_layout.setSpacing(4)
             for key in leftover:
-                cb = QCheckBox(UI_FEATURE_LABELS.get(key, key))
+                cb = _WrapCheckBox(UI_FEATURE_LABELS.get(key, key))
                 cb.setChecked(bool(
                     current_features.get(key, DEFAULT_UI_FEATURES[key])))
                 self.feature_checkboxes[key] = cb
@@ -100,10 +140,12 @@ class SettingsDialog(QDialog):
         features_outer.addStretch(1)
 
         # Заворачиваем в QScrollArea, чтобы при добавлении новых категорий
-        # диалог не разрастался бесконечно.
+        # диалог не разрастался бесконечно. Горизонтальный скроллбар жёстко
+        # выключаем - иначе вместо word-wrap'а текст превратился бы в скролл.
         scroll = QScrollArea()
         scroll.setWidget(features_container)
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(scroll, 1)
 
         # --- Версия ---
