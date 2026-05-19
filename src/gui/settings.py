@@ -3,7 +3,8 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QComboBox, QSpinBox,
                              QFrame, QLabel, QPushButton, QHBoxLayout, QCheckBox,
                              QGroupBox, QScrollArea, QWidget)
-from config import THEMES, APP_VERSION, DEFAULT_UI_FEATURES, UI_FEATURE_LABELS
+from config import (THEMES, APP_VERSION, DEFAULT_UI_FEATURES, UI_FEATURE_LABELS,
+                    UI_FEATURE_CATEGORIES)
 
 
 # --- Settings Dialog ---
@@ -50,22 +51,58 @@ class SettingsDialog(QDialog):
         layout.addWidget(appearance_group)
 
         # --- Функции (видимость кнопок) ---
-        # Чекбоксы для каждой опциональной фичи. Скрытие убирает виджет из UI,
+        # Чекбоксы разделены на категории. Скрытие убирает виджет из UI,
         # но не теряет состояние - можно вернуть в любой момент.
-        features_group = QGroupBox("Функции (отключите неиспользуемые — UI станет чище)")
-        features_layout = QVBoxLayout()
+        # Каждая категория - QGroupBox внутри scrollable контейнера.
         self.feature_checkboxes = {}
-        for key in DEFAULT_UI_FEATURES.keys():
-            cb = QCheckBox(UI_FEATURE_LABELS.get(key, key))
-            cb.setChecked(bool(current_features.get(key, DEFAULT_UI_FEATURES[key])))
-            self.feature_checkboxes[key] = cb
-            features_layout.addWidget(cb)
+        features_container = QWidget()
+        features_outer = QVBoxLayout(features_container)
+        features_outer.setContentsMargins(0, 0, 0, 0)
+        features_outer.setSpacing(8)
 
-        features_group.setLayout(features_layout)
+        # Ключи, уже попавшие в какую-то категорию - чтобы случайно не
+        # потерять фичу, если её забыли добавить в UI_FEATURE_CATEGORIES.
+        categorized_keys = set()
 
-        # Заворачиваем в QScrollArea на случай если фич станет много
+        for category_name, feature_keys in UI_FEATURE_CATEGORIES.items():
+            cat_box = QGroupBox(category_name)
+            cat_layout = QVBoxLayout(cat_box)
+            cat_layout.setContentsMargins(10, 8, 10, 8)
+            cat_layout.setSpacing(4)
+            for key in feature_keys:
+                if key not in DEFAULT_UI_FEATURES:
+                    continue  # пропускаем несуществующие в дефолтах
+                cb = QCheckBox(UI_FEATURE_LABELS.get(key, key))
+                cb.setChecked(bool(
+                    current_features.get(key, DEFAULT_UI_FEATURES[key])))
+                self.feature_checkboxes[key] = cb
+                cat_layout.addWidget(cb)
+                categorized_keys.add(key)
+            features_outer.addWidget(cat_box)
+
+        # Запасной блок «Прочее» - на случай если в DEFAULT_UI_FEATURES
+        # появилась новая фича, а в UI_FEATURE_CATEGORIES её ещё не добавили.
+        leftover = [k for k in DEFAULT_UI_FEATURES.keys()
+                    if k not in categorized_keys]
+        if leftover:
+            misc_box = QGroupBox("Прочее")
+            misc_layout = QVBoxLayout(misc_box)
+            misc_layout.setContentsMargins(10, 8, 10, 8)
+            misc_layout.setSpacing(4)
+            for key in leftover:
+                cb = QCheckBox(UI_FEATURE_LABELS.get(key, key))
+                cb.setChecked(bool(
+                    current_features.get(key, DEFAULT_UI_FEATURES[key])))
+                self.feature_checkboxes[key] = cb
+                misc_layout.addWidget(cb)
+            features_outer.addWidget(misc_box)
+
+        features_outer.addStretch(1)
+
+        # Заворачиваем в QScrollArea, чтобы при добавлении новых категорий
+        # диалог не разрастался бесконечно.
         scroll = QScrollArea()
-        scroll.setWidget(features_group)
+        scroll.setWidget(features_container)
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll, 1)
 

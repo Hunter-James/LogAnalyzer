@@ -42,6 +42,32 @@ UI_FEATURE_LABELS = {
     "debug_panel": "Режим разработчика (RAM-индикатор в статус-баре + Ctrl+Shift+M снапшот)",
 }
 
+# Группировка опций для SettingsDialog. Order-preserving dict (Python 3.7+).
+# Каждая категория - QGroupBox в диалоге. Ключи внутри группы - в том
+# порядке, в котором будут показаны.
+UI_FEATURE_CATEGORIES = {
+    "Поиск и фильтры": [
+        "match_case",
+        "use_regex",
+        "loggers_filter",
+        "batches_filter",
+        "time_range",
+    ],
+    "Просмотр и журнал": [
+        "tail_mode",
+        "save_to_journal",
+        "group_dupes",
+        "json_format",
+    ],
+    "Индикаторы в статус-баре": [
+        "selection_info",
+        "scrollbar_markers",
+    ],
+    "Производительность и отладка": [
+        "debug_panel",
+    ],
+}
+
 # --- Settings Management ---
 SETTINGS_FILENAME = "settings.json"
 
