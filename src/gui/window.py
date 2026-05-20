@@ -2,7 +2,10 @@ import os
 import sys
 import ctypes
 import datetime
+import logging
 import tracemalloc
+
+_log = logging.getLogger('window')
 
 try:
     import psutil
@@ -38,6 +41,7 @@ def resource_path(relative_path):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        _log.info("MainWindow.__init__ start, APP_VERSION=%s", APP_VERSION)
 
         # Отвязываем приложение от стандартной иконки Python в панели задач Windows
         try:
@@ -520,6 +524,7 @@ class MainWindow(QMainWindow):
     MAX_LOADED_VIEWERS = 3
 
     def load_file(self, file_path, side="active", lazy=False):
+        _log.info("load_file: path=%r side=%s lazy=%s", file_path, side, lazy)
         # Достаём сохранённые закладки для этого файла (если были)
         bookmarks = self.settings.get("bookmarks", {}).get(file_path, [])
         viewer = LogViewerWidget(

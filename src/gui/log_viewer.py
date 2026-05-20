@@ -1,7 +1,10 @@
 import os
 import re
 import json
+import logging
 from datetime import datetime
+
+_log = logging.getLogger('log_viewer')
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QSplitter, QAbstractItemView,
                              QMessageBox, QApplication, QLineEdit, QHBoxLayout, QLabel, QFrame,
                              QPushButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QMenu,
@@ -487,6 +490,7 @@ class LogViewerWidget(QWidget):
         self.apply_ui_features(self._ui_features)
 
     def load_file(self):
+        _log.info("LogViewerWidget.load_file: path=%r", self.file_path)
         self.loader = LogLoader(self.file_path)
         self.loader.progress.connect(self.progressChanged.emit)
         self.loader.finished.connect(self.on_load_finished)
@@ -494,10 +498,13 @@ class LogViewerWidget(QWidget):
 
     def on_load_finished(self, entries, stats, error_msg, last_pos):
         if error_msg:
+            _log.error("LogLoader finished with error for %r: %s",
+                       self.file_path, error_msg)
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить файл:\n{error_msg}")
             self.lbl_stats.setText("Ошибка загрузки файла")
             self.loadingFinished.emit()
             return
+        _log.info("LogLoader finished: path=%r entries=%d", self.file_path, len(entries))
 
         self.model.set_entries(entries)
         self._tail_position = last_pos  # для tail-режима
