@@ -516,8 +516,11 @@ class MainWindow(QMainWindow):
             self, "Открыть лог-файл", "",
             "Лог-файлы (*.log *.txt *.gz *.zip *.7z *.rar);;Все файлы (*)"
         )
-        for file_name in file_names:
-            self.load_file(file_name)
+        # Только ПЕРВЫЙ файл загружается сразу - иначе при выборе 46 логов
+        # все 46 LogLoader-потоков стартуют параллельно и съедают всю RAM.
+        # Остальные - lazy: юзер сам кликнет таб, когда захочет его открыть.
+        for i, file_name in enumerate(file_names):
+            self.load_file(file_name, lazy=(i > 0))
 
     # Максимум одновременно загруженных в RAM табов. Свыше - самый давно
     # неактивный выгружается через viewer.unload() (см. _enforce_loaded_lru).
@@ -732,10 +735,17 @@ class MainWindow(QMainWindow):
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(f"Memory snapshot @ {ts}\n")
                 f.write(f"{header_rss}\n")
-                # Сводка по табам - по каждой группе
-                for panel in self.split_manager.iter_panels():
+                # Сводка по табам - по каждой группе. После Stack-only
+                # рефакторинга header переехал из panel в chip в bar'е;
+                # имя берём прямо из chip (или fallback через _group_name).
+                sm = self.split_manager
+                for panel in sm.iter_panels():
                     group = panel.tabs
-                    group_name = panel.header.name
+                    group_name = getattr(panel, '_group_name', None) or "?"
+                    for g in sm._groups:
+                        if g['panel'] is panel:
+                            group_name = g['chip'].name
+                            break
                     for i in range(group.count()):
                         w = group.widget(i)
                         if isinstance(w, LogViewerWidget):

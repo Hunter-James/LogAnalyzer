@@ -1959,15 +1959,23 @@ class LogViewerWidget(QWidget):
 
         indices = self.model._filtered_indices
         total = len(indices)
-        if total == 0:
+        entries = self.model._entries
+        # Доп. защита: после unload() / set_entries([]) модель пуста, но
+        # _filtered_indices ещё может ссылаться на старые индексы из-за
+        # async-сигналов FilterWorker. В этом случае real_idx >= len(entries) -
+        # IndexError. Просто очищаем маркеры и выходим.
+        if total == 0 or not entries:
             scrollbar.set_markers([])
             return
 
         BINS = 200
         bin_levels = [None] * BINS  # для каждого бина "наиболее серьёзный" уровень
-        entries = self.model._entries
+        n_entries = len(entries)
 
         for row, real_idx in enumerate(indices):
+            if real_idx >= n_entries:
+                # Stale-индекс после reload/unload - пропускаем
+                continue
             level = entries[real_idx].level
             if level not in ("ERROR", "WARN"):
                 continue
