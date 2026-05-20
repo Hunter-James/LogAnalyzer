@@ -341,6 +341,13 @@ class DraggableTabBar(QTabBar):
         self.selected_indices = set()
         self.last_clicked_index = -1
 
+    def wheelEvent(self, event):
+        # Колесо мыши над таб-баром НЕ переключает табы. По дефолту QTabBar
+        # это делает - и юзер случайно проматывает табы когда скроллит лог
+        # колесом, наводя курсор на полосу табов. Если табов больше чем
+        # помещается, есть стандартные scroll-кнопки QTabBar (◀ / ▶).
+        event.accept()
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_pos = event.pos()

@@ -825,26 +825,19 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
-            drop_pos = event.position().toPoint()
-
-            mapped_pos = self.split_manager.mapFrom(self, drop_pos)
-
-            # Для пары первых групп оставляем legacy side="left"/"right".
-            # Drop на плашки прочих групп - тема раунда 4.
-            side = "active"
-            lp = self.split_manager.left_panel
-            rp = self.split_manager.right_panel
-            if rp is not None and rp.isVisible():
-                if lp is not None and lp.geometry().contains(mapped_pos):
-                    side = "left"
-                elif rp.geometry().contains(mapped_pos):
-                    side = "right"
-
-            for url in event.mimeData().urls():
-                if url.isLocalFile():
-                    file_path = url.toLocalFile()
-                    self.load_file(file_path, side=side)
-
+            # Drop в общую область окна = в активную группу (она и так одна
+            # видимая в Stack-режиме). Если юзер хочет в конкретную группу -
+            # тащит на её плашку, там отдельный обработчик в GroupHeader
+            # → filesDroppedOnGroup → _on_files_dropped_on_group.
+            # Раньше тут была попытка угадать side по геометрии left/right
+            # панелей - в Stack-режиме это давало случайные результаты
+            # (например drop при активной «Мал Ком Тест» отправлял файл в
+            # «Русхим», потому что у того панель тоже занимала ту же область).
+            urls = [u for u in event.mimeData().urls() if u.isLocalFile()]
+            for i, url in enumerate(urls):
+                file_path = url.toLocalFile()
+                # Первый файл - eager, остальные lazy (как в open_file_dialog).
+                self.load_file(file_path, side="active", lazy=(i > 0))
             event.acceptProposedAction()
         else:
             super().dropEvent(event)
