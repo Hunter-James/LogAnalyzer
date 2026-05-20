@@ -342,11 +342,20 @@ class DraggableTabBar(QTabBar):
         self.last_clicked_index = -1
 
     def wheelEvent(self, event):
-        # Колесо мыши над таб-баром НЕ переключает табы. По дефолту QTabBar
-        # это делает - и юзер случайно проматывает табы когда скроллит лог
-        # колесом, наводя курсор на полосу табов. Если табов больше чем
-        # помещается, есть стандартные scroll-кнопки QTabBar (◀ / ▶).
-        event.accept()
+        """Колесо мыши над таб-баром листает видимую часть (когда табов больше
+        чем влезает в строку), но НЕ меняет активный таб. Это привычное
+        поведение в браузерах. Qt по умолчанию при wheel ещё и сменяет
+        current - перехватываем: запоминаем current до super(), и если он
+        сменился - возвращаем обратно (signals блокируем, чтобы не дёргать
+        activeTabChanged зря)."""
+        prev = self.currentIndex()
+        super().wheelEvent(event)
+        if self.currentIndex() != prev:
+            self.blockSignals(True)
+            try:
+                self.setCurrentIndex(prev)
+            finally:
+                self.blockSignals(False)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
