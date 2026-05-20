@@ -35,6 +35,11 @@ desktop.ini
 # Файл сохраняется при выходе из приложения (тема, размер шрифта, открытые вкладки)
 settings.json
 src/settings.json
+# Crash log: пишется в runtime, удаляется при нормальном выходе - не для git
+crash_log.txt
+src/crash_log.txt
+memory_snapshot_*.txt
+src/memory_snapshot_*.txt
 
 # --- Локальные дампы / временные тексты ---
 gui_code.txt

@@ -1,7 +1,0 @@
-2026-05-20 11:21:48 [INFO ] main: Log Analyzer starting (frozen=False, path=E:\Python Project\LogAnalyzerEVOL\src\main.py)
-2026-05-20 11:21:49 [INFO ] window: MainWindow.__init__ start, APP_VERSION=1.4.0
-2026-05-20 11:21:49 [DEBUG] main: [QWARN] Could not parse stylesheet of object QToolButton(0x2785391b9a0)
-2026-05-20 11:21:49 [DEBUG] main: [QWARN] Could not parse stylesheet of object QToolButton(0x27853922250)
-2026-05-20 11:21:49 [DEBUG] main: [QWARN] Could not parse stylesheet of object QToolButton(0x2785391b9a0)
-2026-05-20 11:21:49 [DEBUG] main: [QWARN] Could not parse stylesheet of object QToolButton(0x27853922250)
-2026-05-20 11:21:49 [INFO ] main: Main window shown, entering event loop
