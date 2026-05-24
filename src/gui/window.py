@@ -142,8 +142,13 @@ class MainWindow(QMainWindow):
         self.split_manager.activeTabChanged.connect(self.on_active_tab_changed)
         self.split_manager.groupConfigChanged.connect(self.save_current_settings)
         self.split_manager.filesDroppedOnGroup.connect(self._on_files_dropped_on_group)
-        # Применяем сохранённый режим Stack/Splitter
-        if self.settings.get("group_layout_mode") == "stack":
+        # Применяем сохранённый режим Stack/Splitter. Дефолт в SplitManager
+        # — stack (одна группа видна); если в settings явно splitter — пере-
+        # ключаемся, чтобы юзер сразу увидел несколько групп бок о бок.
+        saved_mode = self.settings.get("group_layout_mode")
+        if saved_mode == "splitter":
+            self.split_manager.set_splitter_mode(True)
+        elif saved_mode == "stack":
             self.split_manager.set_stack_mode(True)
 
     def create_widgets(self):
@@ -392,7 +397,10 @@ class MainWindow(QMainWindow):
         original_theme = self.current_theme_name
         original_font_size = self.current_font_size
 
-        current_group_layout = self.settings.get("group_layout_mode", "splitter")
+        # Читаем актуальный режим из SplitManager - в settings могло быть
+        # устаревшее значение если юзер переключал режим через "Переместить
+        # в другую панель" из контекстного меню вкладки.
+        current_group_layout = self.split_manager.get_layout_mode()
         dlg = SettingsDialog(
             self.current_theme_name, self.current_font_size, self.ui_features,
             current_group_layout=current_group_layout, parent=self,
@@ -1045,8 +1053,11 @@ class MainWindow(QMainWindow):
             # Имена / цвета / collapsed групп - сохраняются при переименовании,
             # смене цвета, свёртывании и при выходе из приложения.
             "group_configs": self.split_manager.get_group_configs(),
-            # Режим расположения групп: 'splitter' или 'stack'.
-            "group_layout_mode": self.settings.get("group_layout_mode", "splitter"),
+            # Режим расположения групп: 'splitter' или 'stack'. Берём из
+            # SplitManager напрямую - юзер мог переключить через контекстное
+            # меню «Переместить в другую панель», и без перечитывания значение
+            # из settings ушло бы устаревшим.
+            "group_layout_mode": self.split_manager.get_layout_mode(),
             # Индекс активной группы - при следующем запуске именно её
             # первый таб начнёт грузиться (а не нулевая по счёту, если был на
             # другой группе).

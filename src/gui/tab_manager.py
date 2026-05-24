@@ -720,9 +720,21 @@ class SplitManager(QWidget):
         self._bar.addRequested.connect(self.add_group)
         v.addWidget(self._bar)
 
-        # Снизу - стэк с TabWidget'ами групп (виден один за раз)
-        self._stack = QStackedWidget()
-        v.addWidget(self._stack, 1)
+        # Снизу - переключатель layout'а: stack (одна группа видна) или
+        # splitter (несколько групп бок о бок).
+        self._mode_switcher = QStackedWidget()
+        self._stack = QStackedWidget()  # page 0: stack-mode контейнер
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)  # page 1: splitter-mode
+        self._mode_switcher.addWidget(self._stack)
+        self._mode_switcher.addWidget(self._splitter)
+        v.addWidget(self._mode_switcher, 1)
+
+        # 'stack' или 'splitter' - какой layout сейчас активен
+        self._layout_mode = 'stack'
+        # Активная группа (для add_tab/save_settings). В stack совпадает с
+        # _stack.currentIndex, в splitter хранится отдельно, потому что все
+        # панели видны одновременно.
+        self._active_index = 0
 
         # Каждая группа представлена парой (chip, panel) - храним их в одном
         # списке в порядке отображения. panel - GroupPanel с tabs.
@@ -772,7 +784,7 @@ class SplitManager(QWidget):
     @property
     def active_group(self):
         """tabs текущей активной группы (для legacy кода)."""
-        idx = self._stack.currentIndex()
+        idx = self._active_index
         if 0 <= idx < len(self._groups):
             return self._groups[idx]['panel'].tabs
         return None
@@ -793,8 +805,15 @@ class SplitManager(QWidget):
         return [g['panel'] for g in self._groups]
 
     def get_active_group_index(self):
-        """Индекс активной группы в Stack (для save_settings)."""
-        return self._stack.currentIndex()
+        """Индекс активной группы (для save_settings)."""
+        return self._active_index
+
+    @property
+    def _container(self):
+        """Текущий контейнер для GroupPanel'ей: QStackedWidget или QSplitter
+        в зависимости от _layout_mode. Все методы добавления/удаления панелей
+        работают через него абстрактно."""
+        return self._stack if self._layout_mode == 'stack' else self._splitter
 
     def activate_group_index(self, index, emit_signal=True):
         """Публичный обёрток над _set_active_group: активировать группу по
@@ -834,12 +853,18 @@ class SplitManager(QWidget):
         # И от tabs - tabActivated сигнализирует что юзер кликнул внутри
         panel.tabs.tabActivated.connect(self._on_tab_activated_in_panel)
         panel.tabs.tabDropped.connect(self.check_visibility)
+        # «Переместить в другую панель» из контекстного меню вкладки —
+        # перебрасывает таб в соседнюю группу и автоматически переключает
+        # в splitter-режим, чтобы юзер сразу видел обе.
+        panel.tabs.moveTabRequested.connect(
+            lambda idx, p=panel: self.move_tab_to_other_panel(p, idx))
 
         self._bar.add_chip(chip)
-        self._stack.addWidget(panel)
+        self._container.addWidget(panel)
         self._groups.append({'chip': chip, 'panel': panel})
         if panel._hidden:
             chip.setVisible(False)
+            panel.setVisible(False)
         self._update_remove_enabled()
         return panel
 
@@ -859,10 +884,13 @@ class SplitManager(QWidget):
         if chip is None:
             return
         chip.setVisible(not panel._hidden)
+        # В splitter-режиме скрываем саму панель - в stack-режиме QStackedWidget
+        # сам показывает только активную, скрытие лишнее, но не мешает.
+        panel.setVisible(not panel._hidden)
         # Если скрыли активную - переключаемся на следующую видимую
         if panel._hidden:
-            cur_idx = self._stack.currentIndex()
-            cur_panel = self._stack.widget(cur_idx)
+            cur_idx = self._active_index
+            cur_panel = self._groups[cur_idx]['panel'] if 0 <= cur_idx < len(self._groups) else None
             if cur_panel is panel:
                 # Ищем первую видимую группу
                 for i, g in enumerate(self._groups):
@@ -879,25 +907,32 @@ class SplitManager(QWidget):
         if color is None:
             color = DEFAULT_GROUP_COLORS[(n - 1) % len(DEFAULT_GROUP_COLORS)]
         panel = self._add_group_internal(name, color)
-        # Активируем новую группу
-        idx = self._stack.indexOf(panel)
-        self._set_active_group(idx)
+        # Активируем новую группу (поиск по _groups, а не по контейнеру -
+        # контейнер мог поменяться при set_splitter_mode)
+        idx = next((i for i, g in enumerate(self._groups)
+                    if g['panel'] is panel), -1)
+        if idx >= 0:
+            self._set_active_group(idx)
         self.groupConfigChanged.emit()
         return panel
 
     def _set_active_group(self, index, emit_signal=True):
         """Делает группу с указанным индексом активной: переключает стэк
-        и подсветку плашек. Файлы НЕактивных групп выгружаются из RAM
-        (lazy подхватит при возврате)."""
+        и подсветку плашек. В stack-режиме файлы НЕактивных групп выгружаются
+        из RAM. В splitter-режиме все панели видны - выгружать ничего не
+        нужно, меняется только активный chip и фокус."""
         if not (0 <= index < len(self._groups)):
             return
-        previously_active = self._stack.currentIndex()
-        self._stack.setCurrentIndex(index)
+        previously_active = self._active_index
+        self._active_index = index
+        if self._layout_mode == 'stack':
+            self._stack.setCurrentIndex(index)
         for i, g in enumerate(self._groups):
             g['chip'].set_active(i == index)
-        # Если переключились на ДРУГУЮ группу - unload файлы старой.
-        # Это семантика «только активная группа держит файлы в RAM».
-        if previously_active != index:
+        # В stack-mode при смене активной группы — unload предыдущей; иначе
+        # файлы продолжали бы тяжело висеть в RAM и обходить LRU. В splitter
+        # все панели видны постоянно, выгрузка ломала бы пользовательский опыт.
+        if previously_active != index and self._layout_mode == 'stack':
             self._unload_inactive_groups(keep_index=index)
         if emit_signal:
             tabs = self._groups[index]['panel'].tabs
@@ -923,7 +958,8 @@ class SplitManager(QWidget):
                         pass
 
     def _on_chip_clicked(self, panel):
-        idx = self._stack.indexOf(panel)
+        idx = next((i for i, g in enumerate(self._groups)
+                    if g['panel'] is panel), -1)
         if idx >= 0:
             self._set_active_group(idx)
 
@@ -935,7 +971,7 @@ class SplitManager(QWidget):
                 # Не вызываем _set_active_group целиком - только эмит сигнала
                 # о смене активного таба, потому что группа уже была активной
                 # (Stack показывает её, табы внутри переключают друг друга).
-                if self._stack.currentIndex() != i:
+                if self._active_index != i:
                     self._set_active_group(i, emit_signal=False)
                 if widget is not None:
                     self.activeTabChanged.emit(widget)
@@ -987,9 +1023,10 @@ class SplitManager(QWidget):
                     except Exception:
                         pass
                 w.deleteLater()
-        # Убираем chip из bar'а и panel из стэка
+        # Убираем chip из bar'а и panel из текущего контейнера
         self._bar.remove_chip(group['chip'])
-        self._stack.removeWidget(panel)
+        self._container.removeWidget(panel)
+        panel.setParent(None)
         panel.deleteLater()
         self._groups.pop(group_idx)
         # Переключаем активную группу
@@ -1005,7 +1042,8 @@ class SplitManager(QWidget):
             g['chip'].set_can_remove(can_remove)
 
     def _on_files_dropped_on_panel(self, panel, paths):
-        idx = self._stack.indexOf(panel)
+        idx = next((i for i, g in enumerate(self._groups)
+                    if g['panel'] is panel), -1)
         if idx >= 0:
             self.filesDroppedOnGroup.emit(idx, list(paths))
 
@@ -1037,29 +1075,26 @@ class SplitManager(QWidget):
         for g in self._groups:
             self._bar._chips_layout.addWidget(g['chip'])
 
-        # Для stack - порядок виджетов в QStackedWidget не критичен
-        # (виджеты идентифицируются индексом, но мы пересоберём)
-        # Восстановим активную группу по индексу в _groups
-        active_panel = item['panel']  # та что перетаскивали
+        # Пересобираем виджеты в контейнере в новом порядке. Это работает
+        # одинаково и для QStackedWidget, и для QSplitter (у обоих есть
+        # addWidget/removeWidget).
+        active_panel_obj = item['panel']
         new_active_idx = self._groups.index(item)
-        # QStackedWidget автоматически рендерит виджет по setCurrentIndex,
-        # но индекс там по порядку addWidget. Поэтому пересоберём stack:
-        # сохраним current viewport widget, потом перестроим stack.
-        cur_widget = self._stack.currentWidget()
-        # Уберём всех и добавим в новом порядке
-        # ВАЖНО: removeWidget не удаляет виджет, только из стэка
+        cont = self._container
+        # Сохраним текущую активную панель чтобы восстановить после reordering
+        prev_active_panel = None
+        if 0 <= self._active_index < len(self._groups):
+            prev_active_panel = self._groups[self._active_index]['panel']
         for g in self._groups:
-            self._stack.removeWidget(g['panel'])
+            cont.removeWidget(g['panel'])
         for g in self._groups:
-            self._stack.addWidget(g['panel'])
-        # Восстанавливаем активную панель
-        if cur_widget is not None:
-            cur_idx = self._stack.indexOf(cur_widget)
-            if cur_idx >= 0:
-                self._stack.setCurrentIndex(cur_idx)
-                # Обновим визуальную подсветку chip'ов
-                for i, g in enumerate(self._groups):
-                    g['chip'].set_active(i == cur_idx)
+            cont.addWidget(g['panel'])
+        # Восстанавливаем активную панель по объекту (а не по индексу - тот
+        # сменился после reordering)
+        if prev_active_panel is not None:
+            new_idx = next((i for i, g in enumerate(self._groups)
+                            if g['panel'] is prev_active_panel), new_active_idx)
+            self._set_active_group(new_idx, emit_signal=False)
         else:
             self._set_active_group(new_active_idx, emit_signal=False)
 
@@ -1082,7 +1117,8 @@ class SplitManager(QWidget):
         target_panel.tabs.addTab(widget, title)
         target_panel.tabs.setCurrentWidget(widget)
         # Делаем target_panel активной чтобы юзер видел результат
-        new_idx = self._stack.indexOf(target_panel)
+        new_idx = next((i for i, g in enumerate(self._groups)
+                        if g['panel'] is target_panel), -1)
         if new_idx >= 0:
             self._set_active_group(new_idx)
 
@@ -1131,7 +1167,7 @@ class SplitManager(QWidget):
         side может быть "active", "left", "right" или "group:N" (N - индекс
         группы). Последний вариант нужен для restore_session, чтобы класть
         файл в произвольную группу без побочного активирования."""
-        idx = self._stack.currentIndex()
+        idx = self._active_index
         if side == "left":
             idx = 0
         elif side == "right":
@@ -1158,17 +1194,104 @@ class SplitManager(QWidget):
         # При silent НЕ переключаем активную группу - таб лёг куда надо, но
         # пользователь продолжит работать в той же группе что и был. Без
         # silent — активируем целевую группу (обычное поведение open_file).
-        if not silent and self._stack.currentIndex() != idx:
+        if not silent and self._active_index != idx:
             self._set_active_group(idx, emit_signal=False)
         if not silent:
             self.activeTabChanged.emit(widget)
 
-    # ----- Stack/Splitter переключатель (заглушка - только Stack пока) -----
+    # ----- Stack/Splitter переключатель -----
 
     def set_stack_mode(self, stack):
-        """Stack-режим теперь единственный. Метод оставлен для совместимости
-        с настройками - просто ничего не делает."""
-        pass
+        """Переключает layout-режим. stack=True → одна группа видна за раз
+        (QStackedWidget). stack=False → splitter с несколькими видимыми
+        группами одновременно.
+
+        При переходе панели мигрируют из одного контейнера в другой; активная
+        группа сохраняется."""
+        new_mode = 'stack' if stack else 'splitter'
+        if new_mode == self._layout_mode:
+            return
+        self._set_layout_mode(new_mode)
+
+    def set_splitter_mode(self, splitter):
+        """Алиас: set_splitter_mode(True) == set_stack_mode(False).
+        В UI меньше путаницы какой флаг что означает."""
+        self.set_stack_mode(not splitter)
+
+    def get_layout_mode(self):
+        return self._layout_mode
+
+    def _set_layout_mode(self, mode):
+        """Внутренняя миграция панелей между _stack и _splitter."""
+        if mode == self._layout_mode:
+            return
+        # Сохраняем активную панель чтобы восстановить после миграции
+        prev_active_idx = self._active_index
+
+        # Извлекаем панели из старого контейнера
+        old = self._container
+        for g in self._groups:
+            old.removeWidget(g['panel'])
+
+        # Переключаем режим и заливаем панели в новый контейнер
+        self._layout_mode = mode
+        new = self._container
+        for g in self._groups:
+            new.addWidget(g['panel'])
+            # В splitter скрытые панели прячем; в stack QStackedWidget сам
+            # покажет только активную, видимость других не критична.
+            if mode == 'splitter':
+                g['panel'].setVisible(not getattr(g['panel'], '_hidden', False))
+            else:
+                g['panel'].setVisible(True)
+
+        # Показываем нужную страницу в mode_switcher
+        self._mode_switcher.setCurrentWidget(new)
+
+        # Восстанавливаем активную группу
+        if 0 <= prev_active_idx < len(self._groups):
+            self._set_active_group(prev_active_idx, emit_signal=False)
+
+    def move_tab_to_other_panel(self, source_panel, tab_index):
+        """Контекстное меню вкладки → «Переместить в другую панель».
+        Если групп всего одна — создаёт вторую и переключает в splitter.
+        Иначе переносит таб в соседнюю группу (следующую по порядку) и
+        переключается в splitter, чтобы юзер сразу видел обе.
+
+        Возвращает True, если перенос состоялся."""
+        # Найдём source group
+        src_idx = next((i for i, g in enumerate(self._groups)
+                        if g['panel'] is source_panel), -1)
+        if src_idx < 0:
+            return False
+        if not (0 <= tab_index < source_panel.tabs.count()):
+            return False
+
+        # Если групп <= 1 - создаём новую
+        if len(self._groups) < 2:
+            self.add_group()
+        # Целевая группа: следующая после source. Если source последний - предыдущая.
+        target_idx = src_idx + 1 if src_idx + 1 < len(self._groups) else src_idx - 1
+        if target_idx < 0 or target_idx >= len(self._groups):
+            return False
+        target_panel = self._groups[target_idx]['panel']
+
+        # Переключаемся в splitter-режим, чтобы юзер видел обе группы. Если
+        # уже splitter - оставляем как есть.
+        if self._layout_mode != 'splitter':
+            self.set_splitter_mode(True)
+
+        # Переносим таб (та же логика что в _on_tab_dropped_on_panel)
+        widget = source_panel.tabs.widget(tab_index)
+        title = source_panel.tabs.tabText(tab_index)
+        if widget is None:
+            return False
+        source_panel.tabs.removeTab(tab_index)
+        target_panel.tabs.addTab(widget, title)
+        target_panel.tabs.setCurrentWidget(widget)
+        self._set_active_group(target_idx)
+        self.groupConfigChanged.emit()
+        return True
 
     def get_current_viewer(self):
         tabs = self.active_group
