@@ -522,9 +522,14 @@ class MainWindow(QMainWindow):
         for i, file_name in enumerate(file_names):
             self.load_file(file_name, lazy=(i > 0))
 
-    # Максимум одновременно загруженных в RAM табов. Свыше - самый давно
-    # неактивный выгружается через viewer.unload() (см. _enforce_loaded_lru).
-    MAX_LOADED_VIEWERS = 3
+    # Жёсткий лимит на число одновременно загруженных в RAM табов.
+    # Свыше - самые давно неактивные выгружаются через viewer.unload().
+    MAX_LOADED_VIEWERS = 5
+    # Мягкий лимит по RAM (мегабайты). Когда RSS процесса превышает порог,
+    # старые табы выгружаются дополнительно, пока RSS не уйдёт ниже или пока
+    # не останется единственный (активный) viewer. Работает только если
+    # psutil доступен; иначе остаётся только лимит по числу.
+    RAM_LIMIT_MB = 3072  # 3 GB
 
     def load_file(self, file_path, side="active", lazy=False):
         _log.info("load_file: path=%r side=%s lazy=%s", file_path, side, lazy)
@@ -775,22 +780,75 @@ class MainWindow(QMainWindow):
         )
 
     def _enforce_loaded_lru(self, keep_active=None):
-        """Пока загруженных табов больше лимита - выгружает самый давно
-        неактивный (но никогда не текущий активный). Снимает viewer'ов,
-        которые уже unload()-нулись извне."""
+        """Применяет два лимита подряд:
+        1) Жёсткий по числу: пока loaded > MAX_LOADED_VIEWERS - выгружаем
+           самые старые (кроме keep_active).
+        2) Мягкий по RAM: если psutil.RSS > RAM_LIMIT_MB - выгружаем
+           старейших пока не уйдём ниже порога или пока не останется только
+           один активный viewer.
+
+        Текущий активный никогда не выгружается. Если psutil недоступен -
+        работает только лимит по числу."""
         # Сначала чистим тех, кто уже разгрузился (не должен висеть в LRU)
         self._lru_loaded = [v for v in self._lru_loaded if getattr(v, '_loaded', False)]
-        while len(self._lru_loaded) > self.MAX_LOADED_VIEWERS:
-            # Берём самого старого, но никогда - текущий активный
-            victim = None
+
+        def pick_victim():
             for v in self._lru_loaded:
                 if v is not keep_active:
-                    victim = v
-                    break
+                    return v
+            return None
+
+        # 1) Жёсткий лимит по числу
+        while len(self._lru_loaded) > self.MAX_LOADED_VIEWERS:
+            victim = pick_victim()
             if victim is None:
-                return
+                break
+            _log.info("LRU evict (by count): %s", victim.file_path)
             victim.unload()
             self._lru_loaded.remove(victim)
+
+        # 2) Мягкий лимит по RAM. Требует psutil; без него пропускаем.
+        if not _HAS_PSUTIL:
+            return
+
+        def rss_mb():
+            try:
+                return psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+            except Exception:
+                return 0
+
+        import gc
+        # Запускаем мини-цикл: если RAM превышен и есть кого выгрузить (>=2
+        # загруженных, чтобы не убить активный), evict один таб, форсируем GC
+        # и проверяем снова. Лимит итераций = MAX_LOADED_VIEWERS, чтобы не
+        # уйти в бесконечный цикл если RSS не освобождается (Python не всегда
+        # сразу возвращает память ОС).
+        rss = rss_mb()
+        iters = 0
+        while (rss > self.RAM_LIMIT_MB
+               and len(self._lru_loaded) > 1
+               and iters < self.MAX_LOADED_VIEWERS):
+            victim = pick_victim()
+            if victim is None:
+                break
+            _log.info(
+                "LRU evict (by RAM, rss=%.0fMB > %dMB): %s",
+                rss, self.RAM_LIMIT_MB, victim.file_path,
+            )
+            victim.unload()
+            self._lru_loaded.remove(victim)
+            gc.collect()
+            new_rss = rss_mb()
+            # Если RSS не падает (Python не возвращает память ОС) - дальше
+            # выгружать бессмысленно, прекращаем.
+            if new_rss >= rss - 10:
+                _log.info(
+                    "LRU evict: rss не освобождается (%.0f → %.0f MB), стоп",
+                    rss, new_rss,
+                )
+                break
+            rss = new_rss
+            iters += 1
 
     def on_global_filter_changed(self):
         if self.updating_ui:
