@@ -268,20 +268,45 @@ class LogLoader(QThread):
 
             bytes_read = 0
             last_emit_time = 0.0
+            cancelled = False
             try:
+                # Проверяем isInterruptionRequested() в горячем цикле - юзер мог
+                # нажать «Отмена» в busy-оверлее. Чек выполняем не на каждой
+                # строке (дорого), а раз в ~500 строк - и обязательно при
+                # каждом emit прогресса, чтобы реакция была не позже 100мс.
+                # 500 строк парсятся за единицы миллисекунд, реакция ощущается
+                # мгновенной для юзера.
+                check_every = 500
+                lines_since_check = 0
                 for line in stream:
                     bytes_read += len(line.encode('utf-8'))
                     now = time.time()
+                    lines_since_check += 1
                     if total_bytes > 0 and now - last_emit_time > 0.1:
                         pct = max(0, min(100, int(bytes_read / total_bytes * 100)))
                         self.progress.emit(pct)
                         last_emit_time = now
+                        if self.isInterruptionRequested():
+                            cancelled = True
+                            break
+                    elif lines_since_check >= check_every:
+                        lines_since_check = 0
+                        if self.isInterruptionRequested():
+                            cancelled = True
+                            break
 
                     closed = parser.feed_lines([line])
                     if closed:
                         entries.extend(closed)
             finally:
                 stream.close()
+
+            if cancelled:
+                # Юзер отменил загрузку. Сигнал finished идёт с пустым списком
+                # и специальным error_msg "__CANCELLED__" - UI его не показывает
+                # как ошибку, а оставляет viewer в lazy-состоянии.
+                self.finished.emit([], {}, "__CANCELLED__", 0)
+                return
 
             tail = parser.take_open()
             if tail is not None:

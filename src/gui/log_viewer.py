@@ -110,9 +110,32 @@ class LogViewerWidget(QWidget):
         # Останавливаем tail/filter если что-то осталось от прошлой загрузки
         self._stop_tail()
         if hasattr(self, 'loader') and self.loader and self.loader.isRunning():
-            return  # уже грузится
+            # Если предыдущий loader был отменён и ещё дочитывает текущую пачку -
+            # дадим ему до 300мс на самоликвидацию. Дольше блокировать UI плохо;
+            # если не успел, юзер увидит "Загрузка отменена" и кликнет ещё раз.
+            if self.loader.isInterruptionRequested():
+                self.loader.wait(300)
+                if self.loader.isRunning():
+                    return
+            else:
+                return  # уже грузится нормально
         self.load_file()
         self._loaded = True
+
+    def cancel_load(self):
+        """Юзер запросил отмену текущей загрузки. Просим LogLoader прерваться -
+        он сам пришлёт finished с error_msg=__CANCELLED__, по которому
+        on_load_finished обновит UI. Здесь делаем только запрос на прерывание
+        и моментально меняем lbl_stats, чтобы юзер увидел реакцию (loader
+        может закончить парсинг текущей пачки строк за ~100мс)."""
+        loader = getattr(self, 'loader', None)
+        if loader is not None and loader.isRunning():
+            try:
+                loader.requestInterruption()
+            except Exception:
+                pass
+        # Моментальная обратная связь в строке статуса - не ждём loader.
+        self.lbl_stats.setText("Отмена загрузки …")
 
     def unload(self):
         """Освобождает память: убивает model, индексы, виджеты. После этого
@@ -497,6 +520,17 @@ class LogViewerWidget(QWidget):
         self.loader.start()
 
     def on_load_finished(self, entries, stats, error_msg, last_pos):
+        # Спец-маркер отмены загрузки юзером (см. LogLoader.run). Не показываем
+        # диалог ошибки - просто откатываем viewer в lazy-состояние, чтобы
+        # юзер мог попробовать снова кликом по табу.
+        if error_msg == "__CANCELLED__":
+            _log.info("LogLoader cancelled by user for %r", self.file_path)
+            self._loaded = False
+            self.stats = {}
+            self.lbl_stats.setText(
+                "Загрузка отменена — кликни по табу, чтобы попробовать снова.")
+            self.loadingFinished.emit()
+            return
         if error_msg:
             _log.error("LogLoader finished with error for %r: %s",
                        self.file_path, error_msg)

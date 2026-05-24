@@ -562,10 +562,13 @@ class MainWindow(QMainWindow):
             self.btn_open.setEnabled(False)
             self._lru_touch(viewer)
             # Busy-оверлей с понятным текстом, чтобы юзер видел что
-            # приложение не зависло, а парсит файл.
+            # приложение не зависло, а парсит файл. Кнопка «Отмена» позволяет
+            # прервать загрузку - viewer остаётся в lazy-состоянии, путь
+            # сохраняется, при следующем клике по табу загрузка начнётся снова.
             self.show_busy(
                 f"Загрузка {os.path.basename(file_path)} ...\n"
-                f"Большие логи могут парситься несколько секунд."
+                f"Большие логи могут парситься несколько секунд.",
+                cancel_callback=lambda v=viewer: self._cancel_loading(v),
             )
 
     def on_loading_finished(self):
@@ -588,7 +591,8 @@ class MainWindow(QMainWindow):
         if isinstance(viewer, LogViewerWidget) and not viewer._loaded:
             self.show_busy(
                 f"Загрузка {os.path.basename(viewer.file_path)} ...\n"
-                f"Большие логи могут парситься несколько секунд."
+                f"Большие логи могут парситься несколько секунд.",
+                cancel_callback=lambda v=viewer: self._cancel_loading(v),
             )
             viewer.ensure_loaded()
             self.progress_bar.setVisible(True)
@@ -640,6 +644,27 @@ class MainWindow(QMainWindow):
         self._lru_loaded.append(viewer)
         self._enforce_loaded_lru(keep_active=viewer)
 
+    def _cancel_loading(self, viewer):
+        """Юзер нажал «Отмена» в busy-оверлее. Просим LogLoader прерваться -
+        он сам пришлёт finished с error_msg=__CANCELLED__, по которому
+        LogViewerWidget вернётся в lazy-состояние.
+
+        Также сразу прячем прогресс-бар и снимаем блокировку с btn_open, чтобы
+        юзер мог сразу же открыть другой файл."""
+        _log.info("Cancelling loading for %r", getattr(viewer, 'file_path', '?'))
+        try:
+            if hasattr(viewer, 'cancel_load'):
+                viewer.cancel_load()
+        except Exception:
+            _log.exception("viewer.cancel_load failed")
+        # UI восстановим немедленно - не ждём пока loader дочитает текущую
+        # пачку (это может занять секунду на больших файлах).
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.btn_open.setEnabled(True)
+        # Busy-оверлей сам спрятался в _on_cancel_clicked. Не вызываем hide_busy
+        # ещё раз, чтобы не было мерцания.
+
     # ----- RAM-монитор -----
 
     def _format_count(self, n):
@@ -681,11 +706,14 @@ class MainWindow(QMainWindow):
 
     # ----- Busy overlay -----
 
-    def show_busy(self, text):
+    def show_busy(self, text, cancel_callback=None):
         """Показать полупрозрачный оверлей «занято» с текстом. Покажется
         поверх всего окна, мышь под ним перехватывается чтобы юзер не
-        кликнул случайно во время блокирующей операции."""
-        self._busy_overlay.show_with(text)
+        кликнул случайно во время блокирующей операции.
+
+        Если передан cancel_callback - под текстом появится кнопка «Отмена»,
+        клик по которой вызовет callback (используется для прерывания загрузки)."""
+        self._busy_overlay.show_with(text, cancel_callback=cancel_callback)
         # processEvents - чтобы кадр оверлея отрисовался ДО того, как
         # начнётся блокирующая операция.
         QApplication.processEvents()

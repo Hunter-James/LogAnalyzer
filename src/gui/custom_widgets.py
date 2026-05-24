@@ -1,7 +1,8 @@
 import re
 
 from PyQt6.QtWidgets import (QListView, QTextEdit, QScrollBar, QStyle,
-                             QStyleOptionSlider, QPlainTextEdit, QWidget)
+                             QStyleOptionSlider, QPlainTextEdit, QWidget,
+                             QPushButton)
 from PyQt6.QtCore import pyqtSignal, Qt, QRect, QSize, QTimer
 from PyQt6.QtGui import (QWheelEvent, QPainter, QColor, QSyntaxHighlighter,
                          QTextCharFormat, QFont, QMouseEvent)
@@ -36,15 +37,46 @@ class BusyOverlay(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(40)  # ~25 fps - плавно и недорого
         self._timer.timeout.connect(self._tick)
+
+        # Кнопка «Отмена» - реальный QPushButton, чтобы получить нормальные
+        # hover/press состояния и обработку клика. По умолчанию скрыта;
+        # появляется только если в show_with передан cancel_callback.
+        self._cancel_callback = None
+        self._btn_cancel = QPushButton("Отмена", self)
+        self._btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: #B22222;
+                color: #FFFFFF;
+                border: 1px solid #7A1414;
+                border-radius: 4px;
+                padding: 6px 22px;
+                font-size: 11pt;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #CC3333; }
+            QPushButton:pressed { background-color: #A01818; }
+        """)
+        self._btn_cancel.clicked.connect(self._on_cancel_clicked)
+        self._btn_cancel.hide()
+
         self.hide()
 
-    def show_with(self, text):
-        """Показывает оверлей с указанным текстом. Растягивает по родителю."""
+    def show_with(self, text, cancel_callback=None):
+        """Показывает оверлей с указанным текстом. Растягивает по родителю.
+
+        Если передан cancel_callback - под текстом появляется кнопка «Отмена».
+        По клику callback вызывается, оверлей скрывается."""
         self._text = text or ""
+        self._cancel_callback = cancel_callback
         if self.parent() is not None:
             self.resize(self.parent().size())
         self.raise_()
         self.show()
+        self._reposition_cancel_button()
+        self._btn_cancel.setVisible(cancel_callback is not None)
+        if cancel_callback is not None:
+            self._btn_cancel.raise_()
         self._angle = 0
         self._timer.start()
         # Принудительно обновляем frame: операция, которая последует, может
@@ -60,7 +92,40 @@ class BusyOverlay(QWidget):
 
     def hide(self):
         self._timer.stop()
+        self._cancel_callback = None
+        if hasattr(self, '_btn_cancel'):
+            self._btn_cancel.hide()
         super().hide()
+
+    def _on_cancel_clicked(self):
+        """Юзер нажал «Отмена». Вызываем callback и сразу прячем оверлей -
+        чтобы юзер увидел, что отмена пошла."""
+        cb = self._cancel_callback
+        self._cancel_callback = None
+        self._btn_cancel.hide()
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def _reposition_cancel_button(self):
+        """Размещает кнопку «Отмена» по центру под текстом."""
+        cx = self.width() // 2
+        cy = self.height() // 2 - 16
+        radius = 22
+        # Текст рисуется на cy + radius + 10, высотой 40 → ниже него кнопка
+        btn_w = 120
+        btn_h = 32
+        self._btn_cancel.setGeometry(
+            cx - btn_w // 2,
+            cy + radius + 10 + 40 + 8,
+            btn_w, btn_h,
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition_cancel_button()
 
     def _tick(self):
         self._angle = (self._angle + 12) % 360
