@@ -792,6 +792,16 @@ class SplitManager(QWidget):
     def iter_panels(self):
         return [g['panel'] for g in self._groups]
 
+    def get_active_group_index(self):
+        """Индекс активной группы в Stack (для save_settings)."""
+        return self._stack.currentIndex()
+
+    def activate_group_index(self, index, emit_signal=True):
+        """Публичный обёрток над _set_active_group: активировать группу по
+        индексу. Используется в restore_session, чтобы один раз в конце
+        активировать сохранённую группу с эмитом activeTabChanged."""
+        self._set_active_group(index, emit_signal=emit_signal)
+
     # ----- Управление группами -----
 
     def _add_group_internal(self, name, color, hidden=False):
@@ -1116,12 +1126,21 @@ class SplitManager(QWidget):
     def add_tab(self, widget, title, side="active", silent=False):
         """Добавляет таб в активную группу (или в первую/вторую по side="left"/
         "right" для legacy кода). silent=True - не эмитим activeTabChanged
-        (для restore_session, чтобы все табы оставались lazy)."""
+        (для restore_session, чтобы все табы оставались lazy).
+
+        side может быть "active", "left", "right" или "group:N" (N - индекс
+        группы). Последний вариант нужен для restore_session, чтобы класть
+        файл в произвольную группу без побочного активирования."""
         idx = self._stack.currentIndex()
         if side == "left":
             idx = 0
         elif side == "right":
             idx = 1 if len(self._groups) >= 2 else 0
+        elif isinstance(side, str) and side.startswith("group:"):
+            try:
+                idx = int(side.split(":", 1)[1])
+            except (ValueError, IndexError):
+                pass
         if not (0 <= idx < len(self._groups)):
             idx = 0
         target = self._groups[idx]['panel'].tabs
@@ -1136,8 +1155,10 @@ class SplitManager(QWidget):
                 target.blockSignals(False)
 
         target.setFocus()
-        # Активируем эту группу если она не была активной
-        if self._stack.currentIndex() != idx:
+        # При silent НЕ переключаем активную группу - таб лёг куда надо, но
+        # пользователь продолжит работать в той же группе что и был. Без
+        # silent — активируем целевую группу (обычное поведение open_file).
+        if not silent and self._stack.currentIndex() != idx:
             self._set_active_group(idx, emit_signal=False)
         if not silent:
             self.activeTabChanged.emit(widget)

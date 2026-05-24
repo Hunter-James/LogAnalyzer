@@ -2,10 +2,86 @@ import re
 
 from PyQt6.QtWidgets import (QListView, QTextEdit, QScrollBar, QStyle,
                              QStyleOptionSlider, QPlainTextEdit, QWidget,
-                             QPushButton)
+                             QPushButton, QProgressBar, QLabel, QHBoxLayout)
 from PyQt6.QtCore import pyqtSignal, Qt, QRect, QSize, QTimer
 from PyQt6.QtGui import (QWheelEvent, QPainter, QColor, QSyntaxHighlighter,
                          QTextCharFormat, QFont, QMouseEvent)
+
+
+# --- Multi-file progress widget ---
+class MultiProgressBar(QWidget):
+    """Контейнер для нескольких мини-полосок прогресса с подписями. Каждая
+    регистрируется через add(key, name) и удаляется через remove(key).
+    Если активных нет - виджет скрывается, чтобы не занимать место в тулбаре.
+
+    Использование:
+      bar = multi.add(viewer, "app.log")
+      viewer.progressChanged.connect(bar.setValue)
+      ...
+      multi.remove(viewer)"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(8)
+        # key (произвольный, обычно viewer) -> {'widget': ..., 'bar': QProgressBar}
+        self._items = {}
+        self.setVisible(False)
+
+    def add(self, key, name):
+        """Регистрирует новую полоску с подписью name. Возвращает QProgressBar,
+        к которому надо подключить сигнал прогресса viewer'а."""
+        # Если для этого ключа уже есть полоска - возвращаем существующую
+        # (например при повторном вызове load_file для того же viewer'а).
+        existing = self._items.get(key)
+        if existing is not None:
+            existing['label'].setText(name)
+            return existing['bar']
+
+        container = QWidget(self)
+        h = QHBoxLayout(container)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+
+        label = QLabel(name, container)
+        label.setStyleSheet("font-size: 9pt;")
+        label.setToolTip(name)
+        # Если имя длинное - обрежем по эллипсису, чтобы не растягивать тулбар.
+        label.setMaximumWidth(160)
+
+        bar = QProgressBar(container)
+        bar.setRange(0, 100)
+        bar.setFixedWidth(120)
+        bar.setTextVisible(True)
+
+        h.addWidget(label)
+        h.addWidget(bar)
+
+        self._layout.addWidget(container)
+        self._items[key] = {'widget': container, 'bar': bar, 'label': label}
+        self.setVisible(True)
+        return bar
+
+    def remove(self, key):
+        """Удаляет полоску по ключу. Если активных не осталось - скрываемся."""
+        item = self._items.pop(key, None)
+        if item is None:
+            return
+        w = item['widget']
+        self._layout.removeWidget(w)
+        w.setParent(None)
+        w.deleteLater()
+        if not self._items:
+            self.setVisible(False)
+
+    def clear(self):
+        """Снимает все полоски разом (например при apply_theme rebuild)."""
+        for key in list(self._items.keys()):
+            self.remove(key)
+
+    def has_active(self):
+        return bool(self._items)
 
 
 # --- Busy overlay ---

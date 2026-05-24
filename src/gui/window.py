@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover
     _HAS_PSUTIL = False
 
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                             QLineEdit, QLabel, QFileDialog, QProgressBar, QToolButton,
+                             QLineEdit, QLabel, QFileDialog, QToolButton,
                              QMessageBox, QStyle, QFrame, QCheckBox, QApplication, QMenu)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QIcon, QKeySequence, QCloseEvent, QShortcut
@@ -25,7 +25,7 @@ from gui.log_viewer import LogViewerWidget
 from gui.tab_manager import SplitManager
 from gui.settings import SettingsDialog
 from gui.help_dialog import HelpDialog
-from gui.custom_widgets import BusyOverlay
+from gui.custom_widgets import BusyOverlay, MultiProgressBar
 
 
 def resource_path(relative_path):
@@ -184,9 +184,11 @@ class MainWindow(QMainWindow):
         self.chk_group.setChecked(False)
         self.chk_group.stateChanged.connect(self.on_global_filter_changed)
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedWidth(150)
-        self.progress_bar.setVisible(False)
+        # MultiProgressBar - контейнер для нескольких полосок прогресса с
+        # подписями (имя файла). Раньше тут был один QProgressBar и при
+        # параллельных загрузках значения от разных файлов перетирали друг
+        # друга → полоска мигала. Теперь у каждой загрузки своя полоска.
+        self.progress_bar = MultiProgressBar()
 
     def detach_widgets(self):
         widgets = [
@@ -541,8 +543,8 @@ class MainWindow(QMainWindow):
             ui_features=self.ui_features,
             lazy=lazy,
         )
-        viewer.progressChanged.connect(self.progress_bar.setValue)
-        viewer.loadingFinished.connect(self.on_loading_finished)
+        viewer.loadingFinished.connect(
+            lambda v=viewer: self.on_loading_finished(v))
 
         # Apply current global filters to new viewer
         viewer.set_global_filters(
@@ -558,7 +560,7 @@ class MainWindow(QMainWindow):
         self.split_manager.add_tab(
             viewer, os.path.basename(file_path), side, silent=lazy)
         if not lazy:
-            self.progress_bar.setVisible(True)
+            self._start_progress_for(viewer)
             self.btn_open.setEnabled(False)
             self._lru_touch(viewer)
             # Busy-оверлей с понятным текстом, чтобы юзер видел что
@@ -571,10 +573,24 @@ class MainWindow(QMainWindow):
                 cancel_callback=lambda v=viewer: self._cancel_loading(v),
             )
 
-    def on_loading_finished(self):
-        self.progress_bar.setVisible(False)
-        self.btn_open.setEnabled(True)
-        self.hide_busy()
+    def _start_progress_for(self, viewer):
+        """Регистрирует viewer в MultiProgressBar и подключает его сигнал
+        progressChanged к собственной полоске. Возвращает QProgressBar."""
+        name = os.path.basename(viewer.file_path)
+        bar = self.progress_bar.add(viewer, name)
+        # Подписка слабая — после loadingFinished элемент удалится из MultiProgressBar,
+        # сигнал перестанет находить адресат (Qt молча игнорит), это норм.
+        viewer.progressChanged.connect(bar.setValue)
+        return bar
+
+    def on_loading_finished(self, viewer=None):
+        # viewer может быть None - старая сигнатура без аргументов от внешних
+        # эмиттеров (на всякий случай совместимости).
+        if viewer is not None:
+            self.progress_bar.remove(viewer)
+        if not self.progress_bar.has_active():
+            self.btn_open.setEnabled(True)
+            self.hide_busy()
 
     def on_active_tab_changed(self, viewer):
         # Показываем полный путь активного файла в заголовке окна (стиль Notepad++)
@@ -594,8 +610,8 @@ class MainWindow(QMainWindow):
                 f"Большие логи могут парситься несколько секунд.",
                 cancel_callback=lambda v=viewer: self._cancel_loading(v),
             )
+            self._start_progress_for(viewer)
             viewer.ensure_loaded()
-            self.progress_bar.setVisible(True)
             self.btn_open.setEnabled(False)
 
         if isinstance(viewer, LogViewerWidget) and viewer._loaded:
@@ -659,9 +675,9 @@ class MainWindow(QMainWindow):
             _log.exception("viewer.cancel_load failed")
         # UI восстановим немедленно - не ждём пока loader дочитает текущую
         # пачку (это может занять секунду на больших файлах).
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setValue(0)
-        self.btn_open.setEnabled(True)
+        self.progress_bar.remove(viewer)
+        if not self.progress_bar.has_active():
+            self.btn_open.setEnabled(True)
         # Busy-оверлей сам спрятался в _on_cancel_clicked. Не вызываем hide_busy
         # ещё раз, чтобы не было мерцания.
 
@@ -956,38 +972,41 @@ class MainWindow(QMainWindow):
         while len(self.split_manager.panels) < len(per_group):
             self.split_manager.add_group()
 
-        # Раскладываем файлы по группам по индексу (group_index = индекс
-        # панели в split_manager.panels).
+        # Раскладываем файлы по группам через side="group:N" - явное указание
+        # индекса не задевает активную группу и не эмитит activeTabChanged.
+        # Все табы добавляются lazy и silent: восстановление сессии не должно
+        # запускать ни одной загрузки в середине цикла.
         for group_index, group_files in enumerate(per_group):
             for f in group_files:
                 if not os.path.exists(f):
                     continue
-                # side="left" → группа 0, "right" → группа 1, для остальных
-                # пока нет специального side: используем active с заранее
-                # выставленной активной группой.
-                if group_index == 0:
-                    self.load_file(f, side="left", lazy=True)
-                elif group_index == 1:
-                    self.load_file(f, side="right", lazy=True)
-                else:
-                    # Для групп 3+ - временно делаем нужную панель активной
-                    target_panel = self.split_manager.panels[group_index]
-                    target_panel.show()
-                    self.split_manager.active_group = target_panel.tabs
-                    self.load_file(f, side="active", lazy=True)
+                self.load_file(f, side=f"group:{group_index}", lazy=True)
 
-        # После всех silent-add'ов активируем верхний таб - его юзер увидит
-        # первым, его и грузим (один файл, остальные остаются lazy и ждут
-        # клика). Берём первый таб из первой видимой непустой группы.
-        current = None
-        for panel in self.split_manager.iter_panels():
-            if panel.isVisible() and panel.tabs.count() > 0:
-                current = panel.tabs.currentWidget()
-                if current is not None:
+        # Активная группа: либо сохранённая в settings, либо первая видимая
+        # непустая. Группа активируется ОДИН раз в конце - именно её первый
+        # таб начнёт грузиться через ensure_loaded в on_active_tab_changed.
+        saved_active = self.settings.get("active_group_index")
+        target_idx = None
+        if (isinstance(saved_active, int)
+                and 0 <= saved_active < len(self.split_manager.panels)
+                and self.split_manager.panels[saved_active].tabs.count() > 0
+                and not getattr(self.split_manager.panels[saved_active], '_hidden', False)):
+            target_idx = saved_active
+        else:
+            for i, panel in enumerate(self.split_manager.iter_panels()):
+                if (panel.isVisible()
+                        and not getattr(panel, '_hidden', False)
+                        and panel.tabs.count() > 0):
+                    target_idx = i
                     break
-        if isinstance(current, LogViewerWidget):
-            self.split_manager.activeTabChanged.emit(current)
+
+        if target_idx is not None:
+            # activate_group_index → _set_active_group(idx, emit_signal=True)
+            # эмитит activeTabChanged.emit(currentWidget), что и запускает
+            # ensure_loaded единственного активного viewer'а.
+            self.split_manager.activate_group_index(target_idx, emit_signal=True)
         elif total > 0:
+            # Все группы скрыты или пусты - busy спрятать руками.
             self.hide_busy()
 
     def save_current_settings(self):
@@ -1028,6 +1047,10 @@ class MainWindow(QMainWindow):
             "group_configs": self.split_manager.get_group_configs(),
             # Режим расположения групп: 'splitter' или 'stack'.
             "group_layout_mode": self.settings.get("group_layout_mode", "splitter"),
+            # Индекс активной группы - при следующем запуске именно её
+            # первый таб начнёт грузиться (а не нулевая по счёту, если был на
+            # другой группе).
+            "active_group_index": self.split_manager.get_active_group_index(),
         }
         save_settings(data)
         # Обновляем кеш в self.settings, чтобы load_file тут же увидел свежие закладки
