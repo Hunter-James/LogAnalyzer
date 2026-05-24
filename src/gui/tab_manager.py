@@ -830,6 +830,12 @@ class SplitManager(QWidget):
         chip = GroupHeader(name, color)
         panel = GroupPanel(name, color)
         panel._hidden = bool(hidden)
+        # В splitter-режиме: панель может быть «свёрнутой» — chip остаётся
+        # в баре (клик возвращает), но в QSplitter саму панель не показываем.
+        # По умолчанию все группы видны в splitter; move_tab_to_other_panel
+        # схлопывает все КРОМЕ source/target, чтобы юзер не получал 4 столбца
+        # вместо ожидаемых 2.
+        panel._collapsed_in_splitter = False
 
         # Подписываемся на сигналы chip'а
         chip.renameRequested.connect(
@@ -887,6 +893,12 @@ class SplitManager(QWidget):
         # В splitter-режиме скрываем саму панель - в stack-режиме QStackedWidget
         # сам показывает только активную, скрытие лишнее, но не мешает.
         panel.setVisible(not panel._hidden)
+        # Когда юзер «вернул» группу через диалог управления - принудительно
+        # сбрасываем collapsed_in_splitter, иначе она останется свёрнутой
+        # в splitter mode даже после un-hide.
+        if not panel._hidden:
+            panel._collapsed_in_splitter = False
+            self._apply_collapsed_visibility()
         # Если скрыли активную - переключаемся на следующую видимую
         if panel._hidden:
             cur_idx = self._active_index
@@ -960,8 +972,13 @@ class SplitManager(QWidget):
     def _on_chip_clicked(self, panel):
         idx = next((i for i, g in enumerate(self._groups)
                     if g['panel'] is panel), -1)
-        if idx >= 0:
-            self._set_active_group(idx)
+        if idx < 0:
+            return
+        # В splitter-режиме, если панель свёрнута (move_tab_to_other_panel её
+        # схлопнул) — клик по chip'у разворачивает её и делает активной.
+        if self._layout_mode == 'splitter' and getattr(panel, '_collapsed_in_splitter', False):
+            self.expand_group_in_splitter(panel)
+        self._set_active_group(idx)
 
     def _on_tab_activated_in_panel(self, widget):
         """Юзер кликнул по табу внутри панели - найдём её и активируем."""
@@ -1238,10 +1255,15 @@ class SplitManager(QWidget):
         new = self._container
         for g in self._groups:
             new.addWidget(g['panel'])
-            # В splitter скрытые панели прячем; в stack QStackedWidget сам
-            # покажет только активную, видимость других не критична.
+            # В splitter скрываем: 1) hidden (через диалог управления) и
+            # 2) collapsed_in_splitter (через move_tab_to_other_panel).
+            # В stack — QStackedWidget сам показывает только активную,
+            # видимость остальных не критична.
             if mode == 'splitter':
-                g['panel'].setVisible(not getattr(g['panel'], '_hidden', False))
+                p = g['panel']
+                visible = (not getattr(p, '_hidden', False)
+                           and not getattr(p, '_collapsed_in_splitter', False))
+                p.setVisible(visible)
             else:
                 g['panel'].setVisible(True)
 
@@ -1256,7 +1278,9 @@ class SplitManager(QWidget):
         """Контекстное меню вкладки → «Переместить в другую панель».
         Если групп всего одна — создаёт вторую и переключает в splitter.
         Иначе переносит таб в соседнюю группу (следующую по порядку) и
-        переключается в splitter, чтобы юзер сразу видел обе.
+        переключается в splitter, чтобы юзер сразу видел обе. ВАЖНО: видны
+        ТОЛЬКО source и target — остальные группы сворачиваются (chip остаётся
+        в баре, клик по chip'у возвращает группу).
 
         Возвращает True, если перенос состоялся."""
         # Найдём source group
@@ -1268,18 +1292,31 @@ class SplitManager(QWidget):
             return False
 
         # Если групп <= 1 - создаём новую
+        created_new = False
         if len(self._groups) < 2:
             self.add_group()
+            created_new = True
+            # После add_group() src_idx мог стать не последним - пересчитаем
+            src_idx = next((i for i, g in enumerate(self._groups)
+                            if g['panel'] is source_panel), src_idx)
         # Целевая группа: следующая после source. Если source последний - предыдущая.
         target_idx = src_idx + 1 if src_idx + 1 < len(self._groups) else src_idx - 1
         if target_idx < 0 or target_idx >= len(self._groups):
             return False
         target_panel = self._groups[target_idx]['panel']
 
-        # Переключаемся в splitter-режим, чтобы юзер видел обе группы. Если
-        # уже splitter - оставляем как есть.
+        # Сворачиваем все панели КРОМЕ source и target. Делаем это ДО
+        # переключения в splitter, чтобы _set_layout_mode сразу применил
+        # правильную видимость и юзер не увидел мигание из 4 панелей в 2.
+        for i, g in enumerate(self._groups):
+            g['panel']._collapsed_in_splitter = (i != src_idx and i != target_idx)
+
+        # Переключаемся в splitter-режим. Если уже splitter — нужно вручную
+        # применить видимость, т.к. set_splitter_mode → no-op.
         if self._layout_mode != 'splitter':
             self.set_splitter_mode(True)
+        else:
+            self._apply_collapsed_visibility()
 
         # Переносим таб (та же логика что в _on_tab_dropped_on_panel)
         widget = source_panel.tabs.widget(tab_index)
@@ -1292,6 +1329,27 @@ class SplitManager(QWidget):
         self._set_active_group(target_idx)
         self.groupConfigChanged.emit()
         return True
+
+    def _apply_collapsed_visibility(self):
+        """В splitter-режиме применяет _collapsed_in_splitter и _hidden к
+        видимости каждой панели. В stack-режиме — no-op (там QStackedWidget
+        сам управляет видимостью)."""
+        if self._layout_mode != 'splitter':
+            return
+        for g in self._groups:
+            p = g['panel']
+            visible = (not getattr(p, '_hidden', False)
+                       and not getattr(p, '_collapsed_in_splitter', False))
+            p.setVisible(visible)
+
+    def expand_group_in_splitter(self, panel):
+        """Разворачивает свёрнутую группу: убирает _collapsed_in_splitter и
+        делает панель видимой. Используется при клике на chip свёрнутой
+        группы в splitter-режиме."""
+        if not hasattr(panel, '_collapsed_in_splitter'):
+            return
+        panel._collapsed_in_splitter = False
+        self._apply_collapsed_visibility()
 
     def get_current_viewer(self):
         tabs = self.active_group

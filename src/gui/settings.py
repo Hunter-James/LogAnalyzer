@@ -51,10 +51,13 @@ class SettingsDialog(QDialog):
     previewChanged = pyqtSignal(str, int)  # theme_name, font_size
 
     def __init__(self, current_theme, current_font_size, current_features,
-                 current_group_layout='splitter', parent=None):
-        # current_group_layout оставлен для backward-compat вызывающего кода,
-        # но в текущей итерации не используется (Stack-режим - единственный).
+                 current_group_layout='stack', remember_split_layout=False,
+                 parent=None):
         super().__init__(parent)
+        # Сохраняем для get_settings - чтобы вернуть как есть, если юзер
+        # не трогал соответствующий контрол (для current_group_layout сейчас
+        # нет UI - режим меняется через «Переместить в другую панель»).
+        self._current_group_layout = current_group_layout
         self.setWindowTitle("Настройки")
         # Увеличенный дефолтный размер: все 4 категории видны без скролла,
         # а длинные подписи (вроде «Режим разработчика (RAM-индикатор + ...)»)
@@ -137,6 +140,20 @@ class SettingsDialog(QDialog):
                 misc_layout.addWidget(cb)
             features_outer.addWidget(misc_box)
 
+        # Категория «Группы» — отдельные опции которые не описываются
+        # ui_features (это поведение приложения, а не видимость UI).
+        groups_box = QGroupBox("Группы")
+        groups_layout = QVBoxLayout(groups_box)
+        groups_layout.setContentsMargins(10, 8, 10, 8)
+        groups_layout.setSpacing(4)
+        self.cb_remember_split = _WrapCheckBox(
+            "Запоминать разделение экрана между запусками "
+            "(иначе при старте всегда одна группа видна, чтобы не грузить "
+            "много вкладок параллельно)")
+        self.cb_remember_split.setChecked(bool(remember_split_layout))
+        groups_layout.addWidget(self.cb_remember_split)
+        features_outer.addWidget(groups_box)
+
         features_outer.addStretch(1)
 
         # Заворачиваем в QScrollArea, чтобы при добавлении новых категорий
@@ -208,9 +225,11 @@ class SettingsDialog(QDialog):
 
     def get_settings(self):
         features = {key: cb.isChecked() for key, cb in self.feature_checkboxes.items()}
-        # group_layout зарезервирован под будущий Splitter-режим;
-        # пока всегда 'stack' (это единственный поддерживаемый режим).
+        # group_layout сейчас управляется не через диалог (Stack/Splitter
+        # меняется только через «Переместить в другую панель»), поэтому
+        # возвращаем переданное значение как есть.
         return (self.theme_combo.currentText(),
                 self.font_spin.value(),
                 features,
-                'stack')
+                self._current_group_layout,
+                self.cb_remember_split.isChecked())

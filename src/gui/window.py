@@ -142,13 +142,18 @@ class MainWindow(QMainWindow):
         self.split_manager.activeTabChanged.connect(self.on_active_tab_changed)
         self.split_manager.groupConfigChanged.connect(self.save_current_settings)
         self.split_manager.filesDroppedOnGroup.connect(self._on_files_dropped_on_group)
-        # Применяем сохранённый режим Stack/Splitter. Дефолт в SplitManager
-        # — stack (одна группа видна); если в settings явно splitter — пере-
-        # ключаемся, чтобы юзер сразу увидел несколько групп бок о бок.
-        saved_mode = self.settings.get("group_layout_mode")
-        if saved_mode == "splitter":
-            self.split_manager.set_splitter_mode(True)
-        elif saved_mode == "stack":
+        # Применяем сохранённый режим Stack/Splitter. Учитываем настройку
+        # remember_split_layout: если False (по умолчанию) — всегда стартуем
+        # в stack, чтобы юзер не получил неожиданно несколько одновременно
+        # грузящихся вкладок. Если True — восстанавливаемся как в settings.
+        if self.settings.get("remember_split_layout", False):
+            saved_mode = self.settings.get("group_layout_mode")
+            if saved_mode == "splitter":
+                self.split_manager.set_splitter_mode(True)
+            elif saved_mode == "stack":
+                self.split_manager.set_stack_mode(True)
+        else:
+            # Принудительно stack независимо от того, что в settings.
             self.split_manager.set_stack_mode(True)
 
     def create_widgets(self):
@@ -401,9 +406,12 @@ class MainWindow(QMainWindow):
         # устаревшее значение если юзер переключал режим через "Переместить
         # в другую панель" из контекстного меню вкладки.
         current_group_layout = self.split_manager.get_layout_mode()
+        remember_split = bool(self.settings.get("remember_split_layout", False))
         dlg = SettingsDialog(
             self.current_theme_name, self.current_font_size, self.ui_features,
-            current_group_layout=current_group_layout, parent=self,
+            current_group_layout=current_group_layout,
+            remember_split_layout=remember_split,
+            parent=self,
         )
         dlg.previewChanged.connect(self._preview_appearance)
 
@@ -414,7 +422,7 @@ class MainWindow(QMainWindow):
             self._preview_timer.stop()
 
         if result:
-            theme, size, features, group_layout = dlg.get_settings()
+            theme, size, features, group_layout, remember_split = dlg.get_settings()
             self.current_font_size = size
             self.ui_features = features
             self.apply_theme(theme)
@@ -422,6 +430,7 @@ class MainWindow(QMainWindow):
             # Применяем режим расположения групп
             self.split_manager.set_stack_mode(group_layout == 'stack')
             self.settings["group_layout_mode"] = group_layout
+            self.settings["remember_split_layout"] = bool(remember_split)
             self.save_current_settings()
         else:
             # Откатываем live-превью на исходные настройки (без сохранения).
@@ -1058,6 +1067,12 @@ class MainWindow(QMainWindow):
             # меню «Переместить в другую панель», и без перечитывания значение
             # из settings ушло бы устаревшим.
             "group_layout_mode": self.split_manager.get_layout_mode(),
+            # «Запоминать ли разделение экрана при следующем запуске».
+            # Перетаскивать сюда не нужно: значение меняется только через
+            # SettingsDialog, но сохранять явно — иначе при первом запуске
+            # ключа не будет, и при чтении load_settings возьмёт дефолт.
+            "remember_split_layout": bool(
+                self.settings.get("remember_split_layout", False)),
             # Индекс активной группы - при следующем запуске именно её
             # первый таб начнёт грузиться (а не нулевая по счёту, если был на
             # другой группе).

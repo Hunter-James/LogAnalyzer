@@ -138,12 +138,21 @@ def load_settings():
         })
     defaults["group_configs"] = normalized
 
-    # Режим расположения групп: 'splitter' (рядом, как сейчас) или
-    # 'stack' (видна только одна, остальные через клик по плашке).
-    mode = str(defaults.get("group_layout_mode") or "splitter").lower()
+    # Режим расположения групп: 'splitter' (рядом) или 'stack' (видна
+    # одна, остальные через клик по плашке). Дефолт — stack, чтобы
+    # при первом запуске не грузить много вкладок параллельно.
+    mode = str(defaults.get("group_layout_mode") or "stack").lower()
     if mode not in ("splitter", "stack"):
-        mode = "splitter"
+        mode = "stack"
     defaults["group_layout_mode"] = mode
+
+    # «Запоминать разделение экрана между запусками». False = при старте
+    # всегда восстанавливаемся в stack (безопаснее, lazy-load по одной
+    # вкладке). True = берём group_layout_mode из settings как есть. По
+    # умолчанию False, иначе юзер случайно перетащил таб в splitter, потом
+    # закрыл приложение, потом удивляется почему все 4 группы открываются
+    # параллельно при следующем запуске.
+    defaults["remember_split_layout"] = bool(defaults.get("remember_split_layout", False))
 
     # archived_groups больше не поддерживается (архивирование убрано в
     # пользу единой операции «Скрыть»). Чтобы не падать на старых settings.json -
