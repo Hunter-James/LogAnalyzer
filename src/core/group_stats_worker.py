@@ -59,19 +59,19 @@ def _classify_for_stats(line, logger):
     return None
 
 
+_COUNTER_KEYS = ('printed', 'scanned', 'noread',
+                 'verified', 'rejected', 'not_verified')
+
+
 def _new_batch_bucket():
     """Пустой контейнер для одной партии."""
     return {
-        'counters': {
-            'printed': 0,
-            'scanned': 0,
-            'noread': 0,
-            'verified': 0,
-            'rejected': 0,
-            'not_verified': 0,
-        },
+        'counters': {k: 0 for k in _COUNTER_KEYS},
         # path → сколько релевантных строк партии в этом файле
         'files': {},
+        # path → {counter_key: N} — нужно для «Сравнить с одним файлом»,
+        # чтобы не парсить файл повторно.
+        'per_file_counters': {},
         'first_ts': '',
         'first_file': '',
         'last_ts': '',
@@ -160,6 +160,12 @@ class GroupStatsWorker(QThread):
                         batches[current_batch] = bucket
                     bucket['counters'][key] += 1
                     bucket['files'][path] = bucket['files'].get(path, 0) + 1
+                    # Per-file counters для быстрого «Сравнить с одним файлом»
+                    pfc = bucket['per_file_counters'].get(path)
+                    if pfc is None:
+                        pfc = {k: 0 for k in _COUNTER_KEYS}
+                        bucket['per_file_counters'][path] = pfc
+                    pfc[key] += 1
                     if last_ts_in_line:
                         if not bucket['first_ts']:
                             bucket['first_ts'] = last_ts_in_line

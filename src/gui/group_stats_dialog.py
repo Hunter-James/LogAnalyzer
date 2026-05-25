@@ -420,38 +420,15 @@ class GroupStatsDialog(QDialog):
             self._open_compare_dialog(bid, file_path, bucket)
 
     def _open_compare_dialog(self, bid, file_path, bucket):
-        """Запускает worker для ОДНОГО файла (того же что и в группе) и
-        потом показывает сравнение."""
-        # Создаём «одно-файловый» worker на лету. Когда он завершится —
-        # открываем CompareDialog.
-        sub_worker = GroupStatsWorker([file_path])
-        # Простое busy-окошко
-        info = QMessageBox(QMessageBox.Icon.Information,
-                           "Сравнение партии",
-                           f"Парсим один файл для сравнения:\n"
-                           f"{os.path.basename(file_path)} …\n\n"
-                           f"Окно закроется автоматически.",
-                           QMessageBox.StandardButton.NoButton, self)
-        info.setStandardButtons(QMessageBox.StandardButton.NoButton)
-
-        def on_done(per_file_batches, error_msg):
-            info.accept()
-            if error_msg and error_msg != '__CANCELLED__':
-                QMessageBox.warning(self, "Сравнение", f"Ошибка: {error_msg}")
-                return
-            single = per_file_batches.get(bid, {
-                'counters': {k: 0 for k, _ in [
-                    ('printed', 0), ('scanned', 0), ('noread', 0),
-                    ('verified', 0), ('rejected', 0), ('not_verified', 0)]},
-                'codes': set(), 'files': {},
-            })
-            self._show_compare_dialog(bid, file_path, single, bucket)
-
-        sub_worker.finished.connect(on_done)
-        sub_worker.start()
-        # Сохраняем ссылку чтобы Python не GC'нул QThread
-        self._sub_worker = sub_worker
-        info.exec()
+        """Сравнение партии в одном файле с её агрегатом по всей группе.
+        Данные per-file уже собраны worker'ом на первичном проходе
+        (bucket['per_file_counters'][path]) — повторно файл НЕ парсим."""
+        per_file = bucket.get('per_file_counters', {}).get(file_path, {})
+        # «single» bucket для совместимости с _show_compare_dialog: те же
+        # ключи, но counters только этого файла. codes не сравниваем —
+        # юзер не запрашивал.
+        single = {'counters': per_file if per_file else {}, 'codes': set()}
+        self._show_compare_dialog(bid, file_path, single, bucket)
 
     def _show_compare_dialog(self, bid, file_path, single, group):
         """Показывает таблицу-сравнение single vs group в простом диалоге."""
