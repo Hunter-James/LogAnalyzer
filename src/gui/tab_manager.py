@@ -312,25 +312,102 @@ class GroupHeader(QFrame):
 
 
 class GroupPanel(QWidget):
-    """Тонкая обёртка над EditorTabWidget. Раньше держала свой собственный
-    header сверху, но в Stack-режиме header переехал в общий bar плашек в
-    SplitManager - здесь остался только сам tabs. Сохраняем класс ради
-    обратной совместимости и единого места для будущих расширений."""
+    """Группа табов с возможностью разделения экрана ВНУТРИ группы (как
+    Split editor в VS Code / IntelliJ). Содержит QSplitter с одним или
+    несколькими EditorTabWidget (panes); каждая pane показывает свой
+    набор табов одновременно с остальными.
+
+    .tabs — алиас на активную pane (та куда последний раз кликали или
+    куда добавляли таб). Нужен ради backward-compat кода, который привык
+    что в группе ровно один EditorTabWidget.
+
+    Сигналы:
+      paneAdded(EditorTabWidget) — создана новая pane через add_pane(),
+        SplitManager слушает чтобы подключить tabActivated / moveTabRequested
+        / tabDropped новой pane к своим слотам.
+      paneRemoved(EditorTabWidget) — pane удалена (закрылся последний
+        таб; единственная pane не удаляется)."""
 
     filesDropped = pyqtSignal(list)
     activateRequested = pyqtSignal()
+    paneAdded = pyqtSignal(object)
+    paneRemoved = pyqtSignal(object)
 
     def __init__(self, name, color, parent=None):
         super().__init__(parent)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
-        self.tabs = EditorTabWidget()
-        v.addWidget(self.tabs, 1)
+        # Splitter ровно для panes внутри группы. По умолчанию одна pane —
+        # выглядит как обычный TabWidget (handle сплиттера не отображается
+        # пока pane одна).
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setChildrenCollapsible(False)
+        v.addWidget(self._splitter, 1)
+        # Все panes в порядке отображения. self.tabs всегда указывает на
+        # одну из них.
+        self._panes = []
+        self.tabs = self._create_pane()
         # Сохраняем имя/цвет здесь же - они актуальны только при создании;
         # дальше синхронизируются через GroupHeader в bar'е SplitManager'а.
         self._group_name = name
         self._group_color = color
+
+    def _create_pane(self):
+        """Внутренний хелпер: создаёт EditorTabWidget, добавляет в splitter
+        и в список panes. Сигнал paneAdded НЕ эмитим (для самой первой
+        pane никто не подписан; для последующих используем add_pane)."""
+        pane = EditorTabWidget()
+        self._splitter.addWidget(pane)
+        self._panes.append(pane)
+        return pane
+
+    def add_pane(self):
+        """Создаёт новую pane справа от существующих. Эмитит paneAdded,
+        чтобы SplitManager подключил сигналы. Возвращает новую pane."""
+        pane = self._create_pane()
+        # Делим пространство равномерно — иначе новая pane получит почти 0px
+        n = len(self._panes)
+        total = self._splitter.size().width() or self.size().width() or 800
+        if total > 0:
+            self._splitter.setSizes([max(1, total // n)] * n)
+        self.paneAdded.emit(pane)
+        return pane
+
+    def remove_pane(self, pane):
+        """Удаляет указанную pane, если она пустая и не единственная.
+        Если pane — текущая self.tabs, переключаем на соседнюю.
+        Возвращает True если удалили."""
+        if pane not in self._panes:
+            return False
+        if len(self._panes) <= 1:
+            return False
+        if pane.count() > 0:
+            return False
+        # Переключаем .tabs если это была активная
+        if self.tabs is pane:
+            other = next((p for p in self._panes if p is not pane), None)
+            if other is not None:
+                self.tabs = other
+        self._panes.remove(pane)
+        pane.setParent(None)
+        pane.deleteLater()
+        self.paneRemoved.emit(pane)
+        return True
+
+    def panes(self):
+        """Возвращает копию списка всех panes (для итерации в SplitManager
+        / save_settings / iter_groups)."""
+        return list(self._panes)
+
+    def has_pane(self, w):
+        return w in self._panes
+
+    def set_active_pane(self, pane):
+        """Делает указанную pane активной (self.tabs). Используется когда
+        юзер кликает таб внутри pane или после move_tab_to_new_pane."""
+        if pane in self._panes:
+            self.tabs = pane
 
 
 class DraggableTabBar(QTabBar):
@@ -446,6 +523,9 @@ class EditorTabWidget(QTabWidget):
     moveTabRequested = pyqtSignal(int)
     tabActivated = pyqtSignal(QWidget)
     tabDropped = pyqtSignal()
+    # Эмитится когда после очередного removeTab() осталось 0 табов. Нужен
+    # GroupPanel'у чтобы удалить пустую сплит-pane (если она не единственная).
+    lastTabClosed = pyqtSignal()
 
     _drag_source = None
 
@@ -463,6 +543,14 @@ class EditorTabWidget(QTabWidget):
 
         self.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tabBar().customContextMenuRequested.connect(self.show_context_menu)
+
+    def tabRemoved(self, index):
+        """Qt-callback: вызывается после каждого removeTab. Используем чтобы
+        уведомить GroupPanel о пустой сплит-pane (он удалит её, если она
+        не единственная)."""
+        super().tabRemoved(index)
+        if self.count() == 0:
+            self.lastTabClosed.emit()
 
     def close_tab(self, index):
         if index in self.tab_bar.selected_indices:
@@ -798,8 +886,13 @@ class SplitManager(QWidget):
                 return
 
     def iter_groups(self):
+        """Итерирует ВСЕ EditorTabWidget'ы во всех группах. С появлением
+        intra-group split в группе может быть несколько panes - возвращаем
+        каждую отдельно, чтобы вызывающий код (LRU, save, font update и т.д.)
+        проходил по всем виджетам, а не только по первой pane."""
         for g in self._groups:
-            yield g['panel'].tabs
+            for pane in g['panel'].panes():
+                yield pane
 
     def iter_panels(self):
         return [g['panel'] for g in self._groups]
@@ -822,6 +915,22 @@ class SplitManager(QWidget):
         self._set_active_group(index, emit_signal=emit_signal)
 
     # ----- Управление группами -----
+
+    def _connect_pane_signals(self, pane, panel):
+        """Подключает tabActivated / tabDropped / moveTabRequested любой pane
+        (изначальной или созданной через GroupPanel.add_pane) к слотам
+        SplitManager'а. Без этого новые panes были бы 'мертвы' — клик на
+        табе не активировал бы группу, drag&drop не работал бы."""
+        pane.tabActivated.connect(self._on_tab_activated_in_panel)
+        pane.tabDropped.connect(self.check_visibility)
+        # «Переместить в другую панель» теперь делает split ВНУТРИ группы
+        # (вместо межгруппового splitter mode из предыдущей версии).
+        pane.moveTabRequested.connect(
+            lambda idx, p=panel, src=pane: self.move_tab_to_new_pane(p, src, idx))
+        # Когда пользователь закрывает последний таб в pane (через крестик
+        # или Закрыть все), удаляем pane, если она не единственная.
+        pane.lastTabClosed.connect(
+            lambda p=panel, src=pane: p.remove_pane(src))
 
     def _add_group_internal(self, name, color, hidden=False):
         """Создаёт пару (chip, panel) и регистрирует в bar+stack.
@@ -856,14 +965,14 @@ class SplitManager(QWidget):
         chip.groupDroppedHere.connect(
             lambda src_chip, t=chip: self._on_group_dropped_here(src_chip, t))
 
-        # И от tabs - tabActivated сигнализирует что юзер кликнул внутри
-        panel.tabs.tabActivated.connect(self._on_tab_activated_in_panel)
-        panel.tabs.tabDropped.connect(self.check_visibility)
-        # «Переместить в другую панель» из контекстного меню вкладки —
-        # перебрасывает таб в соседнюю группу и автоматически переключает
-        # в splitter-режим, чтобы юзер сразу видел обе.
-        panel.tabs.moveTabRequested.connect(
-            lambda idx, p=panel: self.move_tab_to_other_panel(p, idx))
+        # Подключаем сигналы первой pane группы. При создании дополнительных
+        # panes (через GroupPanel.add_pane) их сигналы подключим в обработчике
+        # paneAdded ниже.
+        self._connect_pane_signals(panel.tabs, panel)
+        panel.paneAdded.connect(
+            lambda new_pane, pn=panel: self._connect_pane_signals(new_pane, pn))
+        # Если из pane вынесли последний таб — она автоматически удаляется.
+        panel.paneRemoved.connect(lambda p: None)
 
         self._bar.add_chip(chip)
         self._container.addWidget(panel)
@@ -955,19 +1064,19 @@ class SplitManager(QWidget):
                 self.activeTabChanged.emit(None)
 
     def _unload_inactive_groups(self, keep_index):
-        """Вызывает viewer.unload() у всех viewer'ов в НЕ-активных группах.
-        Это освобождает RAM; при возврате на группу файлы lazy-перезагрузятся."""
+        """Вызывает viewer.unload() у всех viewer'ов во всех panes НЕ-активных
+        групп. Освобождает RAM; при возврате на группу файлы lazy-перезагрузятся."""
         for i, g in enumerate(self._groups):
             if i == keep_index:
                 continue
-            tabs = g['panel'].tabs
-            for j in range(tabs.count()):
-                w = tabs.widget(j)
-                if hasattr(w, 'unload') and getattr(w, '_loaded', False):
-                    try:
-                        w.unload()
-                    except Exception:
-                        pass
+            for pane in g['panel'].panes():
+                for j in range(pane.count()):
+                    w = pane.widget(j)
+                    if hasattr(w, 'unload') and getattr(w, '_loaded', False):
+                        try:
+                            w.unload()
+                        except Exception:
+                            pass
 
     def _on_chip_clicked(self, panel):
         idx = next((i for i, g in enumerate(self._groups)
@@ -981,13 +1090,15 @@ class SplitManager(QWidget):
         self._set_active_group(idx)
 
     def _on_tab_activated_in_panel(self, widget):
-        """Юзер кликнул по табу внутри панели - найдём её и активируем."""
+        """Юзер кликнул по табу внутри pane — найдём её GroupPanel и
+        активируем. Внутри группы может быть несколько panes (split editor) —
+        активной становится та, в которой кликнули (panel.set_active_pane)."""
         sender = self.sender()
         for i, g in enumerate(self._groups):
-            if g['panel'].tabs is sender:
-                # Не вызываем _set_active_group целиком - только эмит сигнала
-                # о смене активного таба, потому что группа уже была активной
-                # (Stack показывает её, табы внутри переключают друг друга).
+            panel = g['panel']
+            if panel.has_pane(sender):
+                # active pane внутри группы = та куда кликнули
+                panel.set_active_pane(sender)
                 if self._active_index != i:
                     self._set_active_group(i, emit_signal=False)
                 if widget is not None:
@@ -1009,7 +1120,8 @@ class SplitManager(QWidget):
         if len(self._groups) <= 1:
             return
         from PyQt6.QtWidgets import QMessageBox
-        n_files = panel.tabs.count()
+        # Считаем файлы по ВСЕМ panes группы (split editor)
+        n_files = sum(p.count() for p in panel.panes())
         if n_files > 0:
             r = QMessageBox.question(
                 self, "Удалить группу",
@@ -1029,17 +1141,18 @@ class SplitManager(QWidget):
         if group_idx is None:
             return
         group = self._groups[group_idx]
-        # Закрываем все табы и удаляем виджеты
-        while panel.tabs.count() > 0:
-            w = panel.tabs.widget(0)
-            panel.tabs.removeTab(0)
-            if w is not None:
-                if hasattr(w, 'unload'):
-                    try:
-                        w.unload()
-                    except Exception:
-                        pass
-                w.deleteLater()
+        # Закрываем все табы во всех panes и удаляем виджеты
+        for pane in panel.panes():
+            while pane.count() > 0:
+                w = pane.widget(0)
+                pane.removeTab(0)
+                if w is not None:
+                    if hasattr(w, 'unload'):
+                        try:
+                            w.unload()
+                        except Exception:
+                            pass
+                    w.deleteLater()
         # Убираем chip из bar'а и panel из текущего контейнера
         self._bar.remove_chip(group['chip'])
         self._container.removeWidget(panel)
@@ -1152,14 +1265,18 @@ class SplitManager(QWidget):
         ]
 
     def get_open_files_per_group(self):
+        """Список списков: для каждой группы — все файлы во всех её panes.
+        Intra-group split НЕ сохраняется между запусками — все табы
+        восстанавливаются в одной pane группы (юзер сам разделит при
+        необходимости через «Переместить в другую панель»)."""
         result = []
         for g in self._groups:
             files = []
-            tabs = g['panel'].tabs
-            for i in range(tabs.count()):
-                w = tabs.widget(i)
-                if isinstance(w, LogViewerWidget):
-                    files.append(w.file_path)
+            for pane in g['panel'].panes():
+                for i in range(pane.count()):
+                    w = pane.widget(i)
+                    if isinstance(w, LogViewerWidget):
+                        files.append(w.file_path)
             result.append(files)
         return result
 
@@ -1274,61 +1391,48 @@ class SplitManager(QWidget):
         if 0 <= prev_active_idx < len(self._groups):
             self._set_active_group(prev_active_idx, emit_signal=False)
 
-    def move_tab_to_other_panel(self, source_panel, tab_index):
+    def move_tab_to_new_pane(self, group_panel, source_pane, tab_index):
         """Контекстное меню вкладки → «Переместить в другую панель».
-        Если групп всего одна — создаёт вторую и переключает в splitter.
-        Иначе переносит таб в соседнюю группу (следующую по порядку) и
-        переключается в splitter, чтобы юзер сразу видел обе. ВАЖНО: видны
-        ТОЛЬКО source и target — остальные группы сворачиваются (chip остаётся
-        в баре, клик по chip'у возвращает группу).
+        Делает split ВНУТРИ той же группы: создаёт новую pane справа от
+        source_pane (или использует существующую, если их уже >=2) и
+        переносит туда таб.
 
-        Возвращает True, если перенос состоялся."""
-        # Найдём source group
-        src_idx = next((i for i, g in enumerate(self._groups)
-                        if g['panel'] is source_panel), -1)
-        if src_idx < 0:
+        Это intra-group split — как «Split editor right» в VS Code: видишь
+        два файла одной группы рядом, можно сравнивать. Между ГРУППАМИ
+        разделения не делаем — на скриншоте было ровно эта проблема:
+        4 группы → 4 столбца после move, что не было целью."""
+        # Валидация
+        if not isinstance(source_pane, EditorTabWidget):
             return False
-        if not (0 <= tab_index < source_panel.tabs.count()):
+        if not group_panel.has_pane(source_pane):
+            return False
+        if not (0 <= tab_index < source_pane.count()):
             return False
 
-        # Если групп <= 1 - создаём новую
-        created_new = False
-        if len(self._groups) < 2:
-            self.add_group()
-            created_new = True
-            # После add_group() src_idx мог стать не последним - пересчитаем
-            src_idx = next((i for i, g in enumerate(self._groups)
-                            if g['panel'] is source_panel), src_idx)
-        # Целевая группа: следующая после source. Если source последний - предыдущая.
-        target_idx = src_idx + 1 if src_idx + 1 < len(self._groups) else src_idx - 1
-        if target_idx < 0 or target_idx >= len(self._groups):
-            return False
-        target_panel = self._groups[target_idx]['panel']
-
-        # Сворачиваем все панели КРОМЕ source и target. Делаем это ДО
-        # переключения в splitter, чтобы _set_layout_mode сразу применил
-        # правильную видимость и юзер не увидел мигание из 4 панелей в 2.
-        for i, g in enumerate(self._groups):
-            g['panel']._collapsed_in_splitter = (i != src_idx and i != target_idx)
-
-        # Переключаемся в splitter-режим. Если уже splitter — нужно вручную
-        # применить видимость, т.к. set_splitter_mode → no-op.
-        if self._layout_mode != 'splitter':
-            self.set_splitter_mode(True)
-        else:
-            self._apply_collapsed_visibility()
-
-        # Переносим таб (та же логика что в _on_tab_dropped_on_panel)
-        widget = source_panel.tabs.widget(tab_index)
-        title = source_panel.tabs.tabText(tab_index)
+        widget = source_pane.widget(tab_index)
+        title = source_pane.tabText(tab_index)
         if widget is None:
             return False
-        source_panel.tabs.removeTab(tab_index)
-        target_panel.tabs.addTab(widget, title)
-        target_panel.tabs.setCurrentWidget(widget)
-        self._set_active_group(target_idx)
+
+        # Целевая pane: если в группе уже есть другая — используем её. Иначе
+        # создаём новую справа от source. Так двойное «Переместить» подряд
+        # не плодит бесконечно panes, а просто перебрасывает таб туда-сюда.
+        existing_other = next(
+            (p for p in group_panel.panes() if p is not source_pane), None)
+        target_pane = existing_other if existing_other is not None else group_panel.add_pane()
+
+        # Перенос
+        source_pane.removeTab(tab_index)
+        target_pane.addTab(widget, title)
+        target_pane.setCurrentWidget(widget)
+        group_panel.set_active_pane(target_pane)
+        # remove_pane сам сработает по lastTabClosed, если source стал пустой
         self.groupConfigChanged.emit()
         return True
+
+    # Backward-compat: старое имя метода. Делегирует на новый intra-group split.
+    def move_tab_to_other_panel(self, source_panel, tab_index):
+        return self.move_tab_to_new_pane(source_panel, source_panel.tabs, tab_index)
 
     def _apply_collapsed_visibility(self):
         """В splitter-режиме применяет _collapsed_in_splitter и _hidden к
