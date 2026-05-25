@@ -1421,12 +1421,36 @@ class SplitManager(QWidget):
             (p for p in group_panel.panes() if p is not source_pane), None)
         target_pane = existing_other if existing_other is not None else group_panel.add_pane()
 
-        # Перенос
-        source_pane.removeTab(tab_index)
-        target_pane.addTab(widget, title)
-        target_pane.setCurrentWidget(widget)
+        # ПРОИЗВОДИТЕЛЬНОСТЬ:
+        # 1) blockSignals(True) на обеих pane'ях — иначе каскад currentChanged
+        #    → tabActivated → activeTabChanged запускает release_heavy_caches()
+        #    для всех других viewer'ов многократно (3+ раза за один move).
+        #    На больших логах с _code_history_index это 5-10 сек чистого
+        #    QTreeWidgetItem.clear().
+        # 2) setUpdatesEnabled(False) на группе — не перерисовываем
+        #    промежуточные кадры (после remove, после add, после setCurrent).
+        group_panel.setUpdatesEnabled(False)
+        source_pane.blockSignals(True)
+        target_pane.blockSignals(True)
+        try:
+            source_pane.removeTab(tab_index)
+            target_pane.addTab(widget, title)
+            target_pane.setCurrentWidget(widget)
+        finally:
+            source_pane.blockSignals(False)
+            target_pane.blockSignals(False)
+            group_panel.setUpdatesEnabled(True)
+
         group_panel.set_active_pane(target_pane)
-        # remove_pane сам сработает по lastTabClosed, если source стал пустой
+        # Если source pane стал пустым — lastTabClosed мы задавили
+        # blockSignals выше, поэтому проверяем вручную.
+        if source_pane.count() == 0:
+            group_panel.remove_pane(source_pane)
+        # Один эмит после всех операций — чтобы on_active_tab_changed
+        # выполнился ровно один раз. Если виджет был current в source pane
+        # и стал current в target — это «активный таб не сменился», и
+        # on_active_tab_changed short-circuit'нётся (см. _last_active_viewer).
+        self.activeTabChanged.emit(widget)
         self.groupConfigChanged.emit()
         return True
 

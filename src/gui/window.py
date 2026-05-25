@@ -610,6 +610,15 @@ class MainWindow(QMainWindow):
             self.hide_busy()
 
     def on_active_tab_changed(self, viewer):
+        # Если активный таб не сменился - пропускаем всю тяжёлую работу.
+        # Иначе при move_tab_to_new_pane (intra-group split) каскад
+        # currentChanged → tabActivated → activeTabChanged запускал
+        # release_heavy_caches() для других viewer'ов многократно — clear()
+        # деревьев с десятками тысяч QTreeWidgetItem занимает секунды.
+        if viewer is getattr(self, '_last_active_viewer', None):
+            return
+        self._last_active_viewer = viewer
+
         # Показываем полный путь активного файла в заголовке окна (стиль Notepad++)
         if viewer is not None and hasattr(viewer, 'file_path'):
             self.setWindowTitle(f"{viewer.file_path} - Log Analyzer v{APP_VERSION}")
