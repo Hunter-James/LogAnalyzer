@@ -10,9 +10,12 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QProgressBar, QPushButton, QTreeWidget,
                              QTreeWidgetItem, QStackedWidget, QWidget,
-                             QAbstractItemView)
+                             QAbstractItemView, QLineEdit, QFileDialog,
+                             QMessageBox, QMenu)
 
 from core.group_stats_worker import GroupStatsWorker
+from core.group_stats_export import (
+    export_csv, export_json, export_html, export_xlsx)
 from core.models import NO_BATCH
 from config import THEMES
 
@@ -31,6 +34,8 @@ class GroupStatsDialog(QDialog):
         self.setWindowTitle(f"Сводка партий — {group_name}" if group_name else "Сводка партий")
         self.resize(900, 700)
         self._theme_name = theme_name if theme_name in THEMES else 'Default'
+        # Хранится после _on_finished — нужно для экспорта/сравнения/фильтра
+        self._batches = {}
 
         v = QVBoxLayout(self)
 
@@ -97,12 +102,34 @@ class GroupStatsDialog(QDialog):
         self._lbl_summary = QLabel("")
         layout.addWidget(self._lbl_summary)
 
+        # Фильтр + кнопки экспорта в одной строке над деревом
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Фильтр:"))
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText(
+            "Часть batch_id или кода — скроет партии без совпадений")
+        self._filter_edit.setClearButtonEnabled(True)
+        self._filter_edit.textChanged.connect(self._apply_filter)
+        filter_row.addWidget(self._filter_edit, 1)
+
+        self._btn_export = QPushButton("💾 Экспорт …")
+        self._btn_export.setToolTip(
+            "Сохранить результат в HTML (с раскрывающимися блоками), "
+            "XLSX (с группировкой строк), CSV (3 файла: сводка + файлы + коды) "
+            "или JSON.")
+        self._btn_export.clicked.connect(self._on_export)
+        filter_row.addWidget(self._btn_export)
+        layout.addLayout(filter_row)
+
         tree = QTreeWidget()
         tree.setHeaderLabels(["Партия / Категория", "Значение"])
         tree.setColumnWidth(0, 480)
         tree.setUniformRowHeights(True)
         tree.setAlternatingRowColors(True)
         tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        # Контекстное меню: «Сравнить с одним файлом»
+        tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         layout.addWidget(tree, 1)
 
         btn_row = QHBoxLayout()
@@ -159,8 +186,11 @@ class GroupStatsDialog(QDialog):
         else:
             self._lbl_summary.setText(
                 f"<b>Найдено партий: {len(batches)}.</b> "
-                f"Двойной клик по партии — развернуть/свернуть."
+                f"Двойной клик по партии — развернуть/свернуть. "
+                f"Правый клик — сравнить с одним файлом."
             )
+        # Сохраняем для экспорта / сравнения / фильтра
+        self._batches = batches
         self._populate_tree(batches)
         self._stack.setCurrentWidget(self._result_widget)
 
@@ -209,6 +239,9 @@ class GroupStatsDialog(QDialog):
                     title = (f"Партия {bid}  —  {total_events:,} событий, "
                              f"{len(files)} файл(ов), {len(codes):,} уникальных кодов")
                 root = QTreeWidgetItem(self._tree, [title, ""])
+                # Ассоциация: batch_id хранится в UserRole, нужен для
+                # контекстного меню «Сравнить с файлом» и для фильтра.
+                root.setData(0, Qt.ItemDataRole.UserRole, ('batch', bid))
 
                 # 📊 Статистика
                 stats_node = QTreeWidgetItem(root, ["📊 Статистика", ""])
@@ -260,6 +293,206 @@ class GroupStatsDialog(QDialog):
                             f"(лимит {self.MAX_CODES_PER_BATCH})", ""])
         finally:
             self._tree.setUpdatesEnabled(True)
+
+    # ----- Фильтр по дереву -----
+
+    def _apply_filter(self, text):
+        """Скрывает root-узлы партий, чьи batch_id и коды не содержат
+        введённую подстроку (case-insensitive). Пустой текст — показать всё.
+
+        Дети root'а (Статистика / Файлы / Диапазон / Коды) не фильтруем —
+        они подгружают/группируют контент, нет смысла резать."""
+        needle = text.strip().lower()
+        for i in range(self._tree.topLevelItemCount()):
+            root = self._tree.topLevelItem(i)
+            if not needle:
+                root.setHidden(False)
+                continue
+            data = root.data(0, Qt.ItemDataRole.UserRole)
+            if not data or data[0] != 'batch':
+                continue
+            bid = data[1]
+            bucket = self._batches.get(bid)
+            if bucket is None:
+                root.setHidden(True)
+                continue
+            # match если needle в batch_id или в любом из кодов
+            bid_str = ('' if bid == NO_BATCH else str(bid)).lower()
+            match = needle in bid_str
+            if not match:
+                # Проверяем коды (без iter по большому set — any() с
+                # генератором даст short-circuit на первом совпадении)
+                match = any(needle in c.lower() for c in bucket['codes'])
+            root.setHidden(not match)
+
+    # ----- Экспорт -----
+
+    def _on_export(self):
+        if not self._batches:
+            return
+        # QFileDialog с фильтром по формату; расширение определяет формат.
+        filters = (
+            "HTML с раскрывающимися блоками (*.html);;"
+            "Excel (*.xlsx);;"
+            "CSV — 3 файла, разделитель ; (*.csv);;"
+            "JSON (*.json)"
+        )
+        path, selected = QFileDialog.getSaveFileName(
+            self, "Сохранить сводку партий", "group_stats.html", filters)
+        if not path:
+            return
+
+        # По выбранному фильтру определяем формат и подставляем расширение,
+        # если юзер его не дописал.
+        if 'html' in selected.lower():
+            fmt = 'html'
+        elif 'xlsx' in selected.lower() or 'excel' in selected.lower():
+            fmt = 'xlsx'
+        elif 'csv' in selected.lower():
+            fmt = 'csv'
+        elif 'json' in selected.lower():
+            fmt = 'json'
+        else:
+            # Fallback по расширению
+            ext = os.path.splitext(path)[1].lower()
+            fmt = {'.html': 'html', '.xlsx': 'xlsx',
+                   '.csv': 'csv', '.json': 'json'}.get(ext, 'html')
+
+        if not os.path.splitext(path)[1]:
+            path = path + '.' + fmt
+
+        try:
+            if fmt == 'html':
+                main, extras = export_html(path, self._batches)
+            elif fmt == 'xlsx':
+                main, extras = export_xlsx(path, self._batches)
+            elif fmt == 'csv':
+                main, extras = export_csv(path, self._batches)
+            elif fmt == 'json':
+                main, extras = export_json(path, self._batches)
+            else:
+                return
+        except RuntimeError as e:
+            # openpyxl не установлен и т.п.
+            QMessageBox.warning(self, "Экспорт", str(e))
+            return
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка экспорта", str(e))
+            return
+
+        # Сообщаем юзеру что сохранили
+        msg = f"Сохранено:\n• {main}"
+        if extras:
+            msg += "\n\nДополнительно:\n"
+            msg += "\n".join(f"• {p}" for p in extras)
+        QMessageBox.information(self, "Экспорт", msg)
+
+    # ----- Сравнение партии с одним файлом -----
+
+    def _on_tree_context_menu(self, pos):
+        """Правый клик по партии → «Сравнить с одним файлом» → подменю с
+        файлами где эта партия встречается."""
+        item = self._tree.itemAt(pos)
+        if item is None:
+            return
+        # Поднимаемся до root (если кликнули по подноду — статистика и т.п.)
+        root = item
+        while root.parent() is not None:
+            root = root.parent()
+        data = root.data(0, Qt.ItemDataRole.UserRole)
+        if not data or data[0] != 'batch':
+            return
+        bid = data[1]
+        bucket = self._batches.get(bid)
+        if bucket is None or not bucket['files']:
+            return
+
+        menu = QMenu(self)
+        submenu = menu.addMenu("📊 Сравнить с одним файлом")
+        for fp in sorted(bucket['files'].keys()):
+            act = submenu.addAction(os.path.basename(fp))
+            act.setData(fp)
+        chosen = menu.exec(self._tree.mapToGlobal(pos))
+        if chosen is None:
+            return
+        file_path = chosen.data()
+        if file_path:
+            self._open_compare_dialog(bid, file_path, bucket)
+
+    def _open_compare_dialog(self, bid, file_path, bucket):
+        """Запускает worker для ОДНОГО файла (того же что и в группе) и
+        потом показывает сравнение."""
+        # Создаём «одно-файловый» worker на лету. Когда он завершится —
+        # открываем CompareDialog.
+        sub_worker = GroupStatsWorker([file_path])
+        # Простое busy-окошко
+        info = QMessageBox(QMessageBox.Icon.Information,
+                           "Сравнение партии",
+                           f"Парсим один файл для сравнения:\n"
+                           f"{os.path.basename(file_path)} …\n\n"
+                           f"Окно закроется автоматически.",
+                           QMessageBox.StandardButton.NoButton, self)
+        info.setStandardButtons(QMessageBox.StandardButton.NoButton)
+
+        def on_done(per_file_batches, error_msg):
+            info.accept()
+            if error_msg and error_msg != '__CANCELLED__':
+                QMessageBox.warning(self, "Сравнение", f"Ошибка: {error_msg}")
+                return
+            single = per_file_batches.get(bid, {
+                'counters': {k: 0 for k, _ in [
+                    ('printed', 0), ('scanned', 0), ('noread', 0),
+                    ('verified', 0), ('rejected', 0), ('not_verified', 0)]},
+                'codes': set(), 'files': {},
+            })
+            self._show_compare_dialog(bid, file_path, single, bucket)
+
+        sub_worker.finished.connect(on_done)
+        sub_worker.start()
+        # Сохраняем ссылку чтобы Python не GC'нул QThread
+        self._sub_worker = sub_worker
+        info.exec()
+
+    def _show_compare_dialog(self, bid, file_path, single, group):
+        """Показывает таблицу-сравнение single vs group в простом диалоге."""
+        from PyQt6.QtWidgets import QDialog as _QDlg, QTableWidget, QTableWidgetItem
+        dlg = _QDlg(self)
+        dlg.setWindowTitle(f"Сравнение партии {bid if bid != NO_BATCH else '(вне партии)'}")
+        dlg.resize(600, 420)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(
+            f"<b>Партия:</b> {bid if bid != NO_BATCH else 'Вне партии'}<br>"
+            f"<b>Файл:</b> {os.path.basename(file_path)}"))
+        tbl = QTableWidget()
+        from core.group_stats_export import _COUNTER_LABELS
+        rows = list(_COUNTER_LABELS) + [('__total__', 'Всего событий'),
+                                         ('__codes__', 'Уникальных кодов')]
+        tbl.setRowCount(len(rows))
+        tbl.setColumnCount(3)
+        tbl.setHorizontalHeaderLabels(['Категория', 'В этом файле',
+                                       'Во всей группе'])
+        for i, (key, label) in enumerate(rows):
+            tbl.setItem(i, 0, QTableWidgetItem(label))
+            if key == '__total__':
+                s = sum(single['counters'].values())
+                g = sum(group['counters'].values())
+            elif key == '__codes__':
+                s = len(single.get('codes', set()))
+                g = len(group['codes'])
+            else:
+                s = single['counters'].get(key, 0)
+                g = group['counters'].get(key, 0)
+            tbl.setItem(i, 1, QTableWidgetItem(f"{s:,}"))
+            tbl.setItem(i, 2, QTableWidgetItem(f"{g:,}"))
+        tbl.resizeColumnsToContents()
+        v.addWidget(tbl)
+        btn_close = QPushButton("Закрыть")
+        btn_close.clicked.connect(dlg.accept)
+        h = QHBoxLayout()
+        h.addStretch()
+        h.addWidget(btn_close)
+        v.addLayout(h)
+        dlg.exec()
 
     # ----- Cleanup -----
 
