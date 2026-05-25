@@ -1419,78 +1419,51 @@ class SplitManager(QWidget):
         # не плодит бесконечно panes, а просто перебрасывает таб туда-сюда.
         existing_other = next(
             (p for p in group_panel.panes() if p is not source_pane), None)
-        from PyQt6.QtCore import QElapsedTimer
-        _t = QElapsedTimer()
-        _t.start()
         target_pane = existing_other if existing_other is not None else group_panel.add_pane()
-        _add_pane_ms = _t.elapsed()
 
-        # ПРОИЗВОДИТЕЛЬНОСТЬ. blockSignals(True) на pane'ях — иначе каскад
-        # currentChanged → tabActivated → activeTabChanged многократно
-        # запускает release_heavy_caches() на всех других viewer'ах
-        # (QTreeWidget.clear() на десятках тысяч элементов = секунды).
-        # setUpdatesEnabled(False) — Qt не перерисовывает промежуточные
-        # кадры.
-        # ВРЕМЕННО: профайлим каждую операцию в crash_log, чтобы понять
-        # где именно тормозит на больших логах.
-        timer = QElapsedTimer()
-        timer.start()
-        timings = {'add_pane': _add_pane_ms}
+        # ПРОИЗВОДИТЕЛЬНОСТЬ. На больших логах addTab занимает ~1.3 секунды
+        # (профайл показал 99% времени в setParent крупного LogViewerWidget —
+        # Qt пересчитывает layout всех QTreeWidget'ов / QListView внутри).
+        # Это лимит Qt — ускорить можно только uniform row heights на trees
+        # (см. log_viewer.py) и заморозкой sigналов / updates.
+        #
+        # Показываем busy-оверлей и processEvents ДО блокирующей операции,
+        # чтобы юзер увидел спиннер и понял, что приложение работает.
+        window = self.window()
+        show_busy_fn = getattr(window, 'show_busy', None)
+        hide_busy_fn = getattr(window, 'hide_busy', None)
+        if callable(show_busy_fn):
+            show_busy_fn(f"Перемещение «{title}» в другую панель ...")
+            # processEvents чтобы overlay отрисовался ДО addTab (иначе
+            # юзер увидит спиннер только ПОСЛЕ операции).
+            QApplication.processEvents()
 
         group_panel.setUpdatesEnabled(False)
         source_pane.blockSignals(True)
         target_pane.blockSignals(True)
         target_was_empty = target_pane.count() == 0
         try:
-            t0 = timer.elapsed()
             source_pane.removeTab(tab_index)
-            timings['removeTab'] = timer.elapsed() - t0
-
-            t0 = timer.elapsed()
             target_pane.addTab(widget, title)
-            timings['addTab'] = timer.elapsed() - t0
-
+            # Если target была пустой, addTab уже сделал её tab активным.
             if not target_was_empty:
-                t0 = timer.elapsed()
                 target_pane.setCurrentWidget(widget)
-                timings['setCurrentWidget'] = timer.elapsed() - t0
         finally:
             source_pane.blockSignals(False)
             target_pane.blockSignals(False)
-            t0 = timer.elapsed()
             group_panel.setUpdatesEnabled(True)
-            timings['setUpdatesEnabled(True)'] = timer.elapsed() - t0
 
-        t0 = timer.elapsed()
         group_panel.set_active_pane(target_pane)
-        timings['set_active_pane'] = timer.elapsed() - t0
-
         # Если source pane стал пустым — lastTabClosed мы задавили
         # blockSignals выше, поэтому проверяем вручную.
         if source_pane.count() == 0:
-            t0 = timer.elapsed()
             group_panel.remove_pane(source_pane)
-            timings['remove_pane'] = timer.elapsed() - t0
-
-        t0 = timer.elapsed()
+        # Один эмит после всех операций — чтобы on_active_tab_changed
+        # выполнился ровно один раз.
         self.activeTabChanged.emit(widget)
-        timings['activeTabChanged.emit'] = timer.elapsed() - t0
-
-        t0 = timer.elapsed()
         self.groupConfigChanged.emit()
-        timings['groupConfigChanged.emit'] = timer.elapsed() - t0
-
-        total = timer.elapsed()
-        # Логируем профайл, если операция заняла > 200мс. Юзер найдёт
-        # лог в crash_log.txt рядом с .exe и пришлёт.
-        if total > 200:
-            import logging
-            _log = logging.getLogger('tab_manager')
-            _log.warning(
-                "SLOW move_tab_to_new_pane: total=%dms, breakdown=%s",
-                total,
-                ', '.join(f'{k}={v}ms' for k, v in timings.items() if v > 0),
-            )
+        if callable(hide_busy_fn):
+            hide_busy_fn()
         return True
 
     # Backward-compat: старое имя метода. Делегирует на новый intra-group split.

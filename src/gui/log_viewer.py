@@ -437,6 +437,10 @@ class LogViewerWidget(QWidget):
         # Search Journal Tree
         self.search_journal_tree = QTreeWidget()
         self.search_journal_tree.setHeaderHidden(True)
+        # UniformRowHeights — Qt не пересчитывает высоту каждой строки при
+        # layout pass'е. Критично при setParent (move_tab_to_new_pane) —
+        # без этого Qt идёт по всем items дерева синхронно на UI потоке.
+        self.search_journal_tree.setUniformRowHeights(True)
         # Включаем множественное выделение (с Shift / Ctrl)
         self.search_journal_tree.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -449,6 +453,7 @@ class LogViewerWidget(QWidget):
         # Batches Tree - дерево партий с lazy-load дочерних строк
         self.batches_tree = QTreeWidget()
         self.batches_tree.setHeaderHidden(True)
+        self.batches_tree.setUniformRowHeights(True)
         self.batches_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.batches_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.batches_tree.customContextMenuRequested.connect(self._show_batches_context_menu)
@@ -1218,6 +1223,10 @@ class LogViewerWidget(QWidget):
         self.code_history_tree.setColumnWidth(0, 320)
         self.code_history_tree.setColumnWidth(1, 220)
         self.code_history_tree.setAlternatingRowColors(True)
+        # UniformRowHeights — критично для производительности setParent при
+        # move_tab_to_new_pane. На больших логах дерево может иметь сотни
+        # тысяч QTreeWidgetItem, без uniform Qt пересчитывает height каждой.
+        self.code_history_tree.setUniformRowHeights(True)
         self.code_history_tree.itemDoubleClicked.connect(
             self._on_code_history_item_double_clicked)
         self.code_history_tree.itemExpanded.connect(
