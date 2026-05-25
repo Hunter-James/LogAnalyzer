@@ -1419,66 +1419,78 @@ class SplitManager(QWidget):
         # не плодит бесконечно panes, а просто перебрасывает таб туда-сюда.
         existing_other = next(
             (p for p in group_panel.panes() if p is not source_pane), None)
+        from PyQt6.QtCore import QElapsedTimer
+        _t = QElapsedTimer()
+        _t.start()
         target_pane = existing_other if existing_other is not None else group_panel.add_pane()
+        _add_pane_ms = _t.elapsed()
 
-        # ПРОИЗВОДИТЕЛЬНОСТЬ (без этих мер move занимает 5-10 секунд на
-        # больших логах):
-        # 1) blockSignals(True) на pane'ях — каскад currentChanged →
-        #    tabActivated → activeTabChanged иначе многократно запускает
-        #    release_heavy_caches() на всех других viewer'ах (QTreeWidget'ы
-        #    с десятками тысяч элементов clear()-ятся секунды).
-        # 2) widget.setUpdatesEnabled(False) + hide() — отключает paintEvent
-        #    и попытки relayout на самом LogViewerWidget и всех его детях
-        #    (QListView с моделью на сотни тысяч записей, QTreeWidget'ы
-        #    партий / истории кода, JsonSyntaxHighlighter QPlainTextEdit).
-        #    setParent при addTab иначе запускал бы их relayout + repaint
-        #    синхронно на UI потоке.
-        # 3) setUpdatesEnabled на группе — на случай если родительские
-        #    splitter/panel тоже хотят перерисоваться.
-        # 4) Показываем busy-оверлей: на очень больших логах даже с
-        #    setUpdatesEnabled операция занимает 1-2с — лучше явно сказать
-        #    пользователю «идёт перемещение», чем чтобы он думал что
-        #    приложение зависло.
-        window = self.window()
-        show_busy_fn = getattr(window, 'show_busy', None)
-        hide_busy_fn = getattr(window, 'hide_busy', None)
-        if callable(show_busy_fn):
-            show_busy_fn(f"Перемещение «{title}» в другую панель ...")
+        # ПРОИЗВОДИТЕЛЬНОСТЬ. blockSignals(True) на pane'ях — иначе каскад
+        # currentChanged → tabActivated → activeTabChanged многократно
+        # запускает release_heavy_caches() на всех других viewer'ах
+        # (QTreeWidget.clear() на десятках тысяч элементов = секунды).
+        # setUpdatesEnabled(False) — Qt не перерисовывает промежуточные
+        # кадры.
+        # ВРЕМЕННО: профайлим каждую операцию в crash_log, чтобы понять
+        # где именно тормозит на больших логах.
+        timer = QElapsedTimer()
+        timer.start()
+        timings = {'add_pane': _add_pane_ms}
 
-        widget.setUpdatesEnabled(False)
-        widget.hide()
         group_panel.setUpdatesEnabled(False)
         source_pane.blockSignals(True)
         target_pane.blockSignals(True)
         target_was_empty = target_pane.count() == 0
         try:
+            t0 = timer.elapsed()
             source_pane.removeTab(tab_index)
+            timings['removeTab'] = timer.elapsed() - t0
+
+            t0 = timer.elapsed()
             target_pane.addTab(widget, title)
-            # Если target была пустой, addTab уже сделал её tab активным.
-            # Лишний setCurrentWidget повторно эмитит currentChanged (хоть
-            # и заблокированный) — пропускаем.
+            timings['addTab'] = timer.elapsed() - t0
+
             if not target_was_empty:
+                t0 = timer.elapsed()
                 target_pane.setCurrentWidget(widget)
+                timings['setCurrentWidget'] = timer.elapsed() - t0
         finally:
             source_pane.blockSignals(False)
             target_pane.blockSignals(False)
+            t0 = timer.elapsed()
             group_panel.setUpdatesEnabled(True)
-            widget.show()
-            widget.setUpdatesEnabled(True)
-            if callable(hide_busy_fn):
-                hide_busy_fn()
+            timings['setUpdatesEnabled(True)'] = timer.elapsed() - t0
 
+        t0 = timer.elapsed()
         group_panel.set_active_pane(target_pane)
+        timings['set_active_pane'] = timer.elapsed() - t0
+
         # Если source pane стал пустым — lastTabClosed мы задавили
         # blockSignals выше, поэтому проверяем вручную.
         if source_pane.count() == 0:
+            t0 = timer.elapsed()
             group_panel.remove_pane(source_pane)
-        # Один эмит после всех операций — чтобы on_active_tab_changed
-        # выполнился ровно один раз. Если виджет был current в source pane
-        # и стал current в target — это «активный таб не сменился», и
-        # on_active_tab_changed short-circuit'нётся (см. _last_active_viewer).
+            timings['remove_pane'] = timer.elapsed() - t0
+
+        t0 = timer.elapsed()
         self.activeTabChanged.emit(widget)
+        timings['activeTabChanged.emit'] = timer.elapsed() - t0
+
+        t0 = timer.elapsed()
         self.groupConfigChanged.emit()
+        timings['groupConfigChanged.emit'] = timer.elapsed() - t0
+
+        total = timer.elapsed()
+        # Логируем профайл, если операция заняла > 200мс. Юзер найдёт
+        # лог в crash_log.txt рядом с .exe и пришлёт.
+        if total > 200:
+            import logging
+            _log = logging.getLogger('tab_manager')
+            _log.warning(
+                "SLOW move_tab_to_new_pane: total=%dms, breakdown=%s",
+                total,
+                ', '.join(f'{k}={v}ms' for k, v in timings.items() if v > 0),
+            )
         return True
 
     # Backward-compat: старое имя метода. Делегирует на новый intra-group split.
