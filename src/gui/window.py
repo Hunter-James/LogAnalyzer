@@ -175,6 +175,15 @@ class MainWindow(QMainWindow):
         )
         self.btn_groups.clicked.connect(self.open_groups_manager)
 
+        # Кнопка «📊 Сводка группы» - агрегированная статистика партий по
+        # всем файлам активной группы (стриминговая, не держит файлы в RAM).
+        self.btn_group_stats = QPushButton("📊 Сводка группы")
+        self.btn_group_stats.setToolTip(
+            "Анализ партий по ВСЕМ файлам активной группы.\n"
+            "Файлы парсятся стрим-режимом (по одному, без удержания в RAM)."
+        )
+        self.btn_group_stats.clicked.connect(self.open_group_stats_dialog)
+
         self.chk_info = QCheckBox("INFO")
         self.chk_info.setChecked(True)
         self.chk_info.stateChanged.connect(self.on_global_filter_changed)
@@ -203,6 +212,7 @@ class MainWindow(QMainWindow):
     def detach_widgets(self):
         widgets = [
             self.btn_open, self.btn_settings, self.btn_help, self.btn_groups,
+            self.btn_group_stats,
             self.chk_info, self.chk_debug, self.chk_warn, self.chk_error,
             self.chk_group,
             self.progress_bar,
@@ -268,6 +278,7 @@ class MainWindow(QMainWindow):
         tb_layout.addWidget(self.btn_settings)
         tb_layout.addWidget(self.btn_help)
         tb_layout.addWidget(self.btn_groups)
+        tb_layout.addWidget(self.btn_group_stats)
         tb_layout.addSpacing(20)
         tb_layout.addWidget(self.chk_info)
         tb_layout.addWidget(self.chk_debug)
@@ -303,6 +314,7 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.btn_settings)
         sb_layout.addWidget(self.btn_help)
         sb_layout.addWidget(self.btn_groups)
+        sb_layout.addWidget(self.btn_group_stats)
         sb_layout.addSpacing(10)
         sb_layout.addWidget(QLabel("ФИЛЬТРЫ"))
         sb_layout.addWidget(self.chk_info)
@@ -517,6 +529,38 @@ class MainWindow(QMainWindow):
         dlg.exec()
         # После закрытия диалога сохраняем состояние - могли быть изменения
         self.save_current_settings()
+
+    def open_group_stats_dialog(self):
+        """Открывает «Сводку группы»: агрегированную статистику партий по
+        всем файлам активной группы. Стрим-обработка: файлы парсятся по
+        одному без удержания entries в RAM (см. core/group_stats_worker.py)."""
+        # Активная группа и её файлы (со всех panes если есть split editor)
+        active_idx = self.split_manager.get_active_group_index()
+        per_group = self.split_manager.get_open_files_per_group()
+        if not (0 <= active_idx < len(per_group)):
+            QMessageBox.information(
+                self, "Сводка группы", "Нет активной группы.")
+            return
+        file_paths = [p for p in per_group[active_idx] if os.path.exists(p)]
+        if not file_paths:
+            QMessageBox.information(
+                self, "Сводка группы",
+                "В активной группе нет открытых лог-файлов.")
+            return
+
+        # Имя активной группы для заголовка
+        group_name = ''
+        try:
+            panels = self.split_manager.iter_panels()
+            if 0 <= active_idx < len(panels):
+                group_name = getattr(panels[active_idx], '_group_name', '') or ''
+        except Exception:
+            pass
+
+        from gui.group_stats_dialog import GroupStatsDialog
+        dlg = GroupStatsDialog(file_paths, group_name=group_name,
+                               theme_name=self.current_theme_name, parent=self)
+        dlg.exec()
 
     def open_help(self):
         dlg = HelpDialog(self.current_theme_name, self)
