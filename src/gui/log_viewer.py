@@ -26,6 +26,11 @@ class LogViewerWidget(QWidget):
     statsChanged = pyqtSignal(dict)
     progressChanged = pyqtSignal(int)
     loadingFinished = pyqtSignal()
+    # Юзер нажал «Загрузить файл» в placeholder'е. MainWindow должен показать
+    # busy-оверлей, зарегистрировать progress и вызвать viewer.ensure_loaded().
+    # Эмитим именно сигнал, а не вызываем ensure_loaded напрямую — иначе
+    # юзер не увидит ни busy, ни прогресс, ни кнопки «Отмена».
+    loadRequested = pyqtSignal()
 
     # Лимиты, чтобы журнал не приводил к лагам/вылетам
     MAX_JOURNAL_MATCHES_PER_SEARCH = 1000
@@ -576,14 +581,13 @@ class LogViewerWidget(QWidget):
         return w
 
     def _on_load_button_clicked(self):
-        """Юзер нажал «📥 Загрузить файл» в placeholder'е. Переключаем stack
-        на splitter (чтобы данные показывались по мере появления) и зовём
-        ensure_loaded(). Кнопку отключаем, чтобы юзер не нажал второй раз
-        во время уже идущей загрузки."""
+        """Юзер нажал «📥 Загрузить файл» в placeholder'е. Эмитим сигнал
+        loadRequested — MainWindow подхватит, покажет busy-оверлей с кнопкой
+        «Отмена», зарегистрирует прогресс и сам вызовет ensure_loaded().
+        Кнопку отключаем, чтобы юзер не нажал второй раз во время загрузки."""
         self.btn_load_lazy.setEnabled(False)
         self.lbl_placeholder_info.setText("Загружается ...")
-        self.center_stack.setCurrentWidget(self.splitter)
-        self.ensure_loaded()
+        self.loadRequested.emit()
 
     def _show_placeholder(self):
         """Переключает viewer в lazy-состояние: показывается placeholder с

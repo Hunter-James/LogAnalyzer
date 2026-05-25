@@ -562,6 +562,11 @@ class MainWindow(QMainWindow):
         )
         viewer.loadingFinished.connect(
             lambda v=viewer: self.on_loading_finished(v))
+        # Юзер может нажать «Загрузить файл» в placeholder'е (когда таб
+        # lazy) — этот сигнал триггерит то же что и автоматическая активация:
+        # busy + progress + ensure_loaded.
+        viewer.loadRequested.connect(
+            lambda v=viewer: self._on_viewer_load_requested(v))
 
         # Apply current global filters to new viewer
         viewer.set_global_filters(
@@ -600,11 +605,36 @@ class MainWindow(QMainWindow):
         viewer.progressChanged.connect(bar.setValue)
         return bar
 
+    def _on_viewer_load_requested(self, viewer):
+        """Юзер нажал «📥 Загрузить файл» в placeholder'е viewer'а. Показываем
+        busy-оверлей с кнопкой «Отмена», регистрируем progress, запускаем
+        ensure_loaded. _lru_touch НЕ зовём здесь — он сейчас вытолкнул бы
+        старые viewer'ы (loader.wait(2000) + clear() деревьев на UI потоке),
+        и UI замер бы. Зарегистрируем в LRU когда загрузка завершится."""
+        if not isinstance(viewer, LogViewerWidget) or viewer._loaded:
+            return
+        self.show_busy(
+            f"Загрузка {os.path.basename(viewer.file_path)} ...\n"
+            f"Большие логи могут парситься несколько секунд.",
+            cancel_callback=lambda v=viewer: self._cancel_loading(v),
+        )
+        self._start_progress_for(viewer)
+        self.btn_open.setEnabled(False)
+        viewer.ensure_loaded()
+
     def on_loading_finished(self, viewer=None):
         # viewer может быть None - старая сигнатура без аргументов от внешних
         # эмиттеров (на всякий случай совместимости).
         if viewer is not None:
             self.progress_bar.remove(viewer)
+            # Только что загруженный viewer попадает в LRU как самый свежий.
+            # Делаем это ЗДЕСЬ, а не в _on_viewer_load_requested - иначе
+            # _lru_touch на момент клика блокировал бы UI: пытался бы выгрузить
+            # старые viewer'ы (loader.wait(2000) + clear() деревьев — секунды
+            # на UI потоке).
+            if (isinstance(viewer, LogViewerWidget)
+                    and getattr(viewer, '_loaded', False)):
+                self._lru_touch(viewer)
         if not self.progress_bar.has_active():
             self.btn_open.setEnabled(True)
             self.hide_busy()
