@@ -1421,25 +1421,52 @@ class SplitManager(QWidget):
             (p for p in group_panel.panes() if p is not source_pane), None)
         target_pane = existing_other if existing_other is not None else group_panel.add_pane()
 
-        # ПРОИЗВОДИТЕЛЬНОСТЬ:
-        # 1) blockSignals(True) на обеих pane'ях — иначе каскад currentChanged
-        #    → tabActivated → activeTabChanged запускает release_heavy_caches()
-        #    для всех других viewer'ов многократно (3+ раза за один move).
-        #    На больших логах с _code_history_index это 5-10 сек чистого
-        #    QTreeWidgetItem.clear().
-        # 2) setUpdatesEnabled(False) на группе — не перерисовываем
-        #    промежуточные кадры (после remove, после add, после setCurrent).
+        # ПРОИЗВОДИТЕЛЬНОСТЬ (без этих мер move занимает 5-10 секунд на
+        # больших логах):
+        # 1) blockSignals(True) на pane'ях — каскад currentChanged →
+        #    tabActivated → activeTabChanged иначе многократно запускает
+        #    release_heavy_caches() на всех других viewer'ах (QTreeWidget'ы
+        #    с десятками тысяч элементов clear()-ятся секунды).
+        # 2) widget.setUpdatesEnabled(False) + hide() — отключает paintEvent
+        #    и попытки relayout на самом LogViewerWidget и всех его детях
+        #    (QListView с моделью на сотни тысяч записей, QTreeWidget'ы
+        #    партий / истории кода, JsonSyntaxHighlighter QPlainTextEdit).
+        #    setParent при addTab иначе запускал бы их relayout + repaint
+        #    синхронно на UI потоке.
+        # 3) setUpdatesEnabled на группе — на случай если родительские
+        #    splitter/panel тоже хотят перерисоваться.
+        # 4) Показываем busy-оверлей: на очень больших логах даже с
+        #    setUpdatesEnabled операция занимает 1-2с — лучше явно сказать
+        #    пользователю «идёт перемещение», чем чтобы он думал что
+        #    приложение зависло.
+        window = self.window()
+        show_busy_fn = getattr(window, 'show_busy', None)
+        hide_busy_fn = getattr(window, 'hide_busy', None)
+        if callable(show_busy_fn):
+            show_busy_fn(f"Перемещение «{title}» в другую панель ...")
+
+        widget.setUpdatesEnabled(False)
+        widget.hide()
         group_panel.setUpdatesEnabled(False)
         source_pane.blockSignals(True)
         target_pane.blockSignals(True)
+        target_was_empty = target_pane.count() == 0
         try:
             source_pane.removeTab(tab_index)
             target_pane.addTab(widget, title)
-            target_pane.setCurrentWidget(widget)
+            # Если target была пустой, addTab уже сделал её tab активным.
+            # Лишний setCurrentWidget повторно эмитит currentChanged (хоть
+            # и заблокированный) — пропускаем.
+            if not target_was_empty:
+                target_pane.setCurrentWidget(widget)
         finally:
             source_pane.blockSignals(False)
             target_pane.blockSignals(False)
             group_panel.setUpdatesEnabled(True)
+            widget.show()
+            widget.setUpdatesEnabled(True)
+            if callable(hide_busy_fn):
+                hide_busy_fn()
 
         group_panel.set_active_pane(target_pane)
         # Если source pane стал пустым — lastTabClosed мы задавили
