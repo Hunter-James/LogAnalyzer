@@ -610,12 +610,15 @@ class MainWindow(QMainWindow):
             self.hide_busy()
 
     def on_active_tab_changed(self, viewer):
-        # Если активный таб не сменился - пропускаем всю тяжёлую работу.
-        # Иначе при move_tab_to_new_pane (intra-group split) каскад
-        # currentChanged → tabActivated → activeTabChanged запускал
-        # release_heavy_caches() для других viewer'ов многократно — clear()
-        # деревьев с десятками тысяч QTreeWidgetItem занимает секунды.
-        if viewer is getattr(self, '_last_active_viewer', None):
+        # Если активный таб не сменился И уже загружен — пропускаем всю
+        # тяжёлую работу (release_heavy_caches на сотни тысяч QTreeWidgetItem).
+        # ВАЖНО: проверка _loaded обязательна — иначе при переключении на
+        # тот же lazy таб (например клик по chip в splitter mode) ensure_loaded
+        # не запустится и юзер увидит пустой viewer без загрузки.
+        same_as_last = viewer is getattr(self, '_last_active_viewer', None)
+        already_loaded = (isinstance(viewer, LogViewerWidget)
+                          and getattr(viewer, '_loaded', False))
+        if same_as_last and already_loaded:
             return
         self._last_active_viewer = viewer
 

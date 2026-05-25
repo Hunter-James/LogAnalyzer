@@ -95,10 +95,12 @@ class LogViewerWidget(QWidget):
         self.apply_theme(theme_name, font_size)
 
         if lazy:
-            # Lazy-режим: показываем placeholder, пока юзер не активирует таб.
-            self.lbl_stats.setText(
-                "Файл не загружен (lazy) — кликни по табу, чтобы открыть.")
+            # Lazy-режим: показываем placeholder с кнопкой «Загрузить файл»,
+            # пока юзер сам не нажмёт.
+            self.lbl_stats.setText("Файл не загружен (lazy)")
+            self._show_placeholder()
         else:
+            self._show_content()
             self.load_file()
             self._loaded = True
 
@@ -119,6 +121,9 @@ class LogViewerWidget(QWidget):
                     return
             else:
                 return  # уже грузится нормально
+        # Переключаемся на splitter (с пустыми данными) - юзер увидит как
+        # таблица наполняется по мере парсинга. Placeholder уже не нужен.
+        self._show_content()
         self.load_file()
         self._loaded = True
 
@@ -181,8 +186,8 @@ class LogViewerWidget(QWidget):
             self.search_journal_tree.clear()
 
         self.stats = {}
-        self.lbl_stats.setText(
-            "Файл выгружен из памяти — кликни по табу, чтобы загрузить заново.")
+        self.lbl_stats.setText("Файл выгружен из памяти")
+        self._show_placeholder()
         self._loaded = False
 
     def _stop_tail(self):
@@ -461,7 +466,17 @@ class LogViewerWidget(QWidget):
         self.splitter.addWidget(self.bottom_tabs)
         self.splitter.setSizes([600, 250])
 
-        layout.addWidget(self.splitter)
+        # Stack: page 0 — splitter с реальными данными; page 1 — placeholder
+        # с большой кнопкой «Загрузить файл», который показывается когда
+        # _loaded=False (lazy / unloaded / cancelled). Клик по кнопке —
+        # явный триггер ensure_loaded(), потому что клик по уже-current
+        # табу в QTabWidget не эмитит currentChanged → on_active_tab_changed
+        # не сработает автоматически.
+        self.center_stack = QStackedWidget()
+        self.center_stack.addWidget(self.splitter)
+        self.placeholder = self._create_lazy_placeholder()
+        self.center_stack.addWidget(self.placeholder)
+        layout.addWidget(self.center_stack)
 
         # --- Local Stats Panel ---
         self.stats_frame = QFrame()
@@ -512,6 +527,81 @@ class LogViewerWidget(QWidget):
         # Применяем стартовую видимость UI согласно настройкам
         self.apply_ui_features(self._ui_features)
 
+    def _create_lazy_placeholder(self):
+        """Создаёт виджет-заглушку, который показывается вместо log_view
+        когда файл не загружен (lazy / unloaded / cancelled). Содержит имя
+        файла и крупную кнопку «📥 Загрузить файл», по клику которой
+        запускается ensure_loaded()."""
+        from PyQt6.QtWidgets import QPushButton
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(20, 20, 20, 20)
+        v.setSpacing(12)
+        v.addStretch()
+
+        name_lbl = QLabel(f"📄 {os.path.basename(self.file_path)}")
+        name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        name_lbl.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        v.addWidget(name_lbl)
+
+        self.lbl_placeholder_info = QLabel(
+            "Файл не загружен в память.\nНажми кнопку, чтобы открыть.")
+        self.lbl_placeholder_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_placeholder_info.setStyleSheet("font-size: 10pt; color: #888;")
+        v.addWidget(self.lbl_placeholder_info)
+
+        self.btn_load_lazy = QPushButton("📥 Загрузить файл")
+        self.btn_load_lazy.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_load_lazy.setStyleSheet("""
+            QPushButton {
+                padding: 10px 28px;
+                font-size: 12pt;
+                font-weight: bold;
+                background-color: #2A82DA;
+                color: #FFFFFF;
+                border: 1px solid #1858A0;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #3A92EA; }
+            QPushButton:pressed { background-color: #1858A0; }
+            QPushButton:disabled { background-color: #888; }
+        """)
+        self.btn_load_lazy.clicked.connect(self._on_load_button_clicked)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(self.btn_load_lazy)
+        btn_row.addStretch()
+        v.addLayout(btn_row)
+        v.addStretch()
+        return w
+
+    def _on_load_button_clicked(self):
+        """Юзер нажал «📥 Загрузить файл» в placeholder'е. Переключаем stack
+        на splitter (чтобы данные показывались по мере появления) и зовём
+        ensure_loaded(). Кнопку отключаем, чтобы юзер не нажал второй раз
+        во время уже идущей загрузки."""
+        self.btn_load_lazy.setEnabled(False)
+        self.lbl_placeholder_info.setText("Загружается ...")
+        self.center_stack.setCurrentWidget(self.splitter)
+        self.ensure_loaded()
+
+    def _show_placeholder(self):
+        """Переключает viewer в lazy-состояние: показывается placeholder с
+        кнопкой загрузки, splitter скрыт. Вызывается из __init__(lazy=True),
+        unload() и при __CANCELLED__."""
+        if hasattr(self, 'center_stack'):
+            self.center_stack.setCurrentWidget(self.placeholder)
+        if hasattr(self, 'btn_load_lazy'):
+            self.btn_load_lazy.setEnabled(True)
+            self.lbl_placeholder_info.setText(
+                "Файл не загружен в память.\nНажми кнопку, чтобы открыть.")
+
+    def _show_content(self):
+        """Переключает viewer на реальный splitter (данные / детали).
+        Вызывается из on_load_finished при успехе."""
+        if hasattr(self, 'center_stack'):
+            self.center_stack.setCurrentWidget(self.splitter)
+
     def load_file(self):
         _log.info("LogViewerWidget.load_file: path=%r", self.file_path)
         self.loader = LogLoader(self.file_path)
@@ -527,8 +617,8 @@ class LogViewerWidget(QWidget):
             _log.info("LogLoader cancelled by user for %r", self.file_path)
             self._loaded = False
             self.stats = {}
-            self.lbl_stats.setText(
-                "Загрузка отменена — кликни по табу, чтобы попробовать снова.")
+            self.lbl_stats.setText("Загрузка отменена")
+            self._show_placeholder()
             self.loadingFinished.emit()
             return
         if error_msg:
@@ -540,6 +630,8 @@ class LogViewerWidget(QWidget):
             return
         _log.info("LogLoader finished: path=%r entries=%d", self.file_path, len(entries))
 
+        # Успех - переключаемся на splitter (если ещё показывался placeholder)
+        self._show_content()
         self.model.set_entries(entries)
         self._tail_position = last_pos  # для tail-режима
         # Восстанавливаем закладки если были сохранены в сессии
