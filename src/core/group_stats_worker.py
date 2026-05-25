@@ -13,12 +13,22 @@ import sys
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.workers import _open_log_stream, LINE_PATTERN
-from core.models import _BATCH_OPEN_RE, NO_BATCH, SGTIN_CODE_RE, GROUP_CODE_RE
+from core.models import _BATCH_OPEN_RE, NO_BATCH
 
-# SSCC (палеты/короба) — 18 цифр после префикса 00. Совпадает с регексом
-# из log_viewer._SSCC_RE (продублирован чтобы не тянуть GUI-зависимости в
-# core).
-_SSCC_RE = re.compile(r'\b00\d{18}\b')
+# Объединённый regex для всех трёх типов кодов: SGTIN (01 + 14 цифр GTIN +
+# 6..40 любых non-whitespace/non-bracket), SSCC (00 + 18 цифр), групповой
+# (04 + 16 цифр). Один проход вместо трёх — профайл 19MB файла показал что
+# раздельные SGTIN/SSCC/GROUP findall давали 77 секунд на пустые SSCC/GROUP,
+# которые в этом файле вообще ни разу не совпали. Общий префикс \b0(?:1|0|4)
+# даёт regex-VM быстрый prefix-reject для большинства позиций.
+_SCAN_CODE_CHAR = r"[^ \t\n\r\f\v()\[\]{}]"
+ALL_CODES_RE = re.compile(
+    r'\b0(?:'
+    r'1\d{14}' + _SCAN_CODE_CHAR + r'{6,40}'  # SGTIN: 01 + 14 + 6..40
+    r'|0\d{18}\b'                              # SSCC: 00 + 18 цифр
+    r'|4\d{16}\b'                              # групповой: 04 + 16 цифр
+    r')'
+)
 
 
 def _classify_for_stats(line, logger):
@@ -28,11 +38,15 @@ def _classify_for_stats(line, logger):
 
     Дублирование оправдано: классификация — единый источник истины, но
     LogViewer работает с LogEntry-объектами после полного парсинга, а
-    worker — со строками на лету."""
-    lower = line.lower()
+    worker — со строками на лету.
 
+    ПРОИЗВОДИТЕЛЬНОСТЬ: line.lower() создаёт копию строки целиком и
+    раньше делался всегда. Теперь lazy — вычисляется только если нужно
+    (внутри HIKROBOT-ветки и финальной 'не верифицирован' проверки).
+    На больших логах с миллионами строк экономит секунды."""
     # 1) Скан HIKROBOT - один физический скан = одна строка HIKROBOT.run.
     if logger == 'HIKROBOT' and '.run' in line:
+        lower = line.lower()
         if 'noread' in lower or 'не прочитан' in lower:
             return 'noread'
         if 'получены данные' in lower:
@@ -54,7 +68,9 @@ def _classify_for_stats(line, logger):
             and '[отбраковать]: true' in line):
         return 'rejected'
 
-    if 'не верифицирован' in lower:
+    # 4) Финальная проверка - в самом конце, чтобы lower() вызывался только
+    # когда не сработали все верхние быстрые проверки.
+    if 'не верифицирован' in line.lower():
         return 'not_verified'
     return None
 
@@ -128,9 +144,7 @@ class GroupStatsWorker(QThread):
         current_batch = NO_BATCH
         last_ts_in_line = ''  # timestamp последней timestamped-строки
 
-        sgtin_find = SGTIN_CODE_RE.findall
-        sscc_find = _SSCC_RE.findall
-        group_find = GROUP_CODE_RE.findall
+        codes_find = ALL_CODES_RE.findall
 
         try:
             for line in stream:
@@ -179,10 +193,9 @@ class GroupStatsWorker(QThread):
                         bucket['last_ts'] = last_ts_in_line
                         bucket['last_file'] = path
 
-                # 4) Сбор уникальных кодов
-                codes_in_line = sgtin_find(line)
-                codes_in_line += sscc_find(line)
-                codes_in_line += group_find(line)
+                # 4) Сбор уникальных кодов (один объединённый regex —
+                # см. ALL_CODES_RE наверху файла).
+                codes_in_line = codes_find(line)
                 if codes_in_line:
                     bucket = batches.get(current_batch)
                     if bucket is None:
