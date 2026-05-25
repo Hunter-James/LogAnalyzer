@@ -170,6 +170,11 @@ class GroupStatsDialog(QDialog):
     # ----- Worker callbacks -----
 
     def _on_progress(self, current, total, filename):
+        # Worker эмитит current=total с пустым filename как «финальный 100%».
+        if current >= total:
+            self._pbar.setValue(100)
+            self._lbl_progress_file.setText("Все файлы обработаны, собираю результат …")
+            return
         pct = int((current + 1) / max(1, total) * 100)
         self._pbar.setValue(pct)
         self._lbl_progress_file.setText(f"Файл {current + 1} из {total}: {filename}")
@@ -203,17 +208,15 @@ class GroupStatsDialog(QDialog):
     # ----- Tree population -----
 
     def _populate_tree(self, batches):
-        """Раскладываем batches в дерево. Сортировка по first_ts (хронологически),
-        партии без timestamp — в конец."""
+        """Раскладываем batches в дерево. ЛЕНИВО: для каждой партии создаём
+        только root + placeholder («…»). Реальные дети — статистика, файлы,
+        диапазон, коды — строятся в _on_item_expanded при первом раскрытии
+        партии. Без этого на 1000+ партиях × 5000 кодов дерево создавало бы
+        миллионы QTreeWidgetItem на UI потоке — окно «не отвечает» на
+        десятки минут."""
         self._tree.clear()
         if not batches:
             return
-
-        t = THEMES[self._theme_name]
-        info_c = QColor(t.get('info', '#2E8B57'))
-        warn_c = QColor(t.get('warn', '#FFA500'))
-        error_c = QColor(t.get('error', '#CD5C5C'))
-        muted_c = QColor(t.get('text_muted', '#999999'))
 
         # Сортируем партии: сначала с известным first_ts (хронологически),
         # потом NO_BATCH («вне партии») в самый конец.
@@ -223,6 +226,14 @@ class GroupStatsDialog(QDialog):
             ts = data['first_ts'] or '99:99:99.999'
             first_file = data.get('first_file', '')
             return (no_batch_flag, first_file, ts)
+
+        # itemExpanded подключаем здесь (а не в _build_result_widget),
+        # чтобы не висел сигнал при пустом дереве.
+        try:
+            self._tree.itemExpanded.disconnect(self._on_item_expanded)
+        except (TypeError, RuntimeError):
+            pass
+        self._tree.itemExpanded.connect(self._on_item_expanded)
 
         self._tree.setUpdatesEnabled(False)
         try:
@@ -240,59 +251,128 @@ class GroupStatsDialog(QDialog):
                              f"{len(files)} файл(ов), {len(codes):,} уникальных кодов")
                 root = QTreeWidgetItem(self._tree, [title, ""])
                 # Ассоциация: batch_id хранится в UserRole, нужен для
-                # контекстного меню «Сравнить с файлом» и для фильтра.
+                # контекстного меню «Сравнить с файлом», фильтра и
+                # lazy-expand'а.
                 root.setData(0, Qt.ItemDataRole.UserRole, ('batch', bid))
-
-                # 📊 Статистика
-                stats_node = QTreeWidgetItem(root, ["📊 Статистика", ""])
-                rows = [
-                    ("Напечатано", counters['printed'], info_c),
-                    ("Прочитано", counters['scanned'], info_c),
-                    ("No read", counters['noread'], warn_c),
-                    ("Верифицировано", counters['verified'], info_c),
-                    ("Отбраковано", counters['rejected'], error_c),
-                    ("Не верифицировано", counters['not_verified'], warn_c),
-                ]
-                for label, n, color in rows:
-                    ci = QTreeWidgetItem(stats_node, [label, f"{n:,}"])
-                    ci.setForeground(0, color if n else muted_c)
-                    ci.setForeground(1, color if n else muted_c)
-
-                # 📂 Файлы
-                if files:
-                    files_node = QTreeWidgetItem(root, [
-                        f"📂 Файлы ({len(files)})", ""])
-                    # Сортируем по имени файла
-                    for path in sorted(files.keys()):
-                        cnt = files[path]
-                        QTreeWidgetItem(files_node,
-                                        [os.path.basename(path),
-                                         f"{cnt:,} событий"])
-
-                # 📅 Временной диапазон
-                if data['first_ts']:
-                    range_node = QTreeWidgetItem(root, ["📅 Диапазон", ""])
-                    QTreeWidgetItem(range_node, [
-                        f"начало: {data['first_ts']}",
-                        os.path.basename(data['first_file'])])
-                    QTreeWidgetItem(range_node, [
-                        f"конец: {data['last_ts']}",
-                        os.path.basename(data['last_file'])])
-
-                # 🔑 Уникальные коды (limit MAX_CODES_PER_BATCH)
-                if codes:
-                    codes_node = QTreeWidgetItem(root, [
-                        f"🔑 Уникальные коды ({len(codes):,})", ""])
-                    sorted_codes = sorted(codes)
-                    for c in sorted_codes[:self.MAX_CODES_PER_BATCH]:
-                        QTreeWidgetItem(codes_node, [c, ""])
-                    if len(sorted_codes) > self.MAX_CODES_PER_BATCH:
-                        hidden = len(sorted_codes) - self.MAX_CODES_PER_BATCH
-                        QTreeWidgetItem(codes_node, [
-                            f"… ещё {hidden:,} кодов не показано "
-                            f"(лимит {self.MAX_CODES_PER_BATCH})", ""])
+                # Placeholder («…») — нужен чтобы Qt показал стрелочку
+                # раскрытия. Реальные дети строятся в _on_item_expanded.
+                placeholder = QTreeWidgetItem(root, ["…", ""])
+                placeholder.setData(0, Qt.ItemDataRole.UserRole,
+                                    ('placeholder', None))
         finally:
             self._tree.setUpdatesEnabled(True)
+
+    def _on_item_expanded(self, item):
+        """Lazy-builds. Обрабатывает два типа узлов:
+          ('batch', bid)        → строим стат/файлы/диапазон/codes_node
+          ('codes', bucket)     → строим code-items под codes_node
+        Идемпотентно — повторное раскрытие не строит второй раз."""
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        kind = data[0]
+        if kind not in ('batch', 'codes'):
+            return
+
+        # Ищем placeholder среди прямых детей
+        placeholder_kind = ('placeholder' if kind == 'batch'
+                            else 'codes_placeholder')
+        ph_idx = -1
+        for i in range(item.childCount()):
+            ch = item.child(i)
+            cd = ch.data(0, Qt.ItemDataRole.UserRole)
+            if cd and cd[0] == placeholder_kind:
+                ph_idx = i
+                break
+        if ph_idx < 0:
+            return  # уже подгружали
+        item.takeChild(ph_idx)
+
+        if kind == 'batch':
+            bid = data[1]
+            bucket = self._batches.get(bid)
+            if bucket is None:
+                return
+            self._build_batch_children(item, bucket)
+        else:  # 'codes'
+            bucket = data[1]
+            self._build_codes_children(item, bucket)
+
+    def _build_batch_children(self, root, bucket):
+        """Строит статистика / файлы / диапазон / коды под root-партией.
+        Вызывается из _on_item_expanded — на UI потоке, но затрагивает
+        только одну партию, не миллионы."""
+        t = THEMES[self._theme_name]
+        info_c = QColor(t.get('info', '#2E8B57'))
+        warn_c = QColor(t.get('warn', '#FFA500'))
+        error_c = QColor(t.get('error', '#CD5C5C'))
+        muted_c = QColor(t.get('text_muted', '#999999'))
+
+        counters = bucket['counters']
+        files = bucket['files']
+        codes = bucket['codes']
+
+        # 📊 Статистика
+        stats_node = QTreeWidgetItem(root, ["📊 Статистика", ""])
+        rows = [
+            ("Напечатано", counters['printed'], info_c),
+            ("Прочитано", counters['scanned'], info_c),
+            ("No read", counters['noread'], warn_c),
+            ("Верифицировано", counters['verified'], info_c),
+            ("Отбраковано", counters['rejected'], error_c),
+            ("Не верифицировано", counters['not_verified'], warn_c),
+        ]
+        for label, n, color in rows:
+            ci = QTreeWidgetItem(stats_node, [label, f"{n:,}"])
+            ci.setForeground(0, color if n else muted_c)
+            ci.setForeground(1, color if n else muted_c)
+
+        # 📂 Файлы
+        if files:
+            files_node = QTreeWidgetItem(root, [f"📂 Файлы ({len(files)})", ""])
+            for path in sorted(files.keys()):
+                cnt = files[path]
+                QTreeWidgetItem(files_node,
+                                [os.path.basename(path),
+                                 f"{cnt:,} событий"])
+
+        # 📅 Временной диапазон
+        if bucket.get('first_ts'):
+            range_node = QTreeWidgetItem(root, ["📅 Диапазон", ""])
+            QTreeWidgetItem(range_node, [
+                f"начало: {bucket['first_ts']}",
+                os.path.basename(bucket['first_file'])])
+            QTreeWidgetItem(range_node, [
+                f"конец: {bucket['last_ts']}",
+                os.path.basename(bucket['last_file'])])
+
+        # 🔑 Уникальные коды — тоже LAZY: создаём codes_node с placeholder,
+        # реальные code-items строятся при раскрытии codes_node. Иначе
+        # партия с 5000 кодами заморозит UI на ~1с при первом expand'е.
+        if codes:
+            codes_node = QTreeWidgetItem(root, [
+                f"🔑 Уникальные коды ({len(codes):,})", ""])
+            codes_node.setData(0, Qt.ItemDataRole.UserRole,
+                               ('codes', bucket))
+            codes_placeholder = QTreeWidgetItem(codes_node, ["…", ""])
+            codes_placeholder.setData(0, Qt.ItemDataRole.UserRole,
+                                      ('codes_placeholder', None))
+            # При expand'е codes_node — построим code items.
+            # Перехват делаем в том же _on_item_expanded (см. ниже).
+
+    def _build_codes_children(self, codes_node, bucket):
+        """Строит code-items под codes_node. Сортировка кодов делается
+        здесь, не в основном _populate_tree — на больших партиях экономит
+        время первичного открытия."""
+        codes = bucket['codes']
+        sorted_codes = sorted(codes)
+        for c in sorted_codes[:self.MAX_CODES_PER_BATCH]:
+            QTreeWidgetItem(codes_node, [c, ""])
+        if len(sorted_codes) > self.MAX_CODES_PER_BATCH:
+            hidden = len(sorted_codes) - self.MAX_CODES_PER_BATCH
+            QTreeWidgetItem(codes_node, [
+                f"… ещё {hidden:,} кодов не показано "
+                f"(лимит {self.MAX_CODES_PER_BATCH})", ""])
 
     # ----- Фильтр по дереву -----
 

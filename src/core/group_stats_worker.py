@@ -99,14 +99,20 @@ class GroupStatsWorker(QThread):
     def run(self):
         batches = {}
         intern = sys.intern
+        total = len(self.file_paths)
         try:
             for i, path in enumerate(self.file_paths):
                 if self.isInterruptionRequested():
                     self.finished.emit(batches, '__CANCELLED__')
                     return
-                self.progress.emit(i, len(self.file_paths),
-                                   os.path.basename(path))
+                # Сначала эмитим «обрабатываю файл i+1» — UI видит имя
+                # текущего файла + прогресс i из total.
+                self.progress.emit(i, total, os.path.basename(path))
                 self._stream_one(path, batches, intern)
+            # После обработки последнего — эмитим финальный 100%, чтобы
+            # прогресс-бар точно дошёл до конца ДО finished (иначе юзер
+            # видел 99.7% и приложение «висит» пока шёл последний файл).
+            self.progress.emit(total, total, '')
             self.finished.emit(batches, '')
         except Exception as e:
             self.finished.emit(batches, str(e))
