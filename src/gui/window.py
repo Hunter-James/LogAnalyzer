@@ -561,6 +561,11 @@ class MainWindow(QMainWindow):
         dlg = GroupStatsDialog(file_paths, group_name=group_name,
                                theme_name=self.current_theme_name, parent=self)
         dlg.exec()
+        # ВАЖНО: deleteLater после exec, иначе Qt держит диалог как child
+        # main window'а до конца сессии — а вместе с ним сотни тысяч
+        # QTreeWidgetItem'ов и dict с миллионами кодов. На больших группах
+        # это легко 9+ ГБ RAM, которые не освобождаются до выхода.
+        dlg.deleteLater()
 
     def open_help(self):
         dlg = HelpDialog(self.current_theme_name, self)

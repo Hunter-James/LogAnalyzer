@@ -427,4 +427,11 @@ def export_xlsx(path, batches):
     ws_codes.freeze_panes = 'A2'
 
     wb.save(path)
+    # openpyxl держит все cells в памяти даже после save(). На больших
+    # данных (миллионы кодов) это несколько ГБ RAM. Закрываем wb и
+    # принудительно вызываем GC чтобы вернуть память ОС.
+    wb.close()
+    del wb, ws, ws_files, ws_codes
+    import gc
+    gc.collect()
     return path, []

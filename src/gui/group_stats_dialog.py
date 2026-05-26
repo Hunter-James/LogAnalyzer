@@ -554,10 +554,23 @@ class GroupStatsDialog(QDialog):
     # ----- Cleanup -----
 
     def closeEvent(self, event):
-        """Останавливаем worker если ещё работает (юзер закрыл крестиком)."""
+        """Останавливаем worker если ещё работает + освобождаем большой
+        _batches dict. Иначе Qt держит диалог (parent=MainWindow) и сотни
+        тысяч QTreeWidgetItem'ов + dict с миллионами кодов остаются в RAM
+        даже после закрытия окна."""
         if self._worker is not None and self._worker.isRunning():
             self._worker.requestInterruption()
             # Ждём короткое время — обычно loader проверяет
             # isInterruptionRequested на каждой итерации файла.
             self._worker.wait(500)
+        # Чистим тяжёлые ссылки. self._batches на 336 логах — это 2.7M кодов
+        # + counters + per_file_counters → несколько ГБ RAM.
+        self._batches = {}
+        self._worker = None
+        if hasattr(self, '_tree'):
+            self._tree.clear()
+        # Принудительный GC — Python иногда задерживает освобождение больших
+        # dict'ов с миллионами строк, особенно после openpyxl save().
+        import gc
+        gc.collect()
         super().closeEvent(event)
