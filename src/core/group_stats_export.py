@@ -303,6 +303,16 @@ def export_xlsx(path, batches):
         )
 
     from openpyxl.styles import Font, PatternFill, Alignment
+    # SGTIN коды содержат GS/FS/RS/US (\x1c-\x1f) как разделители полей
+    # DataMatrix — Excel запрещает control chars в ячейках. Чистим их
+    # ПЕРЕД записью, иначе openpyxl бросит «cannot be used in worksheets».
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    def _safe(val):
+        """Удаляет недопустимые в xlsx ASCII control chars из строк."""
+        if isinstance(val, str):
+            return ILLEGAL_CHARACTERS_RE.sub('', val)
+        return val
 
     wb = openpyxl.Workbook()
 
@@ -362,13 +372,14 @@ def export_xlsx(path, batches):
             ws.row_dimensions[row_idx].outline_level = 1
             ws.row_dimensions[row_idx].hidden = True
             row_idx += 1
-        # Коды — пишем компактно, по 4 на строке
+        # Коды — пишем компактно, по 4 на строке. _safe() убирает GS/FS из
+        # DataMatrix, которые Excel не разрешает.
         if codes:
             sorted_codes = sorted(codes)
             chunk = 4
             for i in range(0, len(sorted_codes), chunk):
                 cell_text = '  🔑 ' + ' / '.join(sorted_codes[i:i + chunk])
-                ws.append([cell_text] + [''] * (len(headers) - 1))
+                ws.append([_safe(cell_text)] + [''] * (len(headers) - 1))
                 ws.cell(row=row_idx, column=1).font = detail_font
                 ws.row_dimensions[row_idx].outline_level = 1
                 ws.row_dimensions[row_idx].hidden = True
@@ -408,7 +419,9 @@ def export_xlsx(path, batches):
     for bid, data in sorted(batches.items(), key=_sort_key):
         label = 'Вне партии' if bid == NO_BATCH else str(bid)
         for c in sorted(data['codes']):
-            ws_codes.append([label, c])
+            # _safe() убирает GS/FS из DataMatrix-разделителей кода —
+            # без этого Excel ругается «cannot be used in worksheets».
+            ws_codes.append([label, _safe(c)])
     ws_codes.column_dimensions['A'].width = 18
     ws_codes.column_dimensions['B'].width = 50
     ws_codes.freeze_panes = 'A2'
