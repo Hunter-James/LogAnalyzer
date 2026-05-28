@@ -653,8 +653,8 @@ class LogViewerWidget(QWidget):
             self.center_stack.setCurrentWidget(self.text_view)
 
     def start_fast_load(self):
-        """Запускает Fast mode: Stage 1 (text-view stream) → Stage 2
-        (фоновый полный парсинг). UI готов к чтению уже после Stage 1."""
+        """Запускает Fast mode: Stage 1 (фоновое чтение → один setPlainText)
+        → Stage 2 (полный парсинг в фоне). UI готов к чтению после Stage 1."""
         from core.fast_text_loader import FastTextLoader
         # Сброс state'а text_view от предыдущего открытия
         self.text_view.clear()
@@ -663,33 +663,9 @@ class LogViewerWidget(QWidget):
         self._show_fast_text()
 
         self.fast_loader = FastTextLoader(self.file_path)
-        self.fast_loader.chunkReady.connect(self._on_fast_chunk)
         self.fast_loader.progress.connect(self.progressChanged.emit)
         self.fast_loader.finished.connect(self._on_fast_finished)
         self.fast_loader.start()
-
-    def _on_fast_chunk(self, text, markers):
-        # Добавляем chunk в text_view. appendPlainText сам добавит
-        # newline в конце - наш text уже имеет '\n', поэтому используем
-        # insertPlainText через cursor (без auto-newline).
-        cur = self.text_view.textCursor()
-        cur.movePosition(cur.MoveOperation.End)
-        cur.insertText(text)
-        if markers:
-            self._fast_markers.extend(markers)
-            self._fast_total_lines = self._fast_markers[-1][0]
-            # Throttle: не вызываем set_markers на каждом chunk.
-            # Без этого на 60+ chunks с тысячами маркеров получаем
-            # O(N²) работы. _fast_markers_timer сольёт несколько emit'ов
-            # в один update раз в 200мс.
-            if not hasattr(self, '_fast_markers_timer'):
-                self._fast_markers_timer = QTimer(self)
-                self._fast_markers_timer.setSingleShot(True)
-                self._fast_markers_timer.setInterval(200)
-                self._fast_markers_timer.timeout.connect(
-                    self._update_fast_markers)
-            if not self._fast_markers_timer.isActive():
-                self._fast_markers_timer.start()
 
     def _update_fast_markers(self):
         from PyQt6.QtGui import QColor
@@ -707,10 +683,11 @@ class LogViewerWidget(QWidget):
             items.append((rel, c_err if lvl == 'ERROR' else c_warn))
         sb.set_markers(items)
 
-    def _on_fast_finished(self, total_lines, error_msg):
-        """Stage 1 закончилось. Запускаем Stage 2 (полный парсинг в фоне)
-        ТЕМ ЖЕ LogLoader'ом — он попадёт в on_load_finished и заменит
-        text-view на полный list-view с моделью."""
+    def _on_fast_finished(self, text, markers, total_lines, error_msg):
+        """Stage 1 закончилось. FastTextLoader вернул весь текст и список
+        маркеров одним эмитом. Делаем единственный setPlainText на text_view
+        (O(N) один раз вместо O(chunks×N) при streaming), применяем маркеры,
+        затем запускаем Stage 2."""
         if error_msg == '__CANCELLED__':
             self._loaded = False
             self._show_placeholder()
@@ -723,15 +700,23 @@ class LogViewerWidget(QWidget):
             self._show_placeholder()
             self.loadingFinished.emit()
             return
-        # Финальный апдейт маркеров — throttle-timer мог не успеть после
-        # последнего chunk'а. После этого маркеры зафиксированы и paint
-        # быстрый (dedupe в MarkerScrollBar).
-        if (hasattr(self, '_fast_markers_timer')
-                and self._fast_markers_timer.isActive()):
-            self._fast_markers_timer.stop()
+
+        # Один setPlainText — оптимизирован в QPlainTextEdit для большого текста
+        _log.info("FastTextLoader finished: path=%r lines=%d markers=%d",
+                  self.file_path, total_lines, len(markers))
+        self.text_view.setUpdatesEnabled(False)
+        try:
+            self.text_view.setPlainText(text)
+        finally:
+            self.text_view.setUpdatesEnabled(True)
+        # Маркеры: сохраняем + один update со всеми сразу. dedupe внутри
+        # MarkerScrollBar даст max 20K unique позиций даже на 14M маркеров.
+        self._fast_markers = markers
+        self._fast_total_lines = total_lines
         self._update_fast_markers()
+
         # Stage 1 готов: юзер видит текст с маркерами. Эмитим loadingFinished
-        # чтобы MainWindow скрыл busy-overlay — дальше Stage 2 идёт тихо.
+        # чтобы MainWindow скрыл busy-overlay.
         self.lbl_stats.setText(
             f"Быстрый просмотр: {total_lines:,} строк. Полный анализ загружается …")
         self.loadingFinished.emit()
