@@ -678,7 +678,18 @@ class LogViewerWidget(QWidget):
         if markers:
             self._fast_markers.extend(markers)
             self._fast_total_lines = self._fast_markers[-1][0]
-            self._update_fast_markers()
+            # Throttle: не вызываем set_markers на каждом chunk.
+            # Без этого на 60+ chunks с тысячами маркеров получаем
+            # O(N²) работы. _fast_markers_timer сольёт несколько emit'ов
+            # в один update раз в 200мс.
+            if not hasattr(self, '_fast_markers_timer'):
+                self._fast_markers_timer = QTimer(self)
+                self._fast_markers_timer.setSingleShot(True)
+                self._fast_markers_timer.setInterval(200)
+                self._fast_markers_timer.timeout.connect(
+                    self._update_fast_markers)
+            if not self._fast_markers_timer.isActive():
+                self._fast_markers_timer.start()
 
     def _update_fast_markers(self):
         from PyQt6.QtGui import QColor
@@ -712,6 +723,13 @@ class LogViewerWidget(QWidget):
             self._show_placeholder()
             self.loadingFinished.emit()
             return
+        # Финальный апдейт маркеров — throttle-timer мог не успеть после
+        # последнего chunk'а. После этого маркеры зафиксированы и paint
+        # быстрый (dedupe в MarkerScrollBar).
+        if (hasattr(self, '_fast_markers_timer')
+                and self._fast_markers_timer.isActive()):
+            self._fast_markers_timer.stop()
+        self._update_fast_markers()
         # Stage 1 готов: юзер видит текст с маркерами. Эмитим loadingFinished
         # чтобы MainWindow скрыл busy-overlay — дальше Stage 2 идёт тихо.
         self.lbl_stats.setText(
@@ -752,11 +770,15 @@ class LogViewerWidget(QWidget):
 
         # Успех - переключаемся на splitter (если был placeholder или text_view
         # из Fast-mode Stage 1). Чистим text_view чтобы освободить память —
-        # QPlainTextEdit с миллионами строк может держать сотни МБ.
-        if (hasattr(self, 'text_view')
-                and self.center_stack.currentWidget() is self.text_view):
-            self.text_view.clear()
+        # QPlainTextEdit с миллионами строк может держать сотни МБ. Делаем
+        # ОТЛОЖЕННО: сначала показываем splitter (мгновенно), затем clear
+        # через QTimer.singleShot — иначе clear на миллионах строк
+        # синхронно блокирует UI в самый момент переключения.
+        was_in_text_view = (hasattr(self, 'text_view')
+                            and self.center_stack.currentWidget() is self.text_view)
         self._show_content()
+        if was_in_text_view:
+            QTimer.singleShot(0, self.text_view.clear)
         self.model.set_entries(entries)
         self._tail_position = last_pos  # для tail-режима
         # Восстанавливаем закладки если были сохранены в сессии
