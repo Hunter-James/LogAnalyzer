@@ -170,15 +170,29 @@ class LogViewerWidget(QWidget):
         ensure_loaded(). file_path остаётся для отображения таба."""
         if not self._loaded:
             return
-        # 1. Останавливаем фоновые потоки
+        # 1. Останавливаем фоновые потоки. Важно: до фикса unload() знал
+        # только про self.loader — на ветке fast-open-mode появился ещё
+        # self.fast_loader (Stage 1). Если viewer выгружается через LRU
+        # пока fast_loader работает, его finished эмитится на уже-выгруженном
+        # виджете → crash. Отключаем сигналы И останавливаем оба.
         self._stop_tail()
-        if hasattr(self, 'loader') and self.loader is not None:
+        for attr in ('fast_loader', 'loader'):
+            lo = getattr(self, attr, None)
+            if lo is None:
+                continue
             try:
-                if self.loader.isRunning():
-                    self.loader.wait(2000)
+                if lo.isRunning():
+                    lo.requestInterruption()
+                    # disconnect перед wait чтобы поздний finished не
+                    # сработал на уже-выгруженном viewer'е
+                    try:
+                        lo.finished.disconnect()
+                    except (TypeError, RuntimeError):
+                        pass
+                    lo.wait(2000)
             except Exception:
                 pass
-            self.loader = None
+            setattr(self, attr, None)
         if self.model.filter_worker and self.model.filter_worker.isRunning():
             self.model.filter_worker.cancel()
             self.model.filter_worker.wait(2000)
@@ -730,12 +744,27 @@ class LogViewerWidget(QWidget):
         # чтобы MainWindow скрыл busy-overlay.
         self.lbl_stats.setText(
             f"Быстрый просмотр: {total_lines:,} строк. Полный анализ загружается …")
+        # Флаг: следующий on_load_finished (Stage 2) НЕ должен эмитить
+        # loadingFinished — busy уже спрятан, а второй _lru_touch испортит
+        # порядок LRU через 30с после реального открытия файла.
+        self._fast_stage_emitted = True
         self.loadingFinished.emit()
         # Stage 2: запускаем обычный LogLoader. Когда он закончит,
         # on_load_finished переключит на splitter.
         self.load_file()
 
     def load_file(self):
+        # Re-entrancy guard: если предыдущий LogLoader ещё работает,
+        # переписать self.loader на новый — оставит старый orphan'ом без
+        # disconnect. ensure_loaded уже защищает от этого при обычных
+        # caller'ах, но защита прямо тут — для надёжности (в Fast mode
+        # _on_fast_finished зовёт load_file напрямую).
+        existing = getattr(self, 'loader', None)
+        if existing is not None and existing.isRunning():
+            _log.warning(
+                "load_file: LogLoader для %r уже работает, пропускаем",
+                self.file_path)
+            return
         _log.info("LogViewerWidget.load_file: path=%r", self.file_path)
         self.loader = LogLoader(self.file_path)
         self.loader.progress.connect(self.progressChanged.emit)
@@ -784,7 +813,14 @@ class LogViewerWidget(QWidget):
         self.stats = stats
         self.update_stats_text()
         self.statsChanged.emit(stats)
-        self.loadingFinished.emit()
+        # В Fast mode loadingFinished уже эмитили после Stage 1 — повторный
+        # эмит вызывает второй _lru_touch у MainWindow и портит LRU-порядок
+        # через 30+ секунд после реального открытия. _fast_stage_emitted
+        # ставится в _on_fast_finished перед первым emit'ом.
+        if getattr(self, '_fast_stage_emitted', False):
+            self._fast_stage_emitted = False  # reset для следующих unload→reload циклов
+        else:
+            self.loadingFinished.emit()
         # Индекс кодов устарел - перестроится при следующем открытии вкладки
         self._invalidate_code_history()
 

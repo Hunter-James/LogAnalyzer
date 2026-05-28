@@ -559,10 +559,25 @@ class GroupStatsDialog(QDialog):
         тысяч QTreeWidgetItem'ов + dict с миллионами кодов остаются в RAM
         даже после закрытия окна."""
         if self._worker is not None and self._worker.isRunning():
+            # DISCONNECT finished перед wait — иначе worker может эмитнуть
+            # finished на уже-удалённый диалог после wait timeout → crash.
+            try:
+                self._worker.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
             self._worker.requestInterruption()
-            # Ждём короткое время — обычно loader проверяет
-            # isInterruptionRequested на каждой итерации файла.
-            self._worker.wait(500)
+            # 2с вместо 500мс: GroupStatsWorker проверяет interruption
+            # только между файлами, а текущий файл может быть 5+ ГБ.
+            self._worker.wait(2000)
+            if self._worker.isRunning():
+                # Не дождались — поток продолжит работать в фоне до
+                # окончания текущего файла. Никаких сигналов на удалённый
+                # диалог не придёт (мы дисконнектнули). Утечка ОЗУ
+                # временная — Python соберёт worker когда тот завершится.
+                import logging
+                logging.getLogger('group_stats_dialog').warning(
+                    "Worker не остановился за 2с при закрытии диалога — "
+                    "файл слишком большой, прерывание происходит между файлами")
         # Чистим тяжёлые ссылки. self._batches на 336 логах — это 2.7M кодов
         # + counters + per_file_counters → несколько ГБ RAM.
         self._batches = {}

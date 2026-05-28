@@ -790,8 +790,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.remove(viewer)
         if not self.progress_bar.has_active():
             self.btn_open.setEnabled(True)
-        # Busy-оверлей сам спрятался в _on_cancel_clicked. Не вызываем hide_busy
-        # ещё раз, чтобы не было мерцания.
+        # BusyOverlay._on_cancel_clicked сам зовёт self.hide() — см.
+        # custom_widgets.py. Здесь дублировать hide_busy() не нужно
+        # (получится двойной hide event). Если кто-то уберёт self.hide()
+        # из _on_cancel_clicked — Отмена перестанет прятать overlay,
+        # этот callback тоже надо будет обновить.
 
     # ----- RAM-монитор -----
 
@@ -1181,4 +1184,30 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         self.save_current_settings()
+        # Корректно останавливаем все QThread'ы во всех viewer'ах перед
+        # super().closeEvent — иначе Qt прибивает потоки как «destroyed
+        # while running» с warning'ом / crash'ем. В каждом viewer'е могут
+        # быть loader (классический или Stage 2), fast_loader (Stage 1) и
+        # model.filter_worker.
+        for group in self.split_manager.iter_groups():
+            for i in range(group.count()):
+                w = group.widget(i)
+                if not isinstance(w, LogViewerWidget):
+                    continue
+                for attr in ('fast_loader', 'loader'):
+                    lo = getattr(w, attr, None)
+                    if lo is not None and lo.isRunning():
+                        try:
+                            lo.finished.disconnect()
+                        except (TypeError, RuntimeError):
+                            pass
+                        lo.requestInterruption()
+                        lo.wait(500)
+                fw = getattr(w.model, 'filter_worker', None)
+                if fw is not None and fw.isRunning():
+                    try:
+                        fw.cancel()
+                    except Exception:
+                        pass
+                    fw.wait(500)
         super().closeEvent(event)
