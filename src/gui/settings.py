@@ -52,6 +52,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, current_theme, current_font_size, current_features,
                  current_group_layout='stack', remember_split_layout=False,
+                 fast_open_mode=False,
                  parent=None):
         super().__init__(parent)
         # Сохраняем для get_settings - чтобы вернуть как есть, если юзер
@@ -154,6 +155,33 @@ class SettingsDialog(QDialog):
         groups_layout.addWidget(self.cb_remember_split)
         features_outer.addWidget(groups_box)
 
+        # Категория «Открытие файлов» — выбор режима парсинга.
+        open_box = QGroupBox("Открытие файлов")
+        open_layout = QVBoxLayout(open_box)
+        open_layout.setContentsMargins(10, 8, 10, 8)
+        open_layout.setSpacing(4)
+
+        info_text = QLabel(
+            "<b>Классический режим</b> (по умолчанию): полный парсинг "
+            "начинается сразу. Все фичи (фильтры, партии, история кода) "
+            "доступны через ~1–2 секунды для среднего файла, дольше для "
+            "больших.<br>"
+            "<b>Быстрый режим</b>: сначала открывается текст файла с "
+            "маркерами ERROR/WARN на скроллбаре (~0.5с для среднего файла, "
+            "как Notepad++). Полный анализ доезжает в фоне — пока он идёт, "
+            "доступно только чтение и встроенный поиск (Ctrl+F). Когда "
+            "анализ готов, окно автоматически переключается на полный режим.")
+        info_text.setWordWrap(True)
+        info_text.setStyleSheet("color: #888; font-size: 9pt;")
+        open_layout.addWidget(info_text)
+
+        self.cb_fast_open = _WrapCheckBox(
+            "Быстрый режим открытия (Two-stage: text-view → полный анализ "
+            "в фоне)")
+        self.cb_fast_open.setChecked(bool(fast_open_mode))
+        open_layout.addWidget(self.cb_fast_open)
+        features_outer.addWidget(open_box)
+
         features_outer.addStretch(1)
 
         # Заворачиваем в QScrollArea, чтобы при добавлении новых категорий
@@ -232,4 +260,5 @@ class SettingsDialog(QDialog):
                 self.font_spin.value(),
                 features,
                 self._current_group_layout,
-                self.cb_remember_split.isChecked())
+                self.cb_remember_split.isChecked(),
+                self.cb_fast_open.isChecked())

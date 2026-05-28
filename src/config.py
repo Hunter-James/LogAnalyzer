@@ -154,6 +154,12 @@ def load_settings():
     # параллельно при следующем запуске.
     defaults["remember_split_layout"] = bool(defaults.get("remember_split_layout", False))
 
+    # Режим открытия файла: False = классический (полный парсинг сразу,
+    # все фичи доступны через ~1-2с), True = быстрый Two-stage (text-view
+    # с маркерами ERROR/WARN за <1с, полный анализ доезжает в фоне).
+    # Default False — поведение как до фичи fast-open.
+    defaults["fast_open_mode"] = bool(defaults.get("fast_open_mode", False))
+
     # archived_groups больше не поддерживается (архивирование убрано в
     # пользу единой операции «Скрыть»). Чтобы не падать на старых settings.json -
     # просто игнорируем ключ если он там есть.

@@ -419,10 +419,12 @@ class MainWindow(QMainWindow):
         # в другую панель" из контекстного меню вкладки.
         current_group_layout = self.split_manager.get_layout_mode()
         remember_split = bool(self.settings.get("remember_split_layout", False))
+        fast_open = bool(self.settings.get("fast_open_mode", False))
         dlg = SettingsDialog(
             self.current_theme_name, self.current_font_size, self.ui_features,
             current_group_layout=current_group_layout,
             remember_split_layout=remember_split,
+            fast_open_mode=fast_open,
             parent=self,
         )
         dlg.previewChanged.connect(self._preview_appearance)
@@ -434,7 +436,8 @@ class MainWindow(QMainWindow):
             self._preview_timer.stop()
 
         if result:
-            theme, size, features, group_layout, remember_split = dlg.get_settings()
+            (theme, size, features, group_layout,
+             remember_split, fast_open) = dlg.get_settings()
             self.current_font_size = size
             self.ui_features = features
             self.apply_theme(theme)
@@ -443,6 +446,7 @@ class MainWindow(QMainWindow):
             self.split_manager.set_stack_mode(group_layout == 'stack')
             self.settings["group_layout_mode"] = group_layout
             self.settings["remember_split_layout"] = bool(remember_split)
+            self.settings["fast_open_mode"] = bool(fast_open)
             self.save_current_settings()
         else:
             # Откатываем live-превью на исходные настройки (без сохранения).
@@ -1164,6 +1168,8 @@ class MainWindow(QMainWindow):
             # ключа не будет, и при чтении load_settings возьмёт дефолт.
             "remember_split_layout": bool(
                 self.settings.get("remember_split_layout", False)),
+            "fast_open_mode": bool(
+                self.settings.get("fast_open_mode", False)),
             # Индекс активной группы - при следующем запуске именно её
             # первый таб начнёт грузиться (а не нулевая по счёту, если был на
             # другой группе).
