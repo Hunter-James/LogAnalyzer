@@ -120,6 +120,11 @@ class LogViewerWidget(QWidget):
         if self._loaded:
             return
         self._stop_tail()
+        # Проверка обоих loader'ов — fast (Stage 1) И обычного (Stage 2 либо
+        # классический). Без проверки fast_loader повторный activeTabChanged
+        # во время Stage 1 запускал второй FastTextLoader и busy «висел».
+        if hasattr(self, 'fast_loader') and self.fast_loader and self.fast_loader.isRunning():
+            return
         if hasattr(self, 'loader') and self.loader and self.loader.isRunning():
             if self.loader.isInterruptionRequested():
                 self.loader.wait(300)
@@ -145,17 +150,17 @@ class LogViewerWidget(QWidget):
             self._loaded = True
 
     def cancel_load(self):
-        """Юзер запросил отмену текущей загрузки. Просим LogLoader прерваться -
-        он сам пришлёт finished с error_msg=__CANCELLED__, по которому
-        on_load_finished обновит UI. Здесь делаем только запрос на прерывание
-        и моментально меняем lbl_stats, чтобы юзер увидел реакцию (loader
-        может закончить парсинг текущей пачки строк за ~100мс)."""
-        loader = getattr(self, 'loader', None)
-        if loader is not None and loader.isRunning():
-            try:
-                loader.requestInterruption()
-            except Exception:
-                pass
+        """Юзер запросил отмену текущей загрузки. Прерываем оба возможных
+        loader'а — fast_loader (Stage 1 в Fast mode) и loader (классический
+        или Stage 2). Тот что активен, ответит __CANCELLED__ через свой
+        finished, и на нём UI откатится в lazy-состояние."""
+        for attr in ('fast_loader', 'loader'):
+            lo = getattr(self, attr, None)
+            if lo is not None and lo.isRunning():
+                try:
+                    lo.requestInterruption()
+                except Exception:
+                    pass
         # Моментальная обратная связь в строке статуса - не ждём loader.
         self.lbl_stats.setText("Отмена загрузки …")
 
@@ -704,6 +709,12 @@ class LogViewerWidget(QWidget):
         # Один setPlainText — оптимизирован в QPlainTextEdit для большого текста
         _log.info("FastTextLoader finished: path=%r lines=%d markers=%d",
                   self.file_path, total_lines, len(markers))
+        # ВАЖНО: _loaded=True ставим ПРЯМО СЕЙЧАС, до setPlainText. Иначе
+        # пока setPlainText занят (синхронно, до секунды на 1М строк), Qt
+        # может обработать ещё один activeTabChanged для этого viewer'а
+        # с _loaded=False → start_fast_load запустится повторно, busy
+        # удвоится. Stage 2 загрузка не требует _loaded=False.
+        self._loaded = True
         self.text_view.setUpdatesEnabled(False)
         try:
             self.text_view.setPlainText(text)
@@ -723,7 +734,6 @@ class LogViewerWidget(QWidget):
         # Stage 2: запускаем обычный LogLoader. Когда он закончит,
         # on_load_finished переключит на splitter.
         self.load_file()
-        self._loaded = True
 
     def load_file(self):
         _log.info("LogViewerWidget.load_file: path=%r", self.file_path)

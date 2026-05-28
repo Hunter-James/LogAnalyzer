@@ -174,11 +174,12 @@ class BusyOverlay(QWidget):
         super().hide()
 
     def _on_cancel_clicked(self):
-        """Юзер нажал «Отмена». Вызываем callback и сразу прячем оверлей -
-        чтобы юзер увидел, что отмена пошла."""
+        """Юзер нажал «Отмена». Прячем сам оверлей сразу (чтобы юзер видел
+        реакцию) и затем вызываем callback. callback может занять время —
+        loader.requestInterruption + ожидание текущей пачки чтения."""
         cb = self._cancel_callback
         self._cancel_callback = None
-        self._btn_cancel.hide()
+        self.hide()
         if cb is not None:
             try:
                 cb()
