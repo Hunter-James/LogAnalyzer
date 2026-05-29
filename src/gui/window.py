@@ -807,8 +807,8 @@ class MainWindow(QMainWindow):
         return str(n)
 
     def _update_ram_indicator(self):
-        """Обновляет lbl_ram: текущий RSS процесса + entries по каждой
-        открытой вкладке (или 'lazy', если таб не загружен)."""
+        """Обновляет lbl_ram: текущий RSS процесса + размер активного файла
+        на диске + entries по каждой открытой вкладке (или 'lazy')."""
         if _HAS_PSUTIL:
             try:
                 rss_mb = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
@@ -817,6 +817,18 @@ class MainWindow(QMainWindow):
                 rss_text = "RAM: ?"
         else:
             rss_text = "RAM: (psutil не установлен)"
+
+        # Размер активного файла на диске (для архивов — сжатый размер).
+        file_text = ""
+        if hasattr(self, 'split_manager'):
+            viewer = self.split_manager.get_current_viewer()
+            fp = getattr(viewer, 'file_path', None) if viewer else None
+            if fp:
+                try:
+                    sz = os.path.getsize(fp)
+                    file_text = f"  |  Файл: {self._format_bytes(sz)}"
+                except OSError:
+                    pass
 
         counts = []
         if hasattr(self, 'split_manager'):
@@ -831,9 +843,20 @@ class MainWindow(QMainWindow):
                         else:
                             counts.append("lazy")
         if counts:
-            self.lbl_ram.setText(f"{rss_text}  |  Entries: {' + '.join(counts)}")
+            self.lbl_ram.setText(
+                f"{rss_text}{file_text}  |  Entries: {' + '.join(counts)}")
         else:
-            self.lbl_ram.setText(rss_text)
+            self.lbl_ram.setText(f"{rss_text}{file_text}")
+
+    @staticmethod
+    def _format_bytes(num_bytes):
+        """3.5 MB / 187 KB / 42 B."""
+        n = float(num_bytes)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024 or unit == "TB":
+                return f"{int(n)} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+            n /= 1024
+        return f"{num_bytes} B"
 
     # ----- Busy overlay -----
 
