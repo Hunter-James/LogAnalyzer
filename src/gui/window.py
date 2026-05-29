@@ -419,10 +419,12 @@ class MainWindow(QMainWindow):
         # в другую панель" из контекстного меню вкладки.
         current_group_layout = self.split_manager.get_layout_mode()
         remember_split = bool(self.settings.get("remember_split_layout", False))
+        fast_open = bool(self.settings.get("fast_open_mode", False))
         dlg = SettingsDialog(
             self.current_theme_name, self.current_font_size, self.ui_features,
             current_group_layout=current_group_layout,
             remember_split_layout=remember_split,
+            fast_open_mode=fast_open,
             parent=self,
         )
         dlg.previewChanged.connect(self._preview_appearance)
@@ -434,7 +436,8 @@ class MainWindow(QMainWindow):
             self._preview_timer.stop()
 
         if result:
-            theme, size, features, group_layout, remember_split = dlg.get_settings()
+            (theme, size, features, group_layout,
+             remember_split, fast_open) = dlg.get_settings()
             self.current_font_size = size
             self.ui_features = features
             self.apply_theme(theme)
@@ -443,6 +446,7 @@ class MainWindow(QMainWindow):
             self.split_manager.set_stack_mode(group_layout == 'stack')
             self.settings["group_layout_mode"] = group_layout
             self.settings["remember_split_layout"] = bool(remember_split)
+            self.settings["fast_open_mode"] = bool(fast_open)
             self.save_current_settings()
         else:
             # Откатываем live-превью на исходные настройки (без сохранения).
@@ -786,8 +790,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.remove(viewer)
         if not self.progress_bar.has_active():
             self.btn_open.setEnabled(True)
-        # Busy-оверлей сам спрятался в _on_cancel_clicked. Не вызываем hide_busy
-        # ещё раз, чтобы не было мерцания.
+        # BusyOverlay._on_cancel_clicked сам зовёт self.hide() — см.
+        # custom_widgets.py. Здесь дублировать hide_busy() не нужно
+        # (получится двойной hide event). Если кто-то уберёт self.hide()
+        # из _on_cancel_clicked — Отмена перестанет прятать overlay,
+        # этот callback тоже надо будет обновить.
 
     # ----- RAM-монитор -----
 
@@ -800,8 +807,8 @@ class MainWindow(QMainWindow):
         return str(n)
 
     def _update_ram_indicator(self):
-        """Обновляет lbl_ram: текущий RSS процесса + entries по каждой
-        открытой вкладке (или 'lazy', если таб не загружен)."""
+        """Обновляет lbl_ram: текущий RSS процесса + размер активного файла
+        на диске + entries по каждой открытой вкладке (или 'lazy')."""
         if _HAS_PSUTIL:
             try:
                 rss_mb = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
@@ -810,6 +817,18 @@ class MainWindow(QMainWindow):
                 rss_text = "RAM: ?"
         else:
             rss_text = "RAM: (psutil не установлен)"
+
+        # Размер активного файла на диске (для архивов — сжатый размер).
+        file_text = ""
+        if hasattr(self, 'split_manager'):
+            viewer = self.split_manager.get_current_viewer()
+            fp = getattr(viewer, 'file_path', None) if viewer else None
+            if fp:
+                try:
+                    sz = os.path.getsize(fp)
+                    file_text = f"  |  Файл: {self._format_bytes(sz)}"
+                except OSError:
+                    pass
 
         counts = []
         if hasattr(self, 'split_manager'):
@@ -824,9 +843,20 @@ class MainWindow(QMainWindow):
                         else:
                             counts.append("lazy")
         if counts:
-            self.lbl_ram.setText(f"{rss_text}  |  Entries: {' + '.join(counts)}")
+            self.lbl_ram.setText(
+                f"{rss_text}{file_text}  |  Entries: {' + '.join(counts)}")
         else:
-            self.lbl_ram.setText(rss_text)
+            self.lbl_ram.setText(f"{rss_text}{file_text}")
+
+    @staticmethod
+    def _format_bytes(num_bytes):
+        """3.5 MB / 187 KB / 42 B."""
+        n = float(num_bytes)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024 or unit == "TB":
+                return f"{int(n)} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+            n /= 1024
+        return f"{num_bytes} B"
 
     # ----- Busy overlay -----
 
@@ -1164,6 +1194,8 @@ class MainWindow(QMainWindow):
             # ключа не будет, и при чтении load_settings возьмёт дефолт.
             "remember_split_layout": bool(
                 self.settings.get("remember_split_layout", False)),
+            "fast_open_mode": bool(
+                self.settings.get("fast_open_mode", False)),
             # Индекс активной группы - при следующем запуске именно её
             # первый таб начнёт грузиться (а не нулевая по счёту, если был на
             # другой группе).
@@ -1175,4 +1207,30 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         self.save_current_settings()
+        # Корректно останавливаем все QThread'ы во всех viewer'ах перед
+        # super().closeEvent — иначе Qt прибивает потоки как «destroyed
+        # while running» с warning'ом / crash'ем. В каждом viewer'е могут
+        # быть loader (классический или Stage 2), fast_loader (Stage 1) и
+        # model.filter_worker.
+        for group in self.split_manager.iter_groups():
+            for i in range(group.count()):
+                w = group.widget(i)
+                if not isinstance(w, LogViewerWidget):
+                    continue
+                for attr in ('fast_loader', 'loader'):
+                    lo = getattr(w, attr, None)
+                    if lo is not None and lo.isRunning():
+                        try:
+                            lo.finished.disconnect()
+                        except (TypeError, RuntimeError):
+                            pass
+                        lo.requestInterruption()
+                        lo.wait(500)
+                fw = getattr(w.model, 'filter_worker', None)
+                if fw is not None and fw.isRunning():
+                    try:
+                        fw.cancel()
+                    except Exception:
+                        pass
+                    fw.wait(500)
         super().closeEvent(event)

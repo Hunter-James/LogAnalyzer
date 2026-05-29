@@ -174,11 +174,12 @@ class BusyOverlay(QWidget):
         super().hide()
 
     def _on_cancel_clicked(self):
-        """Юзер нажал «Отмена». Вызываем callback и сразу прячем оверлей -
-        чтобы юзер увидел, что отмена пошла."""
+        """Юзер нажал «Отмена». Прячем сам оверлей сразу (чтобы юзер видел
+        реакцию) и затем вызываем callback. callback может занять время —
+        loader.requestInterruption + ожидание текущей пачки чтения."""
         cb = self._cancel_callback
         self._cancel_callback = None
-        self._btn_cancel.hide()
+        self.hide()
         if cb is not None:
             try:
                 cb()
@@ -530,7 +531,21 @@ class MarkerScrollBar(QScrollBar):
         self._markers = []
 
     def set_markers(self, markers):
-        self._markers = list(markers)
+        # Деduplicate по округлённой позиции. На скроллбаре высотой 1000px
+        # пиксельная точность ~0.1%. Округление rel_pos × 10000 даёт max
+        # 10000 уникальных позиций × N цветов — paintEvent итерирует по ним.
+        # Без этого на 14M маркеров (Ивитек где каждая строка ERROR) каждый
+        # paint занимал 1.2с и drag скроллбара превращался в слайдшоу.
+        seen = {}
+        for rel_pos, color in markers:
+            # color — QColor; rgba() — int, валидный hash key
+            try:
+                key = (int(rel_pos * 10000), color.rgba())
+            except Exception:
+                key = (int(rel_pos * 10000), id(color))
+            if key not in seen:
+                seen[key] = (rel_pos, color)
+        self._markers = list(seen.values())
         self.update()
 
     def paintEvent(self, event):

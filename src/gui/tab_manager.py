@@ -5,7 +5,7 @@ import subprocess
 from PyQt6.QtWidgets import (QTabWidget, QSplitter, QStackedWidget, QWidget,
                              QVBoxLayout, QHBoxLayout, QMenu,
                              QTabBar, QApplication, QLabel, QToolButton, QFrame,
-                             QInputDialog, QColorDialog)
+                             QInputDialog, QColorDialog, QAbstractButton)
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QTimer
 from PyQt6.QtGui import QDrag, QPixmap, QCursor, QPainter, QColor
 from gui.log_viewer import LogViewerWidget
@@ -409,6 +409,12 @@ class GroupPanel(QWidget):
         if pane in self._panes:
             self.tabs = pane
 
+    def reorder_tabs(self, ordered_widgets):
+        """Переставляет табы в активной pane по порядку ordered_widgets.
+        Сортировка файлов в диалоге Групп работает с активной pane (для
+        intra-group split упрощение — сортируется видимая pane)."""
+        self.tabs.reorder_tabs(ordered_widgets)
+
 
 class DraggableTabBar(QTabBar):
     def __init__(self, parent=None):
@@ -419,20 +425,33 @@ class DraggableTabBar(QTabBar):
         self.last_clicked_index = -1
 
     def wheelEvent(self, event):
-        """Колесо мыши над таб-баром листает видимую часть (когда табов больше
-        чем влезает в строку), но НЕ меняет активный таб. Это привычное
-        поведение в браузерах. Qt по умолчанию при wheel ещё и сменяет
-        current - перехватываем: запоминаем current до super(), и если он
-        сменился - возвращаем обратно (signals блокируем, чтобы не дёргать
-        activeTabChanged зря)."""
-        prev = self.currentIndex()
-        super().wheelEvent(event)
-        if self.currentIndex() != prev:
-            self.blockSignals(True)
-            try:
-                self.setCurrentIndex(prev)
-            finally:
-                self.blockSignals(False)
+        """Колесо мыши над таб-баром ЛИСТАЕТ видимую ленту вкладок влево/вправо
+        (когда табов больше чем влезает), НЕ меняя активный таб.
+
+        QTabBar по умолчанию на wheel переключает current. Раньше мы вызывали
+        super() и откатывали currentIndex — но это НЕ листало ленту, видимая
+        часть оставалась на месте. Правильный способ: QTabBar когда табы не
+        влезают создаёт две scroll-кнопки (◀ ▶) как дочерние QAbstractButton.
+        Эмулируем нажатие нужной — это и двигает ленту, как стрелки."""
+        delta = event.angleDelta().y()
+        if delta == 0:
+            event.accept()
+            return
+        # Видимые scroll-кнопки QTabBar. Их две (лево/право); видимы только
+        # когда табы не влезают в ширину бара.
+        buttons = [b for b in self.findChildren(QAbstractButton) if b.isVisible()]
+        if len(buttons) < 2:
+            # Все вкладки влезают — листать нечего, просто гасим событие
+            # чтобы оно не ушло выше и не вызвало переключение.
+            event.accept()
+            return
+        buttons.sort(key=lambda b: b.x())
+        left_btn, right_btn = buttons[0], buttons[-1]
+        # Колесо вверх (delta>0) → влево, вниз → вправо.
+        target = left_btn if delta > 0 else right_btn
+        if target.isEnabled():
+            target.click()
+        event.accept()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -573,6 +592,17 @@ class EditorTabWidget(QTabWidget):
     def _close_multiple_tabs(self, indices):
         for i in sorted(indices, reverse=True):
             self.close_tab(i)
+
+    def reorder_tabs(self, ordered_widgets):
+        """Переставляет табы в порядке ordered_widgets (список виджетов).
+        Используется сортировкой файлов в диалоге Групп. Через moveTab —
+        selection-sort слева направо: на шаге k нужный виджет двигается на
+        позицию k, левее уже зафиксировано."""
+        bar = self.tabBar()
+        for target_idx, w in enumerate(ordered_widgets):
+            cur = self.indexOf(w)
+            if cur != -1 and cur != target_idx:
+                bar.moveTab(cur, target_idx)
 
     def show_context_menu(self, point):
         index = self.tabBar().tabAt(point)
@@ -827,6 +857,9 @@ class SplitManager(QWidget):
         # Каждая группа представлена парой (chip, panel) - храним их в одном
         # списке в порядке отображения. panel - GroupPanel с tabs.
         self._groups = []  # list of dict: {'chip': GroupHeader, 'panel': GroupPanel}
+        # Монотонный счётчик для panel._creation_seq (сортировка групп по
+        # дате добавления). Инкрементируется в _add_group_internal.
+        self._next_group_seq = 0
 
         cfgs = list(group_configs or [])
         if len(cfgs) < 1:
@@ -945,6 +978,11 @@ class SplitManager(QWidget):
         # схлопывает все КРОМЕ source/target, чтобы юзер не получал 4 столбца
         # вместо ожидаемых 2.
         panel._collapsed_in_splitter = False
+        # Монотонный порядковый номер создания группы — для сортировки
+        # «по дате добавления» в диалоге Групп. Порядок в _groups меняется
+        # при reorder, а seq остаётся стабильным.
+        panel._creation_seq = self._next_group_seq
+        self._next_group_seq += 1
 
         # Подписываемся на сигналы chip'а
         chip.renameRequested.connect(
@@ -1228,6 +1266,48 @@ class SplitManager(QWidget):
         else:
             self._set_active_group(new_active_idx, emit_signal=False)
 
+        self.groupConfigChanged.emit()
+
+    def reorder_groups(self, ordered_panels):
+        """Переставляет группы в порядке ordered_panels (список GroupPanel).
+        Используется сортировкой в диалоге Групп. Активная группа и состав
+        панелей сохраняются — меняется только порядок отображения в баре и
+        контейнере. Порядок сохранится в сессию через groupConfigChanged."""
+        by_panel = {g['panel']: g for g in self._groups}
+        new_groups = []
+        for p in ordered_panels:
+            g = by_panel.pop(p, None)
+            if g is not None:
+                new_groups.append(g)
+        # Подстраховка: панели не из списка (не должно быть) — в конец
+        new_groups.extend(by_panel.values())
+        if len(new_groups) != len(self._groups):
+            return  # рассинхрон — не трогаем
+
+        prev_active_panel = None
+        if 0 <= self._active_index < len(self._groups):
+            prev_active_panel = self._groups[self._active_index]['panel']
+
+        self._groups = new_groups
+        # Пересобираем bar + контейнер в новом порядке (та же механика что в
+        # _on_group_dropped_here).
+        for g in self._groups:
+            self._bar._chips_layout.removeWidget(g['chip'])
+        for g in self._groups:
+            self._bar._chips_layout.addWidget(g['chip'])
+        cont = self._container
+        for g in self._groups:
+            cont.removeWidget(g['panel'])
+        for g in self._groups:
+            cont.addWidget(g['panel'])
+
+        # Восстанавливаем активную группу по объекту панели
+        if prev_active_panel is not None:
+            new_idx = next((i for i, g in enumerate(self._groups)
+                            if g['panel'] is prev_active_panel), 0)
+        else:
+            new_idx = 0
+        self._set_active_group(new_idx, emit_signal=False)
         self.groupConfigChanged.emit()
 
     def _on_tab_dropped_on_panel(self, target_panel, source_tabs, tab_index):
