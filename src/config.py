@@ -160,6 +160,20 @@ def load_settings():
     # Default False — поведение как до фичи fast-open.
     defaults["fast_open_mode"] = bool(defaults.get("fast_open_mode", False))
 
+    # Движок быстрого просмотра (Stage 1 в fast_open_mode):
+    #   'list'    — QListView + модель сырых строк. Открытие мгновенное
+    #               даже на миллионах строк. Выделение/копирование целыми
+    #               строками, без Ctrl+F и текстового выделения фрагментов.
+    #   'full'    — QPlainTextEdit со всем текстом. Полноценный редактор
+    #               (выделение фрагментов, Ctrl+F), но на 1M+ строк
+    #               открытие занимает несколько секунд.
+    #   'limited' — QPlainTextEdit с первыми N строками. Компромисс:
+    #               быстро + текстовый редактор, но виден не весь файл.
+    engine = str(defaults.get("fast_view_engine") or "list").lower()
+    if engine not in ("list", "full", "limited"):
+        engine = "list"
+    defaults["fast_view_engine"] = engine
+
     # archived_groups больше не поддерживается (архивирование убрано в
     # пользу единой операции «Скрыть»). Чтобы не падать на старых settings.json -
     # просто игнорируем ключ если он там есть.

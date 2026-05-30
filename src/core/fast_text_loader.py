@@ -25,13 +25,18 @@ from core.workers import _open_log_stream
 class FastTextLoader(QThread):
     """Сигналы:
       progress(int percent) — прогресс по байтам исходного файла.
-      finished(str text, list[(int line_no, str level)] markers,
+      finished(list lines, list[(int line_no, str level)] markers,
                int total_lines, str error_msg) —
-        весь текст + все маркеры разом. error_msg='__CANCELLED__' если
-        прерван через requestInterruption, '' при успехе."""
+        список сырых строк + все маркеры разом. error_msg='__CANCELLED__'
+        если прерван через requestInterruption, '' при успехе.
+
+        Возвращаем СПИСОК строк (а не joined text), потому что
+        list-движок text-view (QListView+RawLinesModel) работает напрямую
+        со списком — setModel мгновенный. Для full/limited-движков
+        UI сам сделает '\\n'.join(lines) при необходимости."""
 
     progress = pyqtSignal(int)
-    finished = pyqtSignal(str, list, int, str)
+    finished = pyqtSignal(list, list, int, str)
 
     def __init__(self, file_path):
         super().__init__()
@@ -41,7 +46,7 @@ class FastTextLoader(QThread):
         try:
             stream, total_bytes = _open_log_stream(self.file_path)
         except Exception as e:
-            self.finished.emit('', [], 0, str(e))
+            self.finished.emit([], [], 0, str(e))
             return
 
         buf = []
@@ -55,7 +60,7 @@ class FastTextLoader(QThread):
                 # для скорости. interrupt проверяется ещё и на каждом
                 # progress emit ниже.
                 if line_no % 10000 == 0 and self.isInterruptionRequested():
-                    self.finished.emit('', [], line_no, '__CANCELLED__')
+                    self.finished.emit([], [], line_no, '__CANCELLED__')
                     return
                 line_no += 1
                 bytes_read += len(line.encode('utf-8'))
@@ -78,11 +83,11 @@ class FastTextLoader(QThread):
                     last_progress = now
 
             self.progress.emit(100)
-            # Один emit с готовым текстом + маркерами. setPlainText на
-            # стороне UI отработает за O(N), без накопления очереди событий.
-            self.finished.emit(''.join(buf), markers, line_no, '')
+            # Один emit со списком строк + маркерами. UI сам выберет как
+            # показать (setModel для list-движка / setPlainText для full).
+            self.finished.emit(buf, markers, line_no, '')
         except Exception as e:
-            self.finished.emit('', [], line_no, str(e))
+            self.finished.emit([], [], line_no, str(e))
         finally:
             try:
                 stream.close()

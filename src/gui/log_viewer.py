@@ -644,39 +644,89 @@ class LogViewerWidget(QWidget):
 
     # ----- Fast mode (Two-stage open) -----
 
+    # Сколько строк показывает limited-движок text-view.
+    LIMITED_VIEW_LINES = 200_000
+
     def _create_fast_text_view(self):
-        """QPlainTextEdit с MarkerScrollBar для первого этапа Fast mode.
-        Сюда стримится сырой текст файла; маркеры ERROR/WARN рисуются
-        на скроллбаре по мере поступления chunk'ов."""
-        from PyQt6.QtWidgets import QPlainTextEdit
-        from gui.custom_widgets import MarkerScrollBar
-        tv = QPlainTextEdit()
-        tv.setReadOnly(True)
-        tv.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        # Моноширинный шрифт чтобы text-view выглядел как лог-вьюер
+        """Создаёт виджет text-view для Stage 1 по настройке fast_view_engine.
+        Тип виджета зависит от движка — само создание делегируем
+        _build_fast_view_widget. Возвращает виджет для добавления в
+        center_stack (page 2)."""
+        self._fast_total_lines = 0
+        self._fast_markers = []  # [(line_no, 'ERROR'|'WARN')]
+        self._fast_engine = self._current_fast_engine()
+        return self._build_fast_view_widget(self._fast_engine)
+
+    @staticmethod
+    def _current_fast_engine():
+        from config import load_settings
+        try:
+            eng = str(load_settings().get('fast_view_engine') or 'list').lower()
+        except Exception:
+            eng = 'list'
+        return eng if eng in ('list', 'full', 'limited') else 'list'
+
+    def _build_fast_view_widget(self, engine):
+        """Строит конкретный виджет для движка:
+          list    → QListView + RawLinesModel (мгновенно)
+          full    → QPlainTextEdit (полный текст, медленно на 1M+)
+          limited → QPlainTextEdit (первые LIMITED_VIEW_LINES строк)"""
         from PyQt6.QtGui import QFont
+        from gui.custom_widgets import MarkerScrollBar
         f = QFont('Consolas')
         f.setStyleHint(QFont.StyleHint.Monospace)
         f.setPointSize(self.current_font_size)
+
+        if engine == 'list':
+            from PyQt6.QtWidgets import QListView, QAbstractItemView
+            from gui.custom_widgets import RawLinesModel
+            lv = QListView()
+            lv.setUniformItemSizes(True)
+            lv.setFont(f)
+            lv.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+            lv.setVerticalScrollBar(MarkerScrollBar(Qt.Orientation.Vertical))
+            self._raw_lines_model = RawLinesModel()
+            lv.setModel(self._raw_lines_model)
+            return lv
+
+        # full / limited — QPlainTextEdit
+        from PyQt6.QtWidgets import QPlainTextEdit
+        tv = QPlainTextEdit()
+        tv.setReadOnly(True)
+        tv.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         tv.setFont(f)
-        # Скроллбар-с-маркерами для ERROR/WARN — единственная фича
-        # которую юзер хочет видеть сразу при открытии.
         tv.setVerticalScrollBar(MarkerScrollBar(Qt.Orientation.Vertical))
-        # Состояние fast-loader'а
-        self._fast_total_lines = 0
-        self._fast_markers = []  # [(line_no, 'ERROR'|'WARN')]
+        self._raw_lines_model = None
         return tv
+
+    def _ensure_fast_view_engine(self):
+        """Если настройка движка сменилась с момента создания виджета —
+        пересоздаёт self.text_view в center_stack нужного типа."""
+        engine = self._current_fast_engine()
+        if engine == getattr(self, '_fast_engine', None):
+            return
+        # Пересоздаём виджет в center_stack (page 2)
+        old = self.text_view
+        new = self._build_fast_view_widget(engine)
+        idx = self.center_stack.indexOf(old)
+        self.center_stack.insertWidget(idx if idx >= 0 else 2, new)
+        self.center_stack.removeWidget(old)
+        old.deleteLater()
+        self.text_view = new
+        self._fast_engine = engine
 
     def _show_fast_text(self):
         if hasattr(self, 'center_stack'):
             self.center_stack.setCurrentWidget(self.text_view)
 
     def start_fast_load(self):
-        """Запускает Fast mode: Stage 1 (фоновое чтение → один setPlainText)
-        → Stage 2 (полный парсинг в фоне). UI готов к чтению после Stage 1."""
+        """Запускает Fast mode: Stage 1 (фоновое чтение → показ в text-view
+        выбранным движком) → Stage 2 (полный парсинг в фоне)."""
         from core.fast_text_loader import FastTextLoader
+        # Движок мог поменяться в настройках между открытиями — синхронизируем
+        self._ensure_fast_view_engine()
         # Сброс state'а text_view от предыдущего открытия
-        self.text_view.clear()
+        self._clear_fast_view()
         self._fast_markers = []
         self._fast_total_lines = 0
         self._show_fast_text()
@@ -685,6 +735,13 @@ class LogViewerWidget(QWidget):
         self.fast_loader.progress.connect(self.progressChanged.emit)
         self.fast_loader.finished.connect(self._on_fast_finished)
         self.fast_loader.start()
+
+    def _clear_fast_view(self):
+        """Очищает text-view независимо от движка."""
+        if self._raw_lines_model is not None:
+            self._raw_lines_model.set_lines([])
+        elif hasattr(self.text_view, 'clear'):
+            self.text_view.clear()
 
     def _update_fast_markers(self):
         from PyQt6.QtGui import QColor
@@ -702,11 +759,10 @@ class LogViewerWidget(QWidget):
             items.append((rel, c_err if lvl == 'ERROR' else c_warn))
         sb.set_markers(items)
 
-    def _on_fast_finished(self, text, markers, total_lines, error_msg):
-        """Stage 1 закончилось. FastTextLoader вернул весь текст и список
-        маркеров одним эмитом. Делаем единственный setPlainText на text_view
-        (O(N) один раз вместо O(chunks×N) при streaming), применяем маркеры,
-        затем запускаем Stage 2."""
+    def _on_fast_finished(self, lines, markers, total_lines, error_msg):
+        """Stage 1 закончилось. FastTextLoader вернул список строк + маркеры
+        одним эмитом. Показываем в text-view выбранным движком, применяем
+        маркеры, запускаем Stage 2."""
         if error_msg == '__CANCELLED__':
             self._loaded = False
             self._show_placeholder()
@@ -720,37 +776,55 @@ class LogViewerWidget(QWidget):
             self.loadingFinished.emit()
             return
 
-        # Один setPlainText — оптимизирован в QPlainTextEdit для большого текста
-        _log.info("FastTextLoader finished: path=%r lines=%d markers=%d",
-                  self.file_path, total_lines, len(markers))
-        # ВАЖНО: _loaded=True ставим ПРЯМО СЕЙЧАС, до setPlainText. Иначе
-        # пока setPlainText занят (синхронно, до секунды на 1М строк), Qt
-        # может обработать ещё один activeTabChanged для этого viewer'а
-        # с _loaded=False → start_fast_load запустится повторно, busy
-        # удвоится. Stage 2 загрузка не требует _loaded=False.
+        _log.info("FastTextLoader finished: path=%r lines=%d markers=%d engine=%s",
+                  self.file_path, total_lines, len(markers), self._fast_engine)
+        # _loaded=True ДО заполнения view (full-движок может занять секунды
+        # синхронно — не дать start_fast_load запуститься повторно).
         self._loaded = True
-        self.text_view.setUpdatesEnabled(False)
-        try:
-            self.text_view.setPlainText(text)
-        finally:
-            self.text_view.setUpdatesEnabled(True)
-        # Маркеры: сохраняем + один update со всеми сразу. dedupe внутри
-        # MarkerScrollBar даст max 20K unique позиций даже на 14M маркеров.
+
+        eng = self._fast_engine
+        shown_total = total_lines
+        if eng == 'list':
+            # setModel/set_lines на список — мгновенно даже на 1M+ строк
+            self._raw_lines_model.set_lines(lines)
+        elif eng == 'limited':
+            n = self.LIMITED_VIEW_LINES
+            shown = lines[:n]
+            self.text_view.setUpdatesEnabled(False)
+            try:
+                self.text_view.setPlainText(
+                    ''.join(shown) if shown and shown[0].endswith('\n')
+                    else '\n'.join(s.rstrip('\n') for s in shown))
+            finally:
+                self.text_view.setUpdatesEnabled(True)
+            if total_lines > n:
+                shown_total = n  # маркеры/проценты считаем по показанному
+        else:  # full
+            self.text_view.setUpdatesEnabled(False)
+            try:
+                self.text_view.setPlainText(
+                    ''.join(lines) if lines and lines[0].endswith('\n')
+                    else '\n'.join(s.rstrip('\n') for s in lines))
+            finally:
+                self.text_view.setUpdatesEnabled(True)
+
+        # Маркеры (для limited — только в пределах показанных строк)
+        if eng == 'limited' and total_lines > self.LIMITED_VIEW_LINES:
+            markers = [m for m in markers if m[0] <= self.LIMITED_VIEW_LINES]
         self._fast_markers = markers
-        self._fast_total_lines = total_lines
+        self._fast_total_lines = shown_total
         self._update_fast_markers()
 
-        # Stage 1 готов: юзер видит текст с маркерами. Эмитим loadingFinished
-        # чтобы MainWindow скрыл busy-overlay.
-        self.lbl_stats.setText(
-            f"Быстрый просмотр: {total_lines:,} строк. Полный анализ загружается …")
-        # Флаг: следующий on_load_finished (Stage 2) НЕ должен эмитить
-        # loadingFinished — busy уже спрятан, а второй _lru_touch испортит
-        # порядок LRU через 30с после реального открытия файла.
+        note = (f"Быстрый просмотр: {total_lines:,} строк. "
+                f"Полный анализ загружается …")
+        if eng == 'limited' and total_lines > self.LIMITED_VIEW_LINES:
+            note = (f"Быстрый просмотр: показаны первые "
+                    f"{self.LIMITED_VIEW_LINES:,} из {total_lines:,} строк. "
+                    f"Полный анализ загружается …")
+        self.lbl_stats.setText(note)
         self._fast_stage_emitted = True
         self.loadingFinished.emit()
-        # Stage 2: запускаем обычный LogLoader. Когда он закончит,
-        # on_load_finished переключит на splitter.
+        # Stage 2: обычный LogLoader. on_load_finished переключит на splitter.
         self.load_file()
 
     def load_file(self):
@@ -802,7 +876,8 @@ class LogViewerWidget(QWidget):
                             and self.center_stack.currentWidget() is self.text_view)
         self._show_content()
         if was_in_text_view:
-            QTimer.singleShot(0, self.text_view.clear)
+            # _clear_fast_view работает для любого движка (list/full/limited)
+            QTimer.singleShot(0, self._clear_fast_view)
         self.model.set_entries(entries)
         self._tail_position = last_pos  # для tail-режима
         # Восстанавливаем закладки если были сохранены в сессии
@@ -829,8 +904,11 @@ class LogViewerWidget(QWidget):
         # Собираем партии из распарсенных сегментов и наполняем меню "Партии"
         self._collect_batches()
 
+        # scrollToBottom на 1.2M строк ~1.16с — откладываем через singleShot
+        # чтобы не блокировать момент перехода на splitter. Скролл вниз
+        # сохраняется (произойдёт следующим кадром event loop).
         if self.model.rowCount() > 0:
-            self.log_view.scrollToBottom()
+            QTimer.singleShot(0, self.log_view.scrollToBottom)
 
         # Apply initial filters
         self.refresh_view()

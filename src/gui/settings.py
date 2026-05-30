@@ -52,7 +52,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, current_theme, current_font_size, current_features,
                  current_group_layout='stack', remember_split_layout=False,
-                 fast_open_mode=False,
+                 fast_open_mode=False, fast_view_engine='list',
                  parent=None):
         super().__init__(parent)
         # Сохраняем для get_settings - чтобы вернуть как есть, если юзер
@@ -180,6 +180,35 @@ class SettingsDialog(QDialog):
             "в фоне)")
         self.cb_fast_open.setChecked(bool(fast_open_mode))
         open_layout.addWidget(self.cb_fast_open)
+
+        # Движок быстрого просмотра (как показывать текст в Stage 1)
+        engine_row = QHBoxLayout()
+        engine_row.addWidget(QLabel("Движок просмотра:"))
+        self.combo_view_engine = QComboBox()
+        self.combo_view_engine.addItem("Список (быстро)", "list")
+        self.combo_view_engine.addItem("Текст полностью", "full")
+        self.combo_view_engine.addItem("Текст (первые 200K строк)", "limited")
+        idx = self.combo_view_engine.findData(fast_view_engine)
+        if idx >= 0:
+            self.combo_view_engine.setCurrentIndex(idx)
+        engine_row.addWidget(self.combo_view_engine)
+        engine_row.addStretch()
+        open_layout.addLayout(engine_row)
+
+        engine_info = QLabel(
+            "<b>Список</b> (рекомендуется): открытие мгновенное даже на "
+            "миллионах строк. Выделение и копирование — целыми строками. "
+            "Без посимвольного выделения мышью и Ctrl+F (полный поиск "
+            "приедет с полным режимом через пару секунд).<br>"
+            "<b>Текст полностью</b>: настоящий текстовый редактор — "
+            "посимвольное выделение, Ctrl+F. Но на 1M+ строк открытие "
+            "занимает несколько секунд (UI подвисает).<br>"
+            "<b>Текст (первые 200K)</b>: редактор как выше, но показывает "
+            "только начало файла — открытие быстрое, виден не весь лог.")
+        engine_info.setWordWrap(True)
+        engine_info.setStyleSheet("color: #888; font-size: 9pt;")
+        open_layout.addWidget(engine_info)
+
         features_outer.addWidget(open_box)
 
         features_outer.addStretch(1)
@@ -261,4 +290,5 @@ class SettingsDialog(QDialog):
                 features,
                 self._current_group_layout,
                 self.cb_remember_split.isChecked(),
-                self.cb_fast_open.isChecked())
+                self.cb_fast_open.isChecked(),
+                self.combo_view_engine.currentData())

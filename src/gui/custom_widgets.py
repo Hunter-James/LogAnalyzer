@@ -3,9 +3,39 @@ import re
 from PyQt6.QtWidgets import (QListView, QTextEdit, QScrollBar, QStyle,
                              QStyleOptionSlider, QPlainTextEdit, QWidget,
                              QPushButton, QProgressBar, QLabel, QHBoxLayout)
-from PyQt6.QtCore import pyqtSignal, Qt, QRect, QSize, QTimer
+from PyQt6.QtCore import (pyqtSignal, Qt, QRect, QSize, QTimer,
+                          QAbstractListModel, QModelIndex)
 from PyQt6.QtGui import (QWheelEvent, QPainter, QColor, QSyntaxHighlighter,
                          QTextCharFormat, QFont, QMouseEvent)
+
+
+class RawLinesModel(QAbstractListModel):
+    """Лёгкая read-only модель списка сырых строк лога. Используется в
+    fast text-view режиме «list»: QListView.setModel на 1.2M строк ~1мс,
+    тогда как QPlainTextEdit.setPlainText на тех же данных ~5.9с.
+
+    Хранит ссылку на список строк как есть (без копирования). data()
+    отдаёт строку без хвостового '\\n'."""
+
+    def __init__(self, lines=None, parent=None):
+        super().__init__(parent)
+        self._lines = lines or []
+
+    def set_lines(self, lines):
+        self.beginResetModel()
+        self._lines = lines or []
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._lines)
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.DisplayRole:
+            r = index.row()
+            if 0 <= r < len(self._lines):
+                # rstrip только перевод строки — внутренние пробелы важны
+                return self._lines[r].rstrip('\n')
+        return None
 
 
 # --- Multi-file progress widget ---
