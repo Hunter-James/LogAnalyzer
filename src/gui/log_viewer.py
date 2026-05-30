@@ -884,9 +884,12 @@ class LogViewerWidget(QWidget):
 
         was_in_text_view = (hasattr(self, 'text_view')
                             and self.center_stack.currentWidget() is self.text_view)
-        self._show_content()
-        if was_in_text_view:
-            QTimer.singleShot(0, self._clear_fast_view)
+        # ВАЖНО: set_entries / collect / refresh выполняем ПОКА splitter
+        # скрыт (показан text_view или placeholder, log_view невидим).
+        # endResetModel на невидимом QListView не триггерит немедленный
+        # repaint/relayout — это срезало ~1.4с (на видимом view set_entries
+        # был 1.8с, на скрытом ~0.4с). _show_content переключаем в самом
+        # конце — один repaint вместо нескольких.
         _p0 = _tm.elapsed()
         self.model.set_entries(entries)
         _prof['set_entries'] = _tm.elapsed() - _p0
@@ -913,12 +916,18 @@ class LogViewerWidget(QWidget):
         self._collect_batches()
         _prof['collect_batches'] = _tm.elapsed() - _p0
 
-        if self.model.rowCount() > 0:
-            QTimer.singleShot(0, self.log_view.scrollToBottom)
-
         _p0 = _tm.elapsed()
         self.refresh_view()
         _prof['refresh_view'] = _tm.elapsed() - _p0
+
+        # Теперь показываем splitter — один repaint на готовых данных.
+        _p0 = _tm.elapsed()
+        self._show_content()
+        if was_in_text_view:
+            QTimer.singleShot(0, self._clear_fast_view)
+        if self.model.rowCount() > 0:
+            QTimer.singleShot(0, self.log_view.scrollToBottom)
+        _prof['show_content'] = _tm.elapsed() - _p0
 
         total = _tm.elapsed()
         if total > 300 or _prof.get('stage2_bg', 0) > 1000:
