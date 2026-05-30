@@ -502,6 +502,9 @@ class LogViewerWidget(QWidget):
         self.batches_container.currentChanged.connect(self._on_batches_container_changed)
 
         self.bottom_tabs.addTab(self.batches_container, "Партии")
+        # Лениво строим дерево партий при первом открытии вкладки «Партии»
+        # (дерево + статистика тяжёлые, ~4с на 1M строк — нельзя в загрузке).
+        self.bottom_tabs.currentChanged.connect(self._on_bottom_tab_changed)
 
         self.splitter.addWidget(self.log_view)
         self.splitter.addWidget(self.bottom_tabs)
@@ -1097,11 +1100,42 @@ class LogViewerWidget(QWidget):
     # ----- Партии (сегментация по setCurrentBatch / api/close) -----
 
     def _collect_batches(self):
-        """Подбирает summary партий из модели и пересобирает меню + дерево фильтра."""
+        """Подбирает summary партий из модели и пересобирает меню фильтра.
+        Дерево партий (batches_tree) НЕ строится здесь — оно тяжёлое
+        (_add_stats_subnode → _ensure_batches_stats = линейный проход по
+        всем entries с regex-классификацией, ~4с на 1M строк). Строим
+        лениво при первом открытии вкладки «Все события» (как уже сделано
+        для «История кода»)."""
         self.all_batches = self.model.get_batch_summary()
         self.active_batches = {bid for (bid, _c, _f, _l) in self.all_batches}
         self._rebuild_batches_menu()
-        self._rebuild_batches_tree()
+        # Дерево — лениво. Помечаем как непостроенное + заглушка.
+        self._batches_tree_built = False
+        self.batches_tree.clear()
+        if self.all_batches:
+            hint = QTreeWidgetItem(
+                self.batches_tree,
+                ["Откройте вкладку, чтобы построить дерево партий…"])
+            hint.setData(0, Qt.ItemDataRole.UserRole, ('hint', None))
+
+    def _ensure_batches_tree_built(self):
+        """Строит дерево партий лениво при первом показе вкладки «Все
+        события». На больших логах _rebuild_batches_tree занимает секунды
+        (статистика по всем партиям) — показываем busy-оверлей."""
+        if getattr(self, '_batches_tree_built', False):
+            return
+        if not self.all_batches:
+            self._batches_tree_built = True
+            return
+        window = self.window()
+        try:
+            if hasattr(window, 'show_busy'):
+                window.show_busy("Построение дерева партий и статистики …")
+            self._rebuild_batches_tree()
+            self._batches_tree_built = True
+        finally:
+            if hasattr(window, 'hide_busy'):
+                window.hide_busy()
 
     def _rebuild_batches_menu(self):
         self.batches_menu.clear()
@@ -1513,6 +1547,7 @@ class LogViewerWidget(QWidget):
         Заодно сбрасывает кэш статистики по партиям."""
         self._code_history_index = None
         self._code_history_tree_built = False
+        self._batches_tree_built = False  # дерево партий тоже устарело (tail)
         self._batches_stats = None  # кэш статистики тоже устарел
         # Чистим визуально, чтобы старые ссылки на real_index не указывали в никуда
         if hasattr(self, 'code_history_tree'):
@@ -1544,13 +1579,25 @@ class LogViewerWidget(QWidget):
             self.code_history_status.setText(
                 "Откройте вкладку, чтобы построить дерево кодов.")
 
+    def _on_bottom_tab_changed(self, index):
+        """bottom_tabs переключилась. Если открыли «Партии» — достраиваем
+        текущую подвкладку лениво (дерево партий или историю кода)."""
+        if index < 0:
+            return
+        if self.bottom_tabs.widget(index) is self.batches_container:
+            self._on_batches_container_changed(
+                self.batches_container.currentIndex())
+
     def _on_batches_container_changed(self, index):
-        """Подвкладка переключилась. Если открыли «История кода» и дерево
-        не построено — строим лениво. На больших логах эти операции занимают
-        несколько секунд - показываем busy-оверлей."""
+        """Подвкладка переключилась. Лениво строим: «Все события» (дерево
+        партий) или «История кода». На больших логах занимают секунды —
+        показываем busy-оверлей."""
         if index < 0:
             return
         w = self.batches_container.widget(index)
+        if w is self.batches_tree:
+            self._ensure_batches_tree_built()
+            return
         if w is self.code_history_widget and not self._code_history_tree_built:
             window = self.window()
             try:
