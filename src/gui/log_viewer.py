@@ -825,6 +825,9 @@ class LogViewerWidget(QWidget):
         self._fast_stage_emitted = True
         self.loadingFinished.emit()
         # Stage 2: обычный LogLoader. on_load_finished переключит на splitter.
+        # PROFILE: засекаем старт Stage 2 чтобы измерить фоновый парсинг.
+        import time as _t
+        self._stage2_start = _t.perf_counter()
         self.load_file()
 
     def load_file(self):
@@ -866,52 +869,60 @@ class LogViewerWidget(QWidget):
             return
         _log.info("LogLoader finished: path=%r entries=%d", self.file_path, len(entries))
 
-        # Успех - переключаемся на splitter (если был placeholder или text_view
-        # из Fast-mode Stage 1). Чистим text_view чтобы освободить память —
-        # QPlainTextEdit с миллионами строк может держать сотни МБ. Делаем
-        # ОТЛОЖЕННО: сначала показываем splitter (мгновенно), затем clear
-        # через QTimer.singleShot — иначе clear на миллионах строк
-        # синхронно блокирует UI в самый момент переключения.
+        # PROFILE (временно): замеряем каждый шаг перехода на splitter +
+        # длительность фонового Stage 2. Лог в crash_log если total>300ms.
+        from PyQt6.QtCore import QElapsedTimer
+        import time as _t
+        _tm = QElapsedTimer()
+        _tm.start()
+        _prof = {}
+        if hasattr(self, '_stage2_start'):
+            _prof['stage2_bg'] = int((_t.perf_counter() - self._stage2_start) * 1000)
+
         was_in_text_view = (hasattr(self, 'text_view')
                             and self.center_stack.currentWidget() is self.text_view)
         self._show_content()
         if was_in_text_view:
-            # _clear_fast_view работает для любого движка (list/full/limited)
             QTimer.singleShot(0, self._clear_fast_view)
+        _p0 = _tm.elapsed()
         self.model.set_entries(entries)
-        self._tail_position = last_pos  # для tail-режима
-        # Восстанавливаем закладки если были сохранены в сессии
+        _prof['set_entries'] = _tm.elapsed() - _p0
+        self._tail_position = last_pos
         if self._initial_bookmarks:
             valid = [b for b in self._initial_bookmarks if 0 <= b < len(entries)]
             self.model.set_bookmarks(valid)
             self._initial_bookmarks = []
         self.stats = stats
+        _p0 = _tm.elapsed()
         self.update_stats_text()
         self.statsChanged.emit(stats)
-        # В Fast mode loadingFinished уже эмитили после Stage 1 — повторный
-        # эмит вызывает второй _lru_touch у MainWindow и портит LRU-порядок
-        # через 30+ секунд после реального открытия. _fast_stage_emitted
-        # ставится в _on_fast_finished перед первым emit'ом.
+        _prof['stats'] = _tm.elapsed() - _p0
         if getattr(self, '_fast_stage_emitted', False):
-            self._fast_stage_emitted = False  # reset для следующих unload→reload циклов
+            self._fast_stage_emitted = False
         else:
             self.loadingFinished.emit()
-        # Индекс кодов устарел - перестроится при следующем открытии вкладки
         self._invalidate_code_history()
 
-        # Собираем уникальные логгеры из файла и наполняем меню "Компоненты"
+        _p0 = _tm.elapsed()
         self._collect_loggers(entries)
-        # Собираем партии из распарсенных сегментов и наполняем меню "Партии"
+        _prof['collect_loggers'] = _tm.elapsed() - _p0
+        _p0 = _tm.elapsed()
         self._collect_batches()
+        _prof['collect_batches'] = _tm.elapsed() - _p0
 
-        # scrollToBottom на 1.2M строк ~1.16с — откладываем через singleShot
-        # чтобы не блокировать момент перехода на splitter. Скролл вниз
-        # сохраняется (произойдёт следующим кадром event loop).
         if self.model.rowCount() > 0:
             QTimer.singleShot(0, self.log_view.scrollToBottom)
 
-        # Apply initial filters
+        _p0 = _tm.elapsed()
         self.refresh_view()
+        _prof['refresh_view'] = _tm.elapsed() - _p0
+
+        total = _tm.elapsed()
+        if total > 300 or _prof.get('stage2_bg', 0) > 1000:
+            _log.warning(
+                "SLOW on_load_finished: entries=%d total=%dms, %s",
+                len(entries), total,
+                ', '.join(f'{k}={v}ms' for k, v in _prof.items()))
 
     # ----- Tail / follow mode -----
 
