@@ -5,13 +5,16 @@
 статистикой, списком файлов, временным диапазоном и кодами."""
 
 import os
+import subprocess
+import sys
+from urllib.parse import quote
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QProgressBar, QPushButton, QTreeWidget,
                              QTreeWidgetItem, QStackedWidget, QWidget,
                              QAbstractItemView, QLineEdit, QFileDialog,
-                             QMessageBox, QMenu)
+                             QMessageBox, QMenu, QApplication)
 
 from core.group_stats_worker import GroupStatsWorker
 from core.group_stats_export import (
@@ -122,8 +125,9 @@ class GroupStatsDialog(QDialog):
         layout.addLayout(filter_row)
 
         tree = QTreeWidget()
-        tree.setHeaderLabels(["Партия / Категория", "Значение"])
+        tree.setHeaderLabels(["Партия / Категория", "Значение / Источник"])
         tree.setColumnWidth(0, 480)
+        tree.setColumnWidth(1, 260)
         tree.setUniformRowHeights(True)
         tree.setAlternatingRowColors(True)
         tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -192,7 +196,8 @@ class GroupStatsDialog(QDialog):
             self._lbl_summary.setText(
                 f"<b>Найдено партий: {len(batches)}.</b> "
                 f"Двойной клик по партии — развернуть/свернуть. "
-                f"Правый клик — сравнить с одним файлом."
+                f"Правый клик по партии — сравнить с одним файлом, "
+                f"по коду — открыть источник или скопировать."
             )
         # Сохраняем для экспорта / сравнения / фильтра
         self._batches = batches
@@ -365,9 +370,23 @@ class GroupStatsDialog(QDialog):
         здесь, не в основном _populate_tree — на больших партиях экономит
         время первичного открытия."""
         codes = bucket['codes']
+        code_sources = bucket.get('code_sources', {})
+        multi_sources = bucket.get('code_multi_sources', set())
         sorted_codes = sorted(codes)
         for c in sorted_codes[:self.MAX_CODES_PER_BATCH]:
-            QTreeWidgetItem(codes_node, [c, ""])
+            source_path = code_sources.get(c, '')
+            source_label = os.path.basename(source_path) if source_path else ''
+            if c in multi_sources and source_label:
+                source_label += " (+ ещё)"
+            item = QTreeWidgetItem(codes_node, [c, source_label])
+            item.setData(0, Qt.ItemDataRole.UserRole,
+                         ('code', c, source_path))
+            item.setToolTip(0, c)
+            if source_path:
+                tooltip = source_path
+                if c in multi_sources:
+                    tooltip += "\nКод встречается и в других файлах."
+                item.setToolTip(1, tooltip)
         if len(sorted_codes) > self.MAX_CODES_PER_BATCH:
             hidden = len(sorted_codes) - self.MAX_CODES_PER_BATCH
             QTreeWidgetItem(codes_node, [
@@ -475,6 +494,10 @@ class GroupStatsDialog(QDialog):
         item = self._tree.itemAt(pos)
         if item is None:
             return
+        item_data = item.data(0, Qt.ItemDataRole.UserRole)
+        if item_data and item_data[0] == 'code':
+            self._show_code_context_menu(pos, item_data)
+            return
         # Поднимаемся до root (если кликнули по подноду — статистика и т.п.)
         root = item
         while root.parent() is not None:
@@ -498,6 +521,65 @@ class GroupStatsDialog(QDialog):
         file_path = chosen.data()
         if file_path:
             self._open_compare_dialog(bid, file_path, bucket)
+
+    def _show_code_context_menu(self, pos, data):
+        """Контекстные действия для строки уникального кода."""
+        _kind, code, file_path = data
+        menu = QMenu(self)
+        act_copy = menu.addAction("Копировать код")
+        menu.addSeparator()
+        act_open_analyzer = menu.addAction("Открыть файл в Анализаторе")
+        act_open_explorer = menu.addAction("Открыть в проводнике")
+        act_open_search = menu.addAction("Открыть в проводнике с поиском")
+
+        file_ok = bool(file_path) and os.path.exists(file_path)
+        for act in (act_open_analyzer, act_open_explorer, act_open_search):
+            act.setEnabled(file_ok)
+
+        chosen = menu.exec(self._tree.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen == act_copy:
+            QApplication.clipboard().setText(code)
+        elif chosen == act_open_analyzer and file_ok:
+            self._open_file_in_analyzer(file_path, code)
+        elif chosen == act_open_explorer and file_ok:
+            self._open_in_explorer(file_path)
+        elif chosen == act_open_search and file_ok:
+            self._open_in_explorer_search(file_path, code)
+
+    def _open_file_in_analyzer(self, file_path, code):
+        parent = self.parent()
+        if parent is None or not hasattr(parent, 'load_file'):
+            QMessageBox.warning(
+                self, "Открыть в Анализаторе",
+                "Не удалось найти главное окно Анализатора.")
+            return
+        viewer = parent.load_file(file_path, side="active")
+        if viewer is not None and hasattr(viewer, 'search_input'):
+            viewer.search_input.setText(code)
+        self.accept()
+
+    def _open_in_explorer(self, file_path):
+        normalized = os.path.normpath(file_path)
+        if sys.platform == 'win32':
+            subprocess.Popen(f'explorer /select,"{normalized}"')
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', '-R', normalized])
+        else:
+            subprocess.Popen(['xdg-open', os.path.dirname(normalized)])
+
+    def _open_in_explorer_search(self, file_path, code):
+        folder = os.path.normpath(os.path.dirname(file_path))
+        if sys.platform == 'win32':
+            folder_query = quote(folder, safe=':/\\')
+            url = (f"search-ms:query={quote(code, safe='')}"
+                   f"&crumb=location:{folder_query}")
+            subprocess.Popen(f'explorer "{url}"')
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', folder])
+        else:
+            subprocess.Popen(['xdg-open', folder])
 
     def _open_compare_dialog(self, bid, file_path, bucket):
         """Сравнение партии в одном файле с её агрегатом по всей группе.

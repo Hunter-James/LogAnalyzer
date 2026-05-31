@@ -94,6 +94,11 @@ def _new_batch_bucket():
         'last_file': '',
         # set уникальных SGTIN/SSCC/групповых кодов, встреченных в партии
         'codes': set(),
+        # code -> первый файл, где код встретился. Отдельный dict дешевле,
+        # чем хранить наборы путей для каждого кода на больших группах.
+        'code_sources': {},
+        # Коды, которые встретились больше чем в одном файле.
+        'code_multi_sources': set(),
     }
 
 
@@ -143,6 +148,7 @@ class GroupStatsWorker(QThread):
 
         current_batch = NO_BATCH
         last_ts_in_line = ''  # timestamp последней timestamped-строки
+        source_path = intern(str(path))
 
         codes_find = ALL_CODES_RE.findall
 
@@ -202,7 +208,17 @@ class GroupStatsWorker(QThread):
                         bucket = _new_batch_bucket()
                         batches[current_batch] = bucket
                     # intern для экономии RAM — те же коды часто встречаются
-                    bucket['codes'].update(intern(c) for c in codes_in_line)
+                    codes = bucket['codes']
+                    code_sources = bucket['code_sources']
+                    multi_sources = bucket['code_multi_sources']
+                    for raw_code in codes_in_line:
+                        code = intern(raw_code)
+                        codes.add(code)
+                        prev_source = code_sources.get(code)
+                        if prev_source is None:
+                            code_sources[code] = source_path
+                        elif prev_source != source_path:
+                            multi_sources.add(code)
 
                 # 5) Закрытие через /api/close
                 if (current_batch != NO_BATCH

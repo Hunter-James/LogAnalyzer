@@ -650,6 +650,7 @@ class MainWindow(QMainWindow):
                 f"Большие логи могут парситься несколько секунд.",
                 cancel_callback=lambda v=viewer: self._cancel_loading(v),
             )
+        return viewer
 
     def _start_progress_for(self, viewer):
         """Регистрирует viewer в MultiProgressBar и подключает его сигнал
