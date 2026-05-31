@@ -7,7 +7,6 @@
 import os
 import subprocess
 import sys
-from urllib.parse import quote
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
@@ -197,7 +196,7 @@ class GroupStatsDialog(QDialog):
                 f"<b>Найдено партий: {len(batches)}.</b> "
                 f"Двойной клик по партии — развернуть/свернуть. "
                 f"Правый клик по партии — сравнить с одним файлом, "
-                f"по коду — открыть источник или скопировать."
+                f"по коду — открыть в Анализаторе с поиском или скопировать."
             )
         # Сохраняем для экспорта / сравнения / фильтра
         self._batches = batches
@@ -528,12 +527,11 @@ class GroupStatsDialog(QDialog):
         menu = QMenu(self)
         act_copy = menu.addAction("Копировать код")
         menu.addSeparator()
-        act_open_analyzer = menu.addAction("Открыть файл в Анализаторе")
+        act_open_analyzer = menu.addAction("Открыть в Анализаторе с поиском")
         act_open_explorer = menu.addAction("Открыть в проводнике")
-        act_open_search = menu.addAction("Открыть в проводнике с поиском")
 
         file_ok = bool(file_path) and os.path.exists(file_path)
-        for act in (act_open_analyzer, act_open_explorer, act_open_search):
+        for act in (act_open_analyzer, act_open_explorer):
             act.setEnabled(file_ok)
 
         chosen = menu.exec(self._tree.mapToGlobal(pos))
@@ -545,14 +543,12 @@ class GroupStatsDialog(QDialog):
             self._open_file_in_analyzer(file_path, code)
         elif chosen == act_open_explorer and file_ok:
             self._open_in_explorer(file_path)
-        elif chosen == act_open_search and file_ok:
-            self._open_in_explorer_search(file_path, code)
 
     def _open_file_in_analyzer(self, file_path, code):
         parent = self.parent()
         if parent is None or not hasattr(parent, 'load_file'):
             QMessageBox.warning(
-                self, "Открыть в Анализаторе",
+                self, "Открыть в Анализаторе с поиском",
                 "Не удалось найти главное окно Анализатора.")
             return
         viewer = parent.load_file(file_path, side="active")
@@ -568,18 +564,6 @@ class GroupStatsDialog(QDialog):
             subprocess.Popen(['open', '-R', normalized])
         else:
             subprocess.Popen(['xdg-open', os.path.dirname(normalized)])
-
-    def _open_in_explorer_search(self, file_path, code):
-        folder = os.path.normpath(os.path.dirname(file_path))
-        if sys.platform == 'win32':
-            folder_query = quote(folder, safe=':/\\')
-            url = (f"search-ms:query={quote(code, safe='')}"
-                   f"&crumb=location:{folder_query}")
-            subprocess.Popen(f'explorer "{url}"')
-        elif sys.platform == 'darwin':
-            subprocess.Popen(['open', folder])
-        else:
-            subprocess.Popen(['xdg-open', folder])
 
     def _open_compare_dialog(self, bid, file_path, bucket):
         """Сравнение партии в одном файле с её агрегатом по всей группе.
