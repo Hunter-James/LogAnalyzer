@@ -566,13 +566,26 @@ class MainWindow(QMainWindow):
 
         from gui.group_stats_dialog import GroupStatsDialog
         dlg = GroupStatsDialog(file_paths, group_name=group_name,
-                               theme_name=self.current_theme_name, parent=self)
-        dlg.exec()
-        # ВАЖНО: deleteLater после exec, иначе Qt держит диалог как child
-        # main window'а до конца сессии — а вместе с ним сотни тысяч
-        # QTreeWidgetItem'ов и dict с миллионами кодов. На больших группах
-        # это легко 9+ ГБ RAM, которые не освобождаются до выхода.
-        dlg.deleteLater()
+                               theme_name=self.current_theme_name,
+                               parent=None, owner=self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialogs = getattr(self, '_group_stats_dialogs', None)
+        if dialogs is None:
+            dialogs = []
+            self._group_stats_dialogs = dialogs
+        dialogs.append(dlg)
+        dialog_id = id(dlg)
+
+        def forget_dialog(_obj=None):
+            self._group_stats_dialogs = [
+                d for d in self._group_stats_dialogs
+                if id(d) != dialog_id
+            ]
+
+        dlg.destroyed.connect(forget_dialog)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def open_help(self):
         dlg = HelpDialog(self.current_theme_name, self)
@@ -1213,6 +1226,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         self.save_current_settings()
+        for dlg in list(getattr(self, '_group_stats_dialogs', [])):
+            try:
+                dlg.close()
+            except RuntimeError:
+                pass
         # Корректно останавливаем все QThread'ы во всех viewer'ах перед
         # super().closeEvent — иначе Qt прибивает потоки как «destroyed
         # while running» с warning'ом / crash'ем. В каждом viewer'е могут

@@ -1,4 +1,4 @@
-"""Модальный диалог «Сводка партий по группе».
+"""Окно «Сводка партий по группе».
 
 Запускает GroupStatsWorker над списком файлов активной группы, показывает
 прогресс по файлам, по окончании — дерево партий с агрегированной
@@ -31,10 +31,15 @@ class GroupStatsDialog(QDialog):
     # юзер всё равно столько вручную не просмотрит.
     MAX_CODES_PER_BATCH = 5000
 
-    def __init__(self, file_paths, group_name='', theme_name='Default', parent=None):
+    def __init__(self, file_paths, group_name='', theme_name='Default',
+                 parent=None, owner=None):
         super().__init__(parent)
+        self._owner = owner if owner is not None else parent
         self.setWindowTitle(f"Сводка партий — {group_name}" if group_name else "Сводка партий")
         self.resize(900, 700)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        if self._owner is not None and hasattr(self._owner, 'windowIcon'):
+            self.setWindowIcon(self._owner.windowIcon())
         self._theme_name = theme_name if theme_name in THEMES else 'Default'
         # Хранится после _on_finished — нужно для экспорта/сравнения/фильтра
         self._batches = {}
@@ -138,7 +143,7 @@ class GroupStatsDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         btn_close = QPushButton("Закрыть")
-        btn_close.clicked.connect(self.accept)
+        btn_close.clicked.connect(self.close)
         btn_row.addWidget(btn_close)
         layout.addLayout(btn_row)
 
@@ -545,16 +550,16 @@ class GroupStatsDialog(QDialog):
             self._open_in_explorer(file_path)
 
     def _open_file_in_analyzer(self, file_path, code):
-        parent = self.parent()
-        if parent is None or not hasattr(parent, 'load_file'):
+        owner = self._owner or self.parent()
+        if owner is None or not hasattr(owner, 'load_file'):
             QMessageBox.warning(
                 self, "Открыть в Анализаторе с поиском",
                 "Не удалось найти главное окно Анализатора.")
             return
-        viewer = parent.load_file(file_path, side="active")
+        viewer = owner.load_file(file_path, side="active")
         if viewer is not None and hasattr(viewer, 'search_input'):
             viewer.search_input.setText(code)
-        self.accept()
+        self.close()
 
     def _open_in_explorer(self, file_path):
         normalized = os.path.normpath(file_path)
