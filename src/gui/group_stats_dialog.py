@@ -559,7 +559,9 @@ class GroupStatsDialog(QDialog):
         viewer = owner.load_file(file_path, side="active")
         if viewer is not None and hasattr(viewer, 'search_input'):
             viewer.search_input.setText(code)
-        self.close()
+        owner.show()
+        owner.raise_()
+        owner.activateWindow()
 
     def _open_in_explorer(self, file_path):
         normalized = os.path.normpath(file_path)
