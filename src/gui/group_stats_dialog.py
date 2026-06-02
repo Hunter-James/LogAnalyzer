@@ -32,9 +32,10 @@ class GroupStatsDialog(QDialog):
     MAX_CODES_PER_BATCH = 5000
 
     def __init__(self, file_paths, group_name='', theme_name='Default',
-                 parent=None, owner=None):
+                 parent=None, owner=None, source_group_panel=None):
         super().__init__(parent)
         self._owner = owner if owner is not None else parent
+        self._source_group_panel = source_group_panel
         self.setWindowTitle(f"Сводка партий — {group_name}" if group_name else "Сводка партий")
         self.resize(900, 700)
         self.setWindowModality(Qt.WindowModality.NonModal)
@@ -551,12 +552,24 @@ class GroupStatsDialog(QDialog):
 
     def _open_file_in_analyzer(self, file_path, code):
         owner = self._owner or self.parent()
-        if owner is None or not hasattr(owner, 'load_file'):
+        can_open = (
+            hasattr(owner, 'load_file_in_group')
+            or hasattr(owner, 'load_file')
+        )
+        if owner is None or not can_open:
             QMessageBox.warning(
                 self, "Открыть в Анализаторе с поиском",
                 "Не удалось найти главное окно Анализатора.")
             return
-        viewer = owner.load_file(file_path, side="active")
+        if hasattr(owner, 'load_file_in_group'):
+            viewer = owner.load_file_in_group(file_path, self._source_group_panel)
+        else:
+            viewer = owner.load_file(file_path, side="active")
+        if viewer is None:
+            QMessageBox.warning(
+                self, "Открыть в Анализаторе с поиском",
+                "Исходная группа сводки уже не найдена.")
+            return
         if viewer is not None and hasattr(viewer, 'search_input'):
             viewer.search_input.setText(code)
         owner.show()

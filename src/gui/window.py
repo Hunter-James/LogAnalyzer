@@ -557,17 +557,20 @@ class MainWindow(QMainWindow):
 
         # Имя активной группы для заголовка
         group_name = ''
+        source_group_panel = None
         try:
             panels = self.split_manager.iter_panels()
             if 0 <= active_idx < len(panels):
-                group_name = getattr(panels[active_idx], '_group_name', '') or ''
+                source_group_panel = panels[active_idx]
+                group_name = getattr(source_group_panel, '_group_name', '') or ''
         except Exception:
             pass
 
         from gui.group_stats_dialog import GroupStatsDialog
         dlg = GroupStatsDialog(file_paths, group_name=group_name,
                                theme_name=self.current_theme_name,
-                               parent=None, owner=self)
+                               parent=None, owner=self,
+                               source_group_panel=source_group_panel)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialogs = getattr(self, '_group_stats_dialogs', None)
         if dialogs is None:
@@ -664,6 +667,32 @@ class MainWindow(QMainWindow):
                 cancel_callback=lambda v=viewer: self._cancel_loading(v),
             )
         return viewer
+
+    def load_file_in_group(self, file_path, group_panel=None):
+        if group_panel is None:
+            return self.load_file(file_path, side="active")
+
+        panels = self.split_manager.iter_panels()
+        group_idx = next((i for i, panel in enumerate(panels)
+                          if panel is group_panel), -1)
+        if group_idx < 0:
+            return None
+
+        target_path = os.path.normcase(os.path.abspath(file_path))
+        for pane in group_panel.panes():
+            for idx in range(pane.count()):
+                viewer = pane.widget(idx)
+                if not isinstance(viewer, LogViewerWidget):
+                    continue
+                viewer_path = os.path.normcase(os.path.abspath(viewer.file_path))
+                if viewer_path != target_path:
+                    continue
+                group_panel.set_active_pane(pane)
+                pane.setCurrentWidget(viewer)
+                self.split_manager.activate_group_index(group_idx)
+                return viewer
+
+        return self.load_file(file_path, side=f"group:{group_idx}")
 
     def _start_progress_for(self, viewer):
         """Регистрирует viewer в MultiProgressBar и подключает его сигнал
