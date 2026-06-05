@@ -595,7 +595,12 @@ class MarkerScrollBar(QScrollBar):
             return
 
         painter = QPainter(self)
+        marker_width = max(3, min(5, groove.width() // 3))
+        marker_left = groove.left()
+        marker_bg = QColor(0, 0, 0, 90)
+        painter.fillRect(marker_left, groove.top(), marker_width,
+                         groove.height(), marker_bg)
         for rel_pos, color in self._markers:
             y = groove.top() + int(rel_pos * (groove.height() - 2))
-            painter.fillRect(groove.left(), y, groove.width(), 2, color)
+            painter.fillRect(marker_left, y, marker_width, 2, color)
         painter.end()
