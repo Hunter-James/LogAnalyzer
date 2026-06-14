@@ -104,6 +104,10 @@ _BATCH_OPEN_SOURCE_SET_CURRENT = 'set_current'
 _SKIP_CLOSE_AFTER_CURRENT_BATCH_RESPONSES = frozenset((
     '/api/clearNotFatalError',
 ))
+_BACKFILL_BEFORE_CURRENT_BATCH_RESPONSES = frozenset((
+    '/api/clickStartStop',
+))
+_BATCH_RESPONSE_BACKFILL_MAX_LINES = 80
 
 
 def _extract_batch_open_marker(line):
@@ -124,6 +128,28 @@ def _extract_batch_open_marker(line):
 
 def _should_skip_close_after_open_source(open_source):
     return open_source in _SKIP_CLOSE_AFTER_CURRENT_BATCH_RESPONSES
+
+
+def _should_backfill_before_open_source(open_source):
+    return open_source in _BACKFILL_BEFORE_CURRENT_BATCH_RESPONSES
+
+
+def _line_has_batch_code(line):
+    return bool(SGTIN_CODE_RE.search(line) or GROUP_CODE_RE.search(line))
+
+
+def _find_batch_response_backfill_start(entries, segment_start, marker_idx):
+    scan_start = max(segment_start, marker_idx - _BATCH_RESPONSE_BACKFILL_MAX_LINES)
+    first_code_idx = None
+    for idx in range(marker_idx - 1, scan_start - 1, -1):
+        line = entries[idx].full_line
+        if _extract_batch_open_marker(line)[0] is not None:
+            break
+        if '/api/close' in line and 'CustomLogFilter' in line:
+            break
+        if _line_has_batch_code(line):
+            first_code_idx = idx
+    return marker_idx if first_code_idx is None else first_code_idx
 
 # Маркер "вне партии" - пустая строка (None плохо сериализуется в JSON и Qt-сигналах)
 NO_BATCH = ""
@@ -304,9 +330,17 @@ class LogModel(QAbstractListModel):
             # поэтому current_batch обновляем ДО присваивания _batch_for_index[i].
             new_id, open_source = _extract_batch_open_marker(line)
             if new_id is not None:
-                close_segment(i - 1)
-                current_batch = NO_BATCH if new_id == '-1' else new_id
-                segment_start = i
+                new_batch = NO_BATCH if new_id == '-1' else new_id
+                backfill_start = i
+                if (current_batch == NO_BATCH
+                        and new_batch != NO_BATCH
+                        and _should_backfill_before_open_source(open_source)):
+                    backfill_start = _find_batch_response_backfill_start(entries, segment_start, i)
+                close_segment(backfill_start - 1)
+                current_batch = new_batch
+                segment_start = backfill_start
+                for backfill_idx in range(backfill_start, i):
+                    self._batch_for_index[backfill_idx] = current_batch
                 skip_next_close_after_recovered_batch = (
                     current_batch != NO_BATCH
                     and _should_skip_close_after_open_source(open_source)

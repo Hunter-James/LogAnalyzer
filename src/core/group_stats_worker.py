@@ -14,7 +14,9 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.workers import _open_log_stream, LINE_PATTERN
 from core.models import (
+    _BATCH_RESPONSE_BACKFILL_MAX_LINES,
     _extract_batch_open_marker,
+    _should_backfill_before_open_source,
     _should_skip_close_after_open_source,
     NO_BATCH,
 )
@@ -156,6 +158,66 @@ class GroupStatsWorker(QThread):
         source_path = intern(str(path))
 
         codes_find = ALL_CODES_RE.findall
+        pending_no_batch = []
+
+        def apply_record(batch_id, record):
+            key = record['key']
+            codes_in_line = record['codes']
+            if not key and not codes_in_line:
+                return
+
+            bucket = batches.get(batch_id)
+            if bucket is None:
+                bucket = _new_batch_bucket()
+                batches[batch_id] = bucket
+
+            if key:
+                bucket['counters'][key] += 1
+                bucket['files'][path] = bucket['files'].get(path, 0) + 1
+                pfc = bucket['per_file_counters'].get(path)
+                if pfc is None:
+                    pfc = {k: 0 for k in _COUNTER_KEYS}
+                    bucket['per_file_counters'][path] = pfc
+                pfc[key] += 1
+                if record['ts']:
+                    if not bucket['first_ts']:
+                        bucket['first_ts'] = record['ts']
+                        bucket['first_file'] = path
+                    bucket['last_ts'] = record['ts']
+                    bucket['last_file'] = path
+
+            if codes_in_line:
+                codes = bucket['codes']
+                code_sources = bucket['code_sources']
+                multi_sources = bucket['code_multi_sources']
+                for raw_code in codes_in_line:
+                    code = intern(raw_code)
+                    codes.add(code)
+                    prev_source = code_sources.get(code)
+                    if prev_source is None:
+                        code_sources[code] = source_path
+                    elif prev_source != source_path:
+                        multi_sources.add(code)
+
+        def flush_pending_no_batch(target_batch):
+            for record in pending_no_batch:
+                apply_record(target_batch, record)
+            pending_no_batch.clear()
+
+        def flush_backfilled_pending(target_batch):
+            first_code_idx = None
+            for idx, record in enumerate(pending_no_batch):
+                if record['codes']:
+                    first_code_idx = idx
+                    break
+            if first_code_idx is None:
+                flush_pending_no_batch(NO_BATCH)
+                return
+            for record in pending_no_batch[:first_code_idx]:
+                apply_record(NO_BATCH, record)
+            for record in pending_no_batch[first_code_idx:]:
+                apply_record(target_batch, record)
+            pending_no_batch.clear()
 
         try:
             for line in stream:
@@ -178,7 +240,14 @@ class GroupStatsWorker(QThread):
                 # 2) Сегментация партий (та же логика что в LogModel._parse_batches)
                 new_id, open_source = _extract_batch_open_marker(line)
                 if new_id is not None:
-                    current_batch = NO_BATCH if new_id == '-1' else intern(new_id)
+                    new_batch = NO_BATCH if new_id == '-1' else intern(new_id)
+                    if pending_no_batch:
+                        if (new_batch != NO_BATCH
+                                and _should_backfill_before_open_source(open_source)):
+                            flush_backfilled_pending(new_batch)
+                        else:
+                            flush_pending_no_batch(NO_BATCH)
+                    current_batch = new_batch
                     skip_next_close_after_recovered_batch = (
                         current_batch != NO_BATCH
                         and _should_skip_close_after_open_source(open_source)
@@ -186,7 +255,7 @@ class GroupStatsWorker(QThread):
 
                 # 3) Классификация по счётчикам
                 key = _classify_for_stats(line, logger) if logger else None
-                if key:
+                if key and current_batch != NO_BATCH:
                     bucket = batches.get(current_batch)
                     if bucket is None:
                         bucket = _new_batch_bucket()
@@ -209,7 +278,7 @@ class GroupStatsWorker(QThread):
                 # 4) Сбор уникальных кодов (один объединённый regex —
                 # см. ALL_CODES_RE наверху файла).
                 codes_in_line = codes_find(line)
-                if codes_in_line:
+                if codes_in_line and current_batch != NO_BATCH:
                     bucket = batches.get(current_batch)
                     if bucket is None:
                         bucket = _new_batch_bucket()
@@ -227,6 +296,15 @@ class GroupStatsWorker(QThread):
                         elif prev_source != source_path:
                             multi_sources.add(code)
 
+                if current_batch == NO_BATCH and (key or codes_in_line):
+                    pending_no_batch.append({
+                        'key': key,
+                        'codes': codes_in_line,
+                        'ts': last_ts_in_line,
+                    })
+                    while len(pending_no_batch) > _BATCH_RESPONSE_BACKFILL_MAX_LINES:
+                        apply_record(NO_BATCH, pending_no_batch.pop(0))
+
                 # 5) Закрытие через /api/close
                 if (current_batch != NO_BATCH
                         and '/api/close' in line
@@ -235,6 +313,7 @@ class GroupStatsWorker(QThread):
                         skip_next_close_after_recovered_batch = False
                     else:
                         current_batch = NO_BATCH
+            flush_pending_no_batch(NO_BATCH)
         finally:
             try:
                 stream.close()
