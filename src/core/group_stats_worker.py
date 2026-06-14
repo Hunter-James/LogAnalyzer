@@ -13,7 +13,7 @@ import sys
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.workers import _open_log_stream, LINE_PATTERN
-from core.models import _BATCH_OPEN_RE, NO_BATCH
+from core.models import _extract_batch_open_id, NO_BATCH
 
 # Объединённый regex для всех трёх типов кодов: SGTIN (01 + 14 цифр GTIN +
 # 6..40 любых non-whitespace/non-bracket), SSCC (00 + 18 цифр), групповой
@@ -171,11 +171,9 @@ class GroupStatsWorker(QThread):
                     logger = ''
 
                 # 2) Сегментация партий (та же логика что в LogModel._parse_batches)
-                if 'setCurrentBatch' in line:
-                    mb = _BATCH_OPEN_RE.search(line)
-                    if mb:
-                        new_id = mb.group(1)
-                        current_batch = NO_BATCH if new_id == '-1' else intern(new_id)
+                new_id = _extract_batch_open_id(line)
+                if new_id is not None:
+                    current_batch = NO_BATCH if new_id == '-1' else intern(new_id)
 
                 # 3) Классификация по счётчикам
                 key = _classify_for_stats(line, logger) if logger else None

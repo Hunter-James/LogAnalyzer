@@ -97,6 +97,24 @@ def _normalize_error_message(msg):
 # Открытие/переключение партии: setCurrentBatch?batchId=N (N может быть -1 -> вне партии)
 # Закрытие партии: /api/close (от CustomLogFilter, чтобы не зацепить случайные совпадения)
 _BATCH_OPEN_RE = re.compile(r'setCurrentBatch\?batchId=(-?\d+)')
+_CLEAR_NOT_FATAL_BATCH_RE = re.compile(
+    r'/api/clearNotFatalError\b.*?"currentBatch"\s*:\s*\{.*?"id"\s*:\s*(-?\d+)'
+)
+
+
+def _extract_batch_open_id(line):
+    """Return batch id from log markers that start/switch the current batch."""
+    if 'setCurrentBatch' in line:
+        m = _BATCH_OPEN_RE.search(line)
+        if m:
+            return m.group(1)
+
+    if '/api/clearNotFatalError' in line and '"currentBatch"' in line:
+        m = _CLEAR_NOT_FATAL_BATCH_RE.search(line)
+        if m:
+            return m.group(1)
+
+    return None
 
 # Маркер "вне партии" - пустая строка (None плохо сериализуется в JSON и Qt-сигналах)
 NO_BATCH = ""
@@ -273,13 +291,11 @@ class LogModel(QAbstractListModel):
 
             # Открытие/переключение партии: эта запись начинает НОВЫЙ сегмент,
             # поэтому current_batch обновляем ДО присваивания _batch_for_index[i].
-            if 'setCurrentBatch' in line:
-                m = _BATCH_OPEN_RE.search(line)
-                if m:
-                    close_segment(i - 1)
-                    new_id = m.group(1)
-                    current_batch = NO_BATCH if new_id == '-1' else new_id
-                    segment_start = i
+            new_id = _extract_batch_open_id(line)
+            if new_id is not None:
+                close_segment(i - 1)
+                current_batch = NO_BATCH if new_id == '-1' else new_id
+                segment_start = i
 
             # Эта запись принадлежит ТЕКУЩЕЙ партии (для /api/close - закрывающейся,
             # для setCurrentBatch - уже новой)
