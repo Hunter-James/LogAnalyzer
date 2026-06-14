@@ -100,21 +100,23 @@ _BATCH_OPEN_RE = re.compile(r'setCurrentBatch\?batchId=(-?\d+)')
 _CLEAR_NOT_FATAL_BATCH_RE = re.compile(
     r'/api/clearNotFatalError\b.*?"currentBatch"\s*:\s*\{.*?"id"\s*:\s*(-?\d+)'
 )
+_BATCH_OPEN_SOURCE_CLEAR_NOT_FATAL = 'clear_not_fatal'
+_BATCH_OPEN_SOURCE_SET_CURRENT = 'set_current'
 
 
-def _extract_batch_open_id(line):
-    """Return batch id from log markers that start/switch the current batch."""
+def _extract_batch_open_marker(line):
+    """Return (batch id, source) from markers that start/switch the current batch."""
     if 'setCurrentBatch' in line:
         m = _BATCH_OPEN_RE.search(line)
         if m:
-            return m.group(1)
+            return m.group(1), _BATCH_OPEN_SOURCE_SET_CURRENT
 
     if '/api/clearNotFatalError' in line and '"currentBatch"' in line:
         m = _CLEAR_NOT_FATAL_BATCH_RE.search(line)
         if m:
-            return m.group(1)
+            return m.group(1), _BATCH_OPEN_SOURCE_CLEAR_NOT_FATAL
 
-    return None
+    return None, None
 
 # Маркер "вне партии" - пустая строка (None плохо сериализуется в JSON и Qt-сигналах)
 NO_BATCH = ""
@@ -253,9 +255,11 @@ class LogModel(QAbstractListModel):
             self._batch_for_index = [NO_BATCH] * len(entries)
             current_batch = NO_BATCH
             segment_start = 0
+            skip_next_close_after_recovered_batch = False
         else:
             # Догоняем хвост. Восстанавливаем состояние с последнего сегмента.
             self._batch_for_index.extend([NO_BATCH] * (len(entries) - start_from))
+            skip_next_close_after_recovered_batch = False
             if self._batch_segments:
                 last_seg = self._batch_segments[-1]
                 # Если последний сегмент был "открыт до конца предыдущего парсинга",
@@ -291,11 +295,15 @@ class LogModel(QAbstractListModel):
 
             # Открытие/переключение партии: эта запись начинает НОВЫЙ сегмент,
             # поэтому current_batch обновляем ДО присваивания _batch_for_index[i].
-            new_id = _extract_batch_open_id(line)
+            new_id, open_source = _extract_batch_open_marker(line)
             if new_id is not None:
                 close_segment(i - 1)
                 current_batch = NO_BATCH if new_id == '-1' else new_id
                 segment_start = i
+                skip_next_close_after_recovered_batch = (
+                    current_batch != NO_BATCH
+                    and open_source == _BATCH_OPEN_SOURCE_CLEAR_NOT_FATAL
+                )
 
             # Эта запись принадлежит ТЕКУЩЕЙ партии (для /api/close - закрывающейся,
             # для setCurrentBatch - уже новой)
@@ -306,9 +314,12 @@ class LogModel(QAbstractListModel):
             if (current_batch != NO_BATCH
                     and '/api/close' in line
                     and 'CustomLogFilter' in line):
-                close_segment(i)
-                current_batch = NO_BATCH
-                segment_start = i + 1
+                if skip_next_close_after_recovered_batch:
+                    skip_next_close_after_recovered_batch = False
+                else:
+                    close_segment(i)
+                    current_batch = NO_BATCH
+                    segment_start = i + 1
 
         # Финальный открытый сегмент - закрываем по концу файла
         if segment_start < len(entries):

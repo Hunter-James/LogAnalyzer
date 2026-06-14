@@ -13,7 +13,11 @@ import sys
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.workers import _open_log_stream, LINE_PATTERN
-from core.models import _extract_batch_open_id, NO_BATCH
+from core.models import (
+    _BATCH_OPEN_SOURCE_CLEAR_NOT_FATAL,
+    _extract_batch_open_marker,
+    NO_BATCH,
+)
 
 # Объединённый regex для всех трёх типов кодов: SGTIN (01 + 14 цифр GTIN +
 # 6..40 любых non-whitespace/non-bracket), SSCC (00 + 18 цифр), групповой
@@ -147,6 +151,7 @@ class GroupStatsWorker(QThread):
             return
 
         current_batch = NO_BATCH
+        skip_next_close_after_recovered_batch = False
         last_ts_in_line = ''  # timestamp последней timestamped-строки
         source_path = intern(str(path))
 
@@ -171,9 +176,13 @@ class GroupStatsWorker(QThread):
                     logger = ''
 
                 # 2) Сегментация партий (та же логика что в LogModel._parse_batches)
-                new_id = _extract_batch_open_id(line)
+                new_id, open_source = _extract_batch_open_marker(line)
                 if new_id is not None:
                     current_batch = NO_BATCH if new_id == '-1' else intern(new_id)
+                    skip_next_close_after_recovered_batch = (
+                        current_batch != NO_BATCH
+                        and open_source == _BATCH_OPEN_SOURCE_CLEAR_NOT_FATAL
+                    )
 
                 # 3) Классификация по счётчикам
                 key = _classify_for_stats(line, logger) if logger else None
@@ -222,7 +231,10 @@ class GroupStatsWorker(QThread):
                 if (current_batch != NO_BATCH
                         and '/api/close' in line
                         and 'CustomLogFilter' in line):
-                    current_batch = NO_BATCH
+                    if skip_next_close_after_recovered_batch:
+                        skip_next_close_after_recovered_batch = False
+                    else:
+                        current_batch = NO_BATCH
         finally:
             try:
                 stream.close()
