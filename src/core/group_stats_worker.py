@@ -14,8 +14,8 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.workers import _open_log_stream, LINE_PATTERN
 from core.models import (
-    _BATCH_OPEN_SOURCE_CLEAR_NOT_FATAL,
     _extract_batch_open_marker,
+    _should_skip_close_after_open_source,
     NO_BATCH,
 )
 
@@ -181,7 +181,7 @@ class GroupStatsWorker(QThread):
                     current_batch = NO_BATCH if new_id == '-1' else intern(new_id)
                     skip_next_close_after_recovered_batch = (
                         current_batch != NO_BATCH
-                        and open_source == _BATCH_OPEN_SOURCE_CLEAR_NOT_FATAL
+                        and _should_skip_close_after_open_source(open_source)
                     )
 
                 # 3) Классификация по счётчикам

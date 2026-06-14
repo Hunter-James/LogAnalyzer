@@ -97,11 +97,13 @@ def _normalize_error_message(msg):
 # Открытие/переключение партии: setCurrentBatch?batchId=N (N может быть -1 -> вне партии)
 # Закрытие партии: /api/close (от CustomLogFilter, чтобы не зацепить случайные совпадения)
 _BATCH_OPEN_RE = re.compile(r'setCurrentBatch\?batchId=(-?\d+)')
-_CLEAR_NOT_FATAL_BATCH_RE = re.compile(
-    r'/api/clearNotFatalError\b.*?"currentBatch"\s*:\s*\{.*?"id"\s*:\s*(-?\d+)'
+_CURRENT_BATCH_RESPONSE_RE = re.compile(
+    r'Response\s+(/api/[^\s{]+).*?"currentBatch"\s*:\s*\{.*?"id"\s*:\s*(-?\d+)'
 )
-_BATCH_OPEN_SOURCE_CLEAR_NOT_FATAL = 'clear_not_fatal'
 _BATCH_OPEN_SOURCE_SET_CURRENT = 'set_current'
+_SKIP_CLOSE_AFTER_CURRENT_BATCH_RESPONSES = frozenset((
+    '/api/clearNotFatalError',
+))
 
 
 def _extract_batch_open_marker(line):
@@ -111,12 +113,17 @@ def _extract_batch_open_marker(line):
         if m:
             return m.group(1), _BATCH_OPEN_SOURCE_SET_CURRENT
 
-    if '/api/clearNotFatalError' in line and '"currentBatch"' in line:
-        m = _CLEAR_NOT_FATAL_BATCH_RE.search(line)
+    if 'Response /api/' in line and '"currentBatch"' in line:
+        m = _CURRENT_BATCH_RESPONSE_RE.search(line)
         if m:
-            return m.group(1), _BATCH_OPEN_SOURCE_CLEAR_NOT_FATAL
+            endpoint, batch_id = m.groups()
+            return batch_id, endpoint
 
     return None, None
+
+
+def _should_skip_close_after_open_source(open_source):
+    return open_source in _SKIP_CLOSE_AFTER_CURRENT_BATCH_RESPONSES
 
 # Маркер "вне партии" - пустая строка (None плохо сериализуется в JSON и Qt-сигналах)
 NO_BATCH = ""
@@ -302,7 +309,7 @@ class LogModel(QAbstractListModel):
                 segment_start = i
                 skip_next_close_after_recovered_batch = (
                     current_batch != NO_BATCH
-                    and open_source == _BATCH_OPEN_SOURCE_CLEAR_NOT_FATAL
+                    and _should_skip_close_after_open_source(open_source)
                 )
 
             # Эта запись принадлежит ТЕКУЩЕЙ партии (для /api/close - закрывающейся,
