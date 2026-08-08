@@ -114,6 +114,7 @@ def _cleanup_log_if_clean_exit():
 atexit.register(_cleanup_log_if_clean_exit)
 
 from gui.window import MainWindow  # noqa: E402
+from core.single_instance import SingleInstanceChannel  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 from PyQt6.QtCore import QTimer, qInstallMessageHandler  # noqa: E402
 
@@ -134,8 +135,23 @@ if __name__ == "__main__":
     app.aboutToQuit.connect(_cleanup_log_if_clean_exit)
 
     try:
+        single_instance = SingleInstanceChannel()
+        if not single_instance.start_or_forward(startup_files):
+            _logger.info("Request forwarded to the running instance")
+            sys.exit(0)
+
         window = MainWindow()
         window.show()
+
+        def handle_external_request(paths):
+            window.open_external_files(paths)
+            if window.isMinimized():
+                window.showNormal()
+            window.show()
+            window.raise_()
+            window.activateWindow()
+
+        single_instance.requestReceived.connect(handle_external_request)
         if startup_files:
             QTimer.singleShot(
                 0, lambda paths=tuple(startup_files): window.open_external_files(paths))
