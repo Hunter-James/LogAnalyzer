@@ -115,12 +115,15 @@ atexit.register(_cleanup_log_if_clean_exit)
 
 from gui.window import MainWindow  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
-from PyQt6.QtCore import qInstallMessageHandler  # noqa: E402
+from PyQt6.QtCore import QTimer, qInstallMessageHandler  # noqa: E402
 
 
 if __name__ == "__main__":
     # Подключаем Qt-message-handler ПОСЛЕ импорта Qt
     qInstallMessageHandler(_qt_message_handler)
+
+    startup_files = [os.path.abspath(arg) for arg in sys.argv[1:]
+                     if os.path.isfile(arg)]
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
@@ -133,6 +136,9 @@ if __name__ == "__main__":
     try:
         window = MainWindow()
         window.show()
+        if startup_files:
+            QTimer.singleShot(
+                0, lambda paths=tuple(startup_files): window.open_external_files(paths))
         _logger.info("Main window shown, entering event loop")
         exit_code = app.exec()
         _logger.info("Event loop exited with code %s", exit_code)

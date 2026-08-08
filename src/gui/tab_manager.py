@@ -5,7 +5,8 @@ import subprocess
 from PyQt6.QtWidgets import (QTabWidget, QSplitter, QStackedWidget, QWidget,
                              QVBoxLayout, QHBoxLayout, QMenu,
                              QTabBar, QApplication, QLabel, QToolButton, QFrame,
-                             QInputDialog, QColorDialog, QAbstractButton)
+                             QInputDialog, QColorDialog, QAbstractButton,
+                             QScrollArea, QSizePolicy, QStyle, QLayout)
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QTimer
 from PyQt6.QtGui import QDrag, QPixmap, QCursor, QPainter, QColor
 from gui.log_viewer import LogViewerWidget
@@ -767,6 +768,16 @@ class EditorTabWidget(QTabWidget):
 
 # --- Bar плашек групп: горизонтальный контейнер с GroupChip'ами и кнопкой «+» ---
 
+
+class _HorizontalGroupsScroll(QScrollArea):
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if delta:
+            bar = self.horizontalScrollBar()
+            bar.setValue(bar.value() - delta)
+        event.accept()
+
+
 class _GroupsBar(QFrame):
     """Узкий бар сверху над содержимым: ряд плашек групп (GroupHeader),
     кнопка «+» в конце. Не управляет логикой - только держит виджеты."""
@@ -779,11 +790,46 @@ class _GroupsBar(QFrame):
         h = QHBoxLayout(self)
         h.setContentsMargins(4, 4, 4, 0)
         h.setSpacing(2)
-        # Контейнер для плашек (slot для динамического добавления/удаления)
-        self._chips_layout = QHBoxLayout()
+
+        self.btn_scroll_left = QToolButton()
+        self.btn_scroll_left.setIcon(self.style().standardIcon(
+            QStyle.StandardPixmap.SP_ArrowLeft))
+        self.btn_scroll_left.setFixedSize(24, 28)
+        self.btn_scroll_left.setAutoRepeat(True)
+        self.btn_scroll_left.setToolTip("Прокрутить группы влево")
+        self.btn_scroll_left.clicked.connect(lambda: self._scroll_by(-160))
+        h.addWidget(self.btn_scroll_left)
+
+        self._scroll = _HorizontalGroupsScroll()
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setWidgetResizable(False)
+        self._scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._scroll.setFixedHeight(34)
+        self._scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }")
+
+        self._chips_widget = QWidget()
+        self._chips_widget.setStyleSheet("background: transparent;")
+        self._chips_layout = QHBoxLayout(self._chips_widget)
         self._chips_layout.setContentsMargins(0, 0, 0, 0)
         self._chips_layout.setSpacing(2)
-        h.addLayout(self._chips_layout)
+        self._chips_layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+        self._scroll.setWidget(self._chips_widget)
+        h.addWidget(self._scroll, 1)
+
+        self.btn_scroll_right = QToolButton()
+        self.btn_scroll_right.setIcon(self.style().standardIcon(
+            QStyle.StandardPixmap.SP_ArrowRight))
+        self.btn_scroll_right.setFixedSize(24, 28)
+        self.btn_scroll_right.setAutoRepeat(True)
+        self.btn_scroll_right.setToolTip("Прокрутить группы вправо")
+        self.btn_scroll_right.clicked.connect(lambda: self._scroll_by(160))
+        h.addWidget(self.btn_scroll_right)
 
         # Кнопка «+» в конце - создать новую группу
         self.btn_add = QToolButton()
@@ -797,7 +843,29 @@ class _GroupsBar(QFrame):
         )
         self.btn_add.clicked.connect(self.addRequested.emit)
         h.addWidget(self.btn_add)
-        h.addStretch()
+
+        scrollbar = self._scroll.horizontalScrollBar()
+        scrollbar.rangeChanged.connect(self._update_scroll_controls)
+        scrollbar.valueChanged.connect(self._update_scroll_control_state)
+        self._update_scroll_controls(0, 0)
+
+    def _scroll_by(self, amount):
+        bar = self._scroll.horizontalScrollBar()
+        bar.setValue(bar.value() + amount)
+
+    def _update_scroll_controls(self, minimum, maximum):
+        overflow = maximum > minimum
+        self.btn_scroll_left.setVisible(overflow)
+        self.btn_scroll_right.setVisible(overflow)
+        self._update_scroll_control_state()
+
+    def _update_scroll_control_state(self, *_):
+        bar = self._scroll.horizontalScrollBar()
+        self.btn_scroll_left.setEnabled(bar.value() > bar.minimum())
+        self.btn_scroll_right.setEnabled(bar.value() < bar.maximum())
+
+    def ensure_chip_visible(self, chip):
+        self._scroll.ensureWidgetVisible(chip, 8, 0)
 
     def add_chip(self, chip):
         # Вставляем перед растягивающим stretch
@@ -1088,6 +1156,9 @@ class SplitManager(QWidget):
             self._stack.setCurrentIndex(index)
         for i, g in enumerate(self._groups):
             g['chip'].set_active(i == index)
+        QTimer.singleShot(
+            0, lambda chip=self._groups[index]['chip']:
+            self._bar.ensure_chip_visible(chip))
         # В stack-mode при смене активной группы — unload предыдущей; иначе
         # файлы продолжали бы тяжело висеть в RAM и обходить LRU. В splitter
         # все панели видны постоянно, выгрузка ломала бы пользовательский опыт.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Log Analyzer Project"
+  short_description: "Карта архитектуры и выпуска Log Analyzer"
+  default_prompt: "Используй $log-analyzer-project для работы с приложением Log Analyzer."

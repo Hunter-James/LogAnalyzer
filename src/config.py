@@ -88,6 +88,8 @@ def load_settings():
         "files_left": [],
         "files_right": [],
         "ui_features": dict(DEFAULT_UI_FEATURES),
+        "associate_log_files": True,
+        "associate_zip_files": False,
         # Конфигурация двух групп табов: имена и цвета (раунд 1).
         # В следующих раундах будет произвольное число групп - тогда
         # эта структура расширится в groups: [...].
@@ -159,6 +161,8 @@ def load_settings():
     # с маркерами ERROR/WARN за <1с, полный анализ доезжает в фоне).
     # Default False — поведение как до фичи fast-open.
     defaults["fast_open_mode"] = bool(defaults.get("fast_open_mode", False))
+    defaults["associate_log_files"] = bool(defaults.get("associate_log_files", True))
+    defaults["associate_zip_files"] = bool(defaults.get("associate_zip_files", False))
 
     # Движок быстрого просмотра (Stage 1 в fast_open_mode):
     #   'list'    — QListView + модель сырых строк. Открытие мгновенное

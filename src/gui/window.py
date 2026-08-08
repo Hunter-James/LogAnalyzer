@@ -21,6 +21,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QIcon, QKeySequence, QCloseEvent, QShortcut
 
 from config import THEMES, APP_VERSION, DEFAULT_UI_FEATURES, load_settings, save_settings
+from core.file_associations import open_default_apps_settings, sync_file_associations
 from gui.log_viewer import LogViewerWidget
 from gui.tab_manager import SplitManager
 from gui.settings import SettingsDialog
@@ -65,6 +66,7 @@ class MainWindow(QMainWindow):
         self.current_theme_name = self.settings.get("theme", "Default")
         self.current_font_size = self.settings.get("font_size", 10)
         self.ui_features = self.settings.get("ui_features", dict(DEFAULT_UI_FEATURES))
+        self._sync_file_associations()
 
         # LRU список загруженных viewer'ов (от давнего к свежему). Когда длина
         # превышает MAX_LOADED_VIEWERS, голова списка выгружается. Сами
@@ -421,12 +423,16 @@ class MainWindow(QMainWindow):
         remember_split = bool(self.settings.get("remember_split_layout", False))
         fast_open = bool(self.settings.get("fast_open_mode", False))
         fast_engine = str(self.settings.get("fast_view_engine", "list"))
+        associate_log = bool(self.settings.get("associate_log_files", True))
+        associate_zip = bool(self.settings.get("associate_zip_files", False))
         dlg = SettingsDialog(
             self.current_theme_name, self.current_font_size, self.ui_features,
             current_group_layout=current_group_layout,
             remember_split_layout=remember_split,
             fast_open_mode=fast_open,
             fast_view_engine=fast_engine,
+            associate_log_files=associate_log,
+            associate_zip_files=associate_zip,
             parent=self,
         )
         dlg.previewChanged.connect(self._preview_appearance)
@@ -439,7 +445,8 @@ class MainWindow(QMainWindow):
 
         if result:
             (theme, size, features, group_layout,
-             remember_split, fast_open, fast_engine) = dlg.get_settings()
+             remember_split, fast_open, fast_engine,
+             associate_log, associate_zip) = dlg.get_settings()
             self.current_font_size = size
             self.ui_features = features
             self.apply_theme(theme)
@@ -450,7 +457,19 @@ class MainWindow(QMainWindow):
             self.settings["remember_split_layout"] = bool(remember_split)
             self.settings["fast_open_mode"] = bool(fast_open)
             self.settings["fast_view_engine"] = fast_engine or "list"
+            self.settings["associate_log_files"] = bool(associate_log)
+            self.settings["associate_zip_files"] = bool(associate_zip)
             self.save_current_settings()
+            self._sync_file_associations(show_error=True)
+            if dlg.should_open_default_apps():
+                try:
+                    open_default_apps_settings()
+                except OSError as exc:
+                    QMessageBox.warning(
+                        self,
+                        "Приложения по умолчанию",
+                        f"Не удалось открыть настройки Windows:\n{exc}",
+                    )
         else:
             # Откатываем live-превью на исходные настройки (без сохранения).
             # apply_theme зовём только если что-то реально менялось.
@@ -612,6 +631,57 @@ class MainWindow(QMainWindow):
         # Остальные - lazy: юзер сам кликнет таб, когда захочет его открыть.
         for i, file_name in enumerate(file_names):
             self.load_file(file_name, lazy=(i > 0))
+
+    def _activate_open_file(self, file_path):
+        target_path = os.path.normcase(os.path.abspath(file_path))
+        for group_index, panel in enumerate(self.split_manager.iter_panels()):
+            for pane in panel.panes():
+                for tab_index in range(pane.count()):
+                    viewer = pane.widget(tab_index)
+                    if not isinstance(viewer, LogViewerWidget):
+                        continue
+                    viewer_path = os.path.normcase(os.path.abspath(viewer.file_path))
+                    if viewer_path != target_path:
+                        continue
+                    panel.set_active_pane(pane)
+                    pane.setCurrentWidget(viewer)
+                    self.split_manager.activate_group_index(group_index)
+                    return viewer
+        return None
+
+    def open_external_files(self, file_paths):
+        supported = ('.log', '.txt', '.gz', '.zip', '.7z', '.rar')
+        opened_new = 0
+        seen = set()
+        for raw_path in file_paths:
+            file_path = os.path.abspath(os.path.expanduser(str(raw_path)))
+            normalized = os.path.normcase(file_path)
+            if normalized in seen or not os.path.isfile(file_path):
+                continue
+            seen.add(normalized)
+            if not file_path.lower().endswith(supported):
+                _log.warning("Unsupported command-line file ignored: %r", file_path)
+                continue
+            if self._activate_open_file(file_path) is not None:
+                continue
+            self.load_file(file_path, lazy=(opened_new > 0))
+            opened_new += 1
+
+    def _sync_file_associations(self, show_error=False):
+        try:
+            return sync_file_associations(
+                associate_log=bool(self.settings.get("associate_log_files", True)),
+                associate_zip=bool(self.settings.get("associate_zip_files", False)),
+            )
+        except OSError as exc:
+            _log.exception("Failed to update Windows file associations")
+            if show_error:
+                QMessageBox.warning(
+                    self,
+                    "Открытие файлов из Проводника",
+                    f"Не удалось обновить регистрацию типов файлов:\n{exc}",
+                )
+            return False
 
     # Жёсткий лимит на число одновременно загруженных в RAM табов.
     # Свыше - самые давно неактивные выгружаются через viewer.unload().
@@ -1244,6 +1314,10 @@ class MainWindow(QMainWindow):
                 self.settings.get("fast_open_mode", False)),
             "fast_view_engine": str(
                 self.settings.get("fast_view_engine", "list")),
+            "associate_log_files": bool(
+                self.settings.get("associate_log_files", True)),
+            "associate_zip_files": bool(
+                self.settings.get("associate_zip_files", False)),
             # Индекс активной группы - при следующем запуске именно её
             # первый таб начнёт грузиться (а не нулевая по счёту, если был на
             # другой группе).

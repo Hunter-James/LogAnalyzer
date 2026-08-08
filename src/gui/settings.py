@@ -53,12 +53,14 @@ class SettingsDialog(QDialog):
     def __init__(self, current_theme, current_font_size, current_features,
                  current_group_layout='stack', remember_split_layout=False,
                  fast_open_mode=False, fast_view_engine='list',
+                 associate_log_files=True, associate_zip_files=False,
                  parent=None):
         super().__init__(parent)
         # Сохраняем для get_settings - чтобы вернуть как есть, если юзер
         # не трогал соответствующий контрол (для current_group_layout сейчас
         # нет UI - режим меняется через «Переместить в другую панель»).
         self._current_group_layout = current_group_layout
+        self._open_default_apps_after_accept = False
         self.setWindowTitle("Настройки")
         # Увеличенный дефолтный размер: все 4 категории видны без скролла,
         # а длинные подписи (вроде «Режим разработчика (RAM-индикатор + ...)»)
@@ -211,6 +213,28 @@ class SettingsDialog(QDialog):
 
         features_outer.addWidget(open_box)
 
+        associations_box = QGroupBox("Открытие из Проводника")
+        associations_layout = QVBoxLayout(associations_box)
+        associations_layout.setContentsMargins(10, 8, 10, 8)
+        associations_layout.setSpacing(4)
+
+        self.cb_associate_log = _WrapCheckBox(
+            "Добавить Log Analyzer в список приложений для файлов .log")
+        self.cb_associate_log.setChecked(bool(associate_log_files))
+        associations_layout.addWidget(self.cb_associate_log)
+
+        self.cb_associate_zip = _WrapCheckBox(
+            "Добавить Log Analyzer в список приложений для файлов .zip")
+        self.cb_associate_zip.setChecked(bool(associate_zip_files))
+        associations_layout.addWidget(self.cb_associate_zip)
+
+        btn_default_apps = QPushButton("Выбрать приложение по умолчанию в Windows")
+        btn_default_apps.setToolTip(
+            "Применить настройки и открыть системную страницу приложений по умолчанию")
+        btn_default_apps.clicked.connect(self._accept_and_open_default_apps)
+        associations_layout.addWidget(btn_default_apps)
+        features_outer.addWidget(associations_box)
+
         features_outer.addStretch(1)
 
         # Заворачиваем в QScrollArea, чтобы при добавлении новых категорий
@@ -280,6 +304,13 @@ class SettingsDialog(QDialog):
         self._apply_theme_stylesheet(self.theme_combo.currentText())
         self.previewChanged.emit(self.theme_combo.currentText(), self.font_spin.value())
 
+    def _accept_and_open_default_apps(self):
+        self._open_default_apps_after_accept = True
+        self.accept()
+
+    def should_open_default_apps(self):
+        return self._open_default_apps_after_accept
+
     def get_settings(self):
         features = {key: cb.isChecked() for key, cb in self.feature_checkboxes.items()}
         # group_layout сейчас управляется не через диалог (Stack/Splitter
@@ -291,4 +322,6 @@ class SettingsDialog(QDialog):
                 self._current_group_layout,
                 self.cb_remember_split.isChecked(),
                 self.cb_fast_open.isChecked(),
-                self.combo_view_engine.currentData())
+                self.combo_view_engine.currentData(),
+                self.cb_associate_log.isChecked(),
+                self.cb_associate_zip.isChecked())
