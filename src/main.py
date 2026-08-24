@@ -33,18 +33,28 @@ def _log_file_path():
 
 LOG_PATH = _log_file_path()
 
-# mode='w' - чистый лог при каждом запуске. Нас интересует только
-# последняя сессия (или последняя упавшая).
-_log_handler = logging.FileHandler(LOG_PATH, mode='w', encoding='utf-8')
-_log_handler.setFormatter(logging.Formatter(
-    '%(asctime)s [%(levelname)-5s] %(name)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-))
-logging.basicConfig(level=logging.DEBUG, handlers=[_log_handler])
+_log_handler = None
+_logging_configured = False
 _logger = logging.getLogger('main')
-_logger.info("Log Analyzer starting (frozen=%s, path=%s)",
-             getattr(sys, 'frozen', False),
-             sys.executable if getattr(sys, 'frozen', False) else __file__)
+
+
+def _configure_logging():
+    global _log_handler, _logging_configured
+    if _logging_configured:
+        return
+
+    # Вторичные процессы не открывают этот файл: иначе повторный запуск из
+    # Проводника обнулил бы crash-log уже работающего основного экземпляра.
+    _log_handler = logging.FileHandler(LOG_PATH, mode='w', encoding='utf-8')
+    _log_handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)-5s] %(name)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    ))
+    logging.basicConfig(level=logging.DEBUG, handlers=[_log_handler])
+    _logging_configured = True
+    _logger.info("Log Analyzer starting (frozen=%s, path=%s)",
+                 getattr(sys, 'frozen', False),
+                 sys.executable if getattr(sys, 'frozen', False) else __file__)
 
 # Флаг краша. Устанавливается в excepthook + qt-message-handler.
 # Если True - cleanup в atexit/aboutToQuit НЕ удалит файл.
@@ -92,6 +102,8 @@ def _cleanup_log_if_clean_exit():
     """Удаляет crash_log.txt если приложение завершилось нормально.
     Вызывается через atexit (отрабатывает в самом конце Python-runtime)
     и через QApplication.aboutToQuit (срабатывает раньше)."""
+    if not _logging_configured:
+        return
     if _crashed:
         # Лог оставляем - есть на что посмотреть
         return
@@ -120,25 +132,21 @@ from PyQt6.QtCore import QTimer, qInstallMessageHandler  # noqa: E402
 
 
 if __name__ == "__main__":
-    # Подключаем Qt-message-handler ПОСЛЕ импорта Qt
-    qInstallMessageHandler(_qt_message_handler)
-
     startup_files = [os.path.abspath(arg) for arg in sys.argv[1:]
                      if os.path.isfile(arg)]
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    # aboutToQuit срабатывает раньше atexit - очистим лог здесь же.
-    # Двойная подстраховка: если по какой-то причине atexit не дойдёт,
-    # aboutToQuit сделает работу. Если оба сработают - второй раз
-    # удаление просто не найдёт файл и тихо выйдет.
-    app.aboutToQuit.connect(_cleanup_log_if_clean_exit)
 
     try:
         single_instance = SingleInstanceChannel()
         if not single_instance.start_or_forward(startup_files):
-            _logger.info("Request forwarded to the running instance")
             sys.exit(0)
+
+        _configure_logging()
+        # Подключаем Qt-message-handler только в основном экземпляре.
+        qInstallMessageHandler(_qt_message_handler)
+        app.aboutToQuit.connect(_cleanup_log_if_clean_exit)
 
         window = MainWindow()
         window.show()
