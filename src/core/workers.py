@@ -323,12 +323,13 @@ class LogLoader(QThread):
 
 # --- Worker Thread for Filtering ---
 class FilterWorker(QThread):
-    finished = pyqtSignal(list)
+    # object передаёт индексы без дорогого преобразования списка в QVariantList.
+    finished = pyqtSignal(object)
 
     def __init__(self, entries, show_info, show_debug, show_error, show_warn,
                  search_text, loggers=None, time_from=None, time_to=None,
                  case_sensitive=False, batch_filter=None, batch_for_index=None,
-                 use_regex=False):
+                 use_regex=False, group_dupes=False):
         super().__init__()
         self.entries = entries
         self.show_info = show_info
@@ -351,6 +352,11 @@ class FilterWorker(QThread):
         # Когда on - компилируется как регулярка; если она невалидна, делаем literal fallback.
         self.use_regex = use_regex
         self._is_cancelled = False
+        self.group_dupes = group_dupes
+        self.visible_indices = []
+        self.counts = []
+        self.member_to_row = {}
+        self.marker_levels = []
 
     def cancel(self):
         self._is_cancelled = True
@@ -393,8 +399,15 @@ class FilterWorker(QThread):
                     return False
             return True
 
+        def candidates():
+            # Отмена должна прерывать обход, а не только подавлять его результат.
+            for i in range(len(entries)):
+                if self._is_cancelled:
+                    return
+                yield i, entries[i]
+
         if not search_text:
-            new_indices = [i for i, e in enumerate(entries) if base_pass(i, e)]
+            new_indices = [i for i, e in candidates() if base_pass(i, e)]
         else:
             # Поведение поиска:
             # use_regex=False (по умолчанию) - чистый literal (in / lower in).
@@ -410,21 +423,72 @@ class FilterWorker(QThread):
             if search_regex:
                 match = search_regex.search
                 new_indices = [
-                    i for i, e in enumerate(entries)
+                    i for i, e in candidates()
                     if base_pass(i, e) and match(e.full_line)
                 ]
             elif self.case_sensitive:
                 # literal fallback, регистр учитываем
                 new_indices = [
-                    i for i, e in enumerate(entries)
-                    if base_pass(i, e) and search_text in e.full_line
+                    i for i, e in candidates()
+                    if base_pass(i, e) and search_text in (
+                        e.full_line if '\n' in search_text else e.message)
                 ]
             else:
                 search_lower = search_text.lower()
                 new_indices = [
-                    i for i, e in enumerate(entries)
-                    if base_pass(i, e) and search_lower in e.full_line.lower()
+                    i for i, e in candidates()
+                    if base_pass(i, e) and search_lower in (
+                        e.full_line if '\n' in search_lower else e.message).lower()
                 ]
 
+        if self._is_cancelled:
+            return
+        self.visible_indices = new_indices
+        if self.group_dupes:
+            self._build_groups(new_indices)
+        if self._is_cancelled:
+            return
+        self._build_markers()
         if not self._is_cancelled:
             self.finished.emit(new_indices)
+
+    _MSG_BODY_RE = re.compile(r'\]\s*:\s*(.*)', re.DOTALL)
+
+    def _build_groups(self, indices):
+        """Группирует соседние совпадения в рабочем потоке, сохраняя навигацию."""
+        grouped, counts, member_to_row = [], [], {}
+        prev_key = None
+        for idx in indices:
+            if self._is_cancelled:
+                return
+            entry = self.entries[idx]
+            first_line = entry.message.split('\n', 1)[0]
+            match = self._MSG_BODY_RE.search(first_line)
+            body = match.group(1).strip() if match else first_line
+            key = (entry.level, body)
+            if grouped and key == prev_key:
+                counts[-1] += 1
+            else:
+                grouped.append(idx)
+                counts.append(1)
+                prev_key = key
+            member_to_row[idx] = len(grouped) - 1
+        self.visible_indices = grouped
+        self.counts = counts
+        self.member_to_row = member_to_row
+
+    def _build_markers(self):
+        """Готовит не более 200 меток; цвет применяет интерфейс по текущей теме."""
+        indices = self.visible_indices
+        total = len(indices)
+        levels = [None] * 200
+        for row, idx in enumerate(indices):
+            if self._is_cancelled:
+                return
+            bin_idx = min(199, row * 200 // total)
+            if levels[bin_idx] == 'ERROR':
+                continue
+            level = self.entries[idx].level
+            if level in ('ERROR', 'WARN'):
+                levels[bin_idx] = level
+        self.marker_levels = [(i / 200, level) for i, level in enumerate(levels) if level]

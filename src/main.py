@@ -8,11 +8,9 @@ import tracemalloc
 # Add the src directory to sys.path to allow imports from src
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# tracemalloc включаем ДО создания QApplication: чем раньше старт, тем
-# точнее snapshot покажет реальные потребители памяти. frames=1 - храним
-# только верхний фрейм аллокации (достаточно для отчёта file:line),
-# overhead минимальный по сравнению с дефолтом frames=25.
-if not tracemalloc.is_tracing():
+# Отслеживание каждой аллокации заметно замедляет поиск по большим логам.
+# Включаем его только для диагностики, до загрузки записей.
+if os.environ.get('LOG_ANALYZER_TRACE_MEMORY') == '1' and not tracemalloc.is_tracing():
     tracemalloc.start(1)
 
 

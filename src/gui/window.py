@@ -97,12 +97,12 @@ class MainWindow(QMainWindow):
         # psutil для текущего RSS процесса; tracemalloc для snapshot top-N
         # аллокаций (Ctrl+Shift+M). Если psutil не установлен (например при
         # запуске из исходников без `pip install psutil`), монитор просто
-        # покажет «—», но snapshot всё равно сработает.
+        # покажет «—». Snapshot требует включённой диагностики памяти.
         self.lbl_ram = QLabel("RAM: —")
         self.lbl_ram.setToolTip(
             "Текущее потребление памяти процессом + entries по табам.\n"
             "Ctrl+Shift+M — сохранить tracemalloc-snapshot топ-30 аллокаций "
-            "в файл рядом с приложением."
+            "в файл рядом с приложением (при включённой диагностике памяти)."
         )
         self.statusBar().addPermanentWidget(self.lbl_ram)
         self._ram_timer = QTimer(self)
@@ -1007,8 +1007,9 @@ class MainWindow(QMainWindow):
         if not tracemalloc.is_tracing():
             QMessageBox.warning(
                 self, "Snapshot недоступен",
-                "tracemalloc не запущен - возможно, приложение запустилось "
-                "не из main.py."
+                "Диагностика памяти отключена для ускорения работы.\n"
+                "Для сбора snapshot запустите приложение с переменной окружения "
+                "LOG_ANALYZER_TRACE_MEMORY=1."
             )
             return
 
@@ -1353,11 +1354,6 @@ class MainWindow(QMainWindow):
                             pass
                         lo.requestInterruption()
                         lo.wait(500)
-                fw = getattr(w.model, 'filter_worker', None)
-                if fw is not None and fw.isRunning():
-                    try:
-                        fw.cancel()
-                    except Exception:
-                        pass
-                    fw.wait(500)
+                w.search_timer.stop()
+                w.model.stop_filtering()
         super().closeEvent(event)

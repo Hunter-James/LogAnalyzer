@@ -193,9 +193,8 @@ class LogViewerWidget(QWidget):
             except Exception:
                 pass
             setattr(self, attr, None)
-        if self.model.filter_worker and self.model.filter_worker.isRunning():
-            self.model.filter_worker.cancel()
-            self.model.filter_worker.wait(2000)
+        self.search_timer.stop()
+        self.model.stop_filtering()
 
         # 2. Чистим модель (это самый жирный потребитель)
         self.model.set_entries([])
@@ -387,6 +386,9 @@ class LogViewerWidget(QWidget):
         self.model = LogModel()
         self.log_view = ScalableListView()
         self.log_view.setUniformItemSizes(True)
+        # Миллионы совпадений раскладываем порциями, отдавая время обработке ввода.
+        self.log_view.setLayoutMode(ScalableListView.LayoutMode.Batched)
+        self.log_view.setBatchSize(2000)
         self.log_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.log_view.setModel(self.model)
         # Скроллбар с метками ERROR/WARN
@@ -2410,44 +2412,9 @@ class LogViewerWidget(QWidget):
         if not isinstance(scrollbar, MarkerScrollBar):
             return
 
-        indices = self.model._filtered_indices
-        total = len(indices)
-        entries = self.model._entries
-        # Доп. защита: после unload() / set_entries([]) модель пуста, но
-        # _filtered_indices ещё может ссылаться на старые индексы из-за
-        # async-сигналов FilterWorker. В этом случае real_idx >= len(entries) -
-        # IndexError. Просто очищаем маркеры и выходим.
-        if total == 0 or not entries:
-            scrollbar.set_markers([])
-            return
-
-        BINS = 200
-        bin_levels = [None] * BINS  # для каждого бина "наиболее серьёзный" уровень
-        n_entries = len(entries)
-
-        for row, real_idx in enumerate(indices):
-            if real_idx >= n_entries:
-                # Stale-индекс после reload/unload - пропускаем
-                continue
-            level = entries[real_idx].level
-            if level not in ("ERROR", "WARN"):
-                continue
-            bin_idx = min(BINS - 1, row * BINS // total)
-            if level == "ERROR":
-                bin_levels[bin_idx] = "ERROR"
-            elif bin_levels[bin_idx] != "ERROR":
-                bin_levels[bin_idx] = "WARN"
-
         t = THEMES[self.current_theme_name]
-        error_color = QColor(t['error'])
-        warn_color = QColor(t['warn'])
-
-        markers = []
-        for i, lvl in enumerate(bin_levels):
-            if lvl is None:
-                continue
-            rel = i / BINS
-            markers.append((rel, error_color if lvl == "ERROR" else warn_color))
+        colors = {'ERROR': QColor(t['error']), 'WARN': QColor(t['warn'])}
+        markers = [(rel, colors[level]) for rel, level in self.model.marker_levels]
 
         scrollbar.set_markers(markers)
 

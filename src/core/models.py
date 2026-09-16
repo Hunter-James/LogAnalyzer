@@ -1,6 +1,6 @@
 import re
 import collections
-from PyQt6.QtCore import QAbstractListModel, QModelIndex, Qt, pyqtSignal
+from PyQt6.QtCore import QAbstractListModel, QModelIndex, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from config import THEMES
 from core.workers import FilterWorker
@@ -199,6 +199,8 @@ class LogModel(QAbstractListModel):
         self.update_colors()
 
         self.filter_worker = None
+        self._filter_pending = False
+        self.marker_levels = []
 
     def update_colors(self):
         self.color_info = QColor(self.current_theme["info"])
@@ -253,6 +255,7 @@ class LogModel(QAbstractListModel):
         return None
 
     def set_entries(self, entries):
+        self.marker_levels = []
         self.beginResetModel()
         self._entries = entries
         self._raw_filtered_indices = list(range(len(entries)))
@@ -601,8 +604,10 @@ class LogModel(QAbstractListModel):
     def apply_filters_async(self):
         if self.filter_worker and self.filter_worker.isRunning():
             self.filter_worker.cancel()
-            self.filter_worker.wait()
+            self._filter_pending = True
+            return
 
+        self._filter_pending = False
         self.filter_worker = FilterWorker(
             self._entries,
             self._show_info, self._show_debug, self._show_error, self._show_warn,
@@ -614,52 +619,35 @@ class LogModel(QAbstractListModel):
             self._batch_filter,
             self._batch_for_index,
             getattr(self, '_use_regex', False),
+            self._group_dupes,
         )
         self.filter_worker.finished.connect(self.on_filter_finished)
+        QThread.finished.__get__(self.filter_worker).connect(self._on_filter_stopped)
         self.filter_worker.start()
 
+    def _on_filter_stopped(self):
+        if self.sender() is self.filter_worker and self._filter_pending:
+            self.apply_filters_async()
+
+    def stop_filtering(self):
+        """Отменяет также отложенный запрос при выгрузке или закрытии окна."""
+        self._filter_pending = False
+        if self.filter_worker is not None:
+            self.filter_worker.cancel()
+            self.filter_worker.wait()
+
     def on_filter_finished(self, new_indices):
+        worker = self.sender()
+        if worker is not self.filter_worker or worker._is_cancelled or self._filter_pending:
+            return
         self.beginResetModel()
         self._raw_filtered_indices = new_indices
-        if self._group_dupes:
-            (self._filtered_indices,
-             self._filtered_counts,
-             self._member_to_row) = self._build_groups(new_indices)
-        else:
-            self._filtered_indices = new_indices
-            self._filtered_counts = []
-            self._member_to_row = {}
+        self._filtered_indices = worker.visible_indices
+        self._filtered_counts = worker.counts
+        self._member_to_row = worker.member_to_row
+        self.marker_levels = worker.marker_levels
         self.endResetModel()
         self.filterFinished.emit()
-
-    # Регулярка для извлечения тела сообщения из строки лога после "]:".
-    # entry.message содержит ВСЮ строку лога, включая timestamp - если сравнивать
-    # её целиком, две одинаковых ошибки с разным временем не считаются дублями.
-    _MSG_BODY_RE = re.compile(r'\]\s*:\s*(.*)', re.DOTALL)
-
-    def _build_groups(self, indices):
-        """Схлопывает подряд идущие записи с одинаковым (level, тело сообщения).
-        Под «телом сообщения» понимается часть после «]: » - без timestamp,
-        уровня и логгера, иначе ни одна повторяющаяся ошибка не свернётся."""
-        grouped = []
-        counts = []
-        member_to_row = {}
-        prev_key = None
-        entries = self._entries
-        for idx in indices:
-            e = entries[idx]
-            first_line = e.message.split('\n', 1)[0]
-            m = self._MSG_BODY_RE.search(first_line)
-            body = m.group(1).strip() if m else first_line
-            key = (e.level, body)
-            if grouped and key == prev_key:
-                counts[-1] += 1
-            else:
-                grouped.append(idx)
-                counts.append(1)
-                prev_key = key
-            member_to_row[idx] = len(grouped) - 1
-        return grouped, counts, member_to_row
 
     def get_real_index(self, row):
         if 0 <= row < len(self._filtered_indices):
