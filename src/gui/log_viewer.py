@@ -1947,8 +1947,9 @@ class LogViewerWidget(QWidget):
 
     def update_stats_text(self):
         total = sum(self.stats.values())
+        profile = self.model.profile_detection.profile.value
         text = (
-            f"Всего: {total:,} | "
+            f"Профиль: {profile} | Всего: {total:,} | "
             f"INFO: {self.stats.get('INFO', 0):,} | "
             f"ERROR: {self.stats.get('ERROR', 0):,} | "
             f"DEBUG: {self.stats.get('DEBUG', 0):,} | "

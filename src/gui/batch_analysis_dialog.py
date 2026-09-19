@@ -2,7 +2,6 @@ from html import escape
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QTextBrowser, QPushButton
 
 from config import THEMES
-from core.models import BATCH_EVENT_RULES
 
 
 def _adjust_color(hex_color, delta):
@@ -80,6 +79,7 @@ def _build_analysis_html(analysis, theme_name):
 
     parts = [css]
     parts.append(f"<h1>Анализ: {title}</h1>")
+    parts.append(f"<div class='muted'>Профиль: <b>{escape(analysis['profile'])}</b></div>")
     parts.append(f"<div class='muted'>Время: <b>{escape(analysis['first_ts'] or '—')} → "
                  f"{escape(analysis['last_ts'] or '—')}</b></div>")
 
@@ -204,7 +204,7 @@ def _build_analysis_html(analysis, theme_name):
         ['exchange_sgtin', 'serialization', 'http_request']
     ))
     # --- Все ошибки в одной секции (event-rules вида err_*) ---
-    err_keys = [k for k, _, _ in BATCH_EVENT_RULES if k.startswith('err_')]
+    err_keys = [k for k in labels if k.startswith('err_')]
     parts.append(render_event_group("Проблемы и ошибки (счётчики)", err_keys))
 
     # --- Ритм работы ---

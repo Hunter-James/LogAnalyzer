@@ -3,6 +3,7 @@ import collections
 from PyQt6.QtCore import QAbstractListModel, QModelIndex, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from config import THEMES
+from core.log_profile import LogProfile, detect_log_profile, update_log_profile
 from core.workers import FilterWorker
 
 
@@ -57,6 +58,13 @@ BATCH_EVENT_RULES = [
     ('http_request', 'HTTP-запросов (CustomLogFilter.beforeRequest)',
         lambda e, line: e.logger == 'CustomLogFilter' and '.beforeRequest' in line),
 ]
+
+
+def _event_rules_for_profile(profile):
+    """Возвращает только правила, допустимые для выбранного профиля."""
+    if profile == LogProfile.SMART_L2:
+        return BATCH_EVENT_RULES
+    return []
 
 
 # SGTIN (серийный код единицы продукта): 01 + GTIN(14) + serial.
@@ -151,6 +159,7 @@ def _find_batch_response_backfill_start(entries, segment_start, marker_idx):
             first_code_idx = idx
     return marker_idx if first_code_idx is None else first_code_idx
 
+
 # Маркер "вне партии" - пустая строка (None плохо сериализуется в JSON и Qt-сигналах)
 NO_BATCH = ""
 
@@ -163,6 +172,7 @@ class LogModel(QAbstractListModel):
     def __init__(self, entries=None):
         super().__init__()
         self._entries = entries or []
+        self.profile_detection = detect_log_profile(self._entries)
         # _raw_filtered_indices - все совпадения после фильтра (без группировки)
         self._raw_filtered_indices = list(range(len(self._entries)))
         # _filtered_indices - то, что реально отображается; при группировке это лидеры групп
@@ -258,6 +268,7 @@ class LogModel(QAbstractListModel):
         self.marker_levels = []
         self.beginResetModel()
         self._entries = entries
+        self.profile_detection = detect_log_profile(entries)
         self._raw_filtered_indices = list(range(len(entries)))
         self._filtered_indices = list(self._raw_filtered_indices)
         self._filtered_counts = []
@@ -272,6 +283,7 @@ class LogModel(QAbstractListModel):
             return
         prev_len = len(self._entries)
         self._entries.extend(new_entries)
+        self.profile_detection = update_log_profile(self.profile_detection, new_entries)
         # Парсим только новые - открытый сегмент продолжается с прошлого раза
         self._parse_batches(start_from=prev_len)
         # Полный фильтр - проще и корректнее, чем инкрементально вычислять что показывать.
@@ -408,7 +420,9 @@ class LogModel(QAbstractListModel):
         levels = {'INFO': 0, 'DEBUG': 0, 'ERROR': 0, 'WARN': 0, 'UNKNOWN': 0}
         loggers = collections.Counter()
         error_categories = collections.Counter()  # нормализованные ERROR (группировка похожих)
-        events = {key: 0 for key, _, _ in BATCH_EVENT_RULES}
+        event_rules = _event_rules_for_profile(self.profile_detection.profile)
+        use_l2_metrics = self.profile_detection.profile == LogProfile.SMART_L2
+        events = {key: 0 for key, _, _ in event_rules}
         per_minute = collections.Counter()
         errors_per_hour = collections.Counter()  # 'HH' -> count ERROR
         scan_timestamps_ms = []
@@ -468,7 +482,7 @@ class LogModel(QAbstractListModel):
                     errors_per_hour[e.timestamp[:2]] += 1
 
             # SGTIN-коды (серийные на единицах продукта): извлекаем из всех строк
-            sgtin_in_line = SGTIN_CODE_RE.findall(line)
+            sgtin_in_line = SGTIN_CODE_RE.findall(line) if use_l2_metrics else []
             if sgtin_in_line:
                 # HIKROBOT - реальное сканирование сканером
                 if e.logger == 'HIKROBOT' and '.run' in line and 'Получены данные' in line:
@@ -487,7 +501,7 @@ class LogModel(QAbstractListModel):
                     sgtin_not_found.update(sgtin_in_line)
 
             # Групповые (агрегационные) коды упаковок
-            group_in_line = GROUP_CODE_RE.findall(line)
+            group_in_line = GROUP_CODE_RE.findall(line) if use_l2_metrics else []
             if group_in_line:
                 if e.logger == 'AggregationBase' and (
                         '.getAndPrintAggregationCode' in line
@@ -496,7 +510,7 @@ class LogModel(QAbstractListModel):
                 if e.logger == 'PrintService' and '.sendData' in line:
                     group_codes_printed.update(group_in_line)
 
-            for key, _label, predicate in BATCH_EVENT_RULES:
+            for key, _label, predicate in event_rules:
                 try:
                     if predicate(e, line):
                         events[key] += 1
@@ -542,8 +556,11 @@ class LogModel(QAbstractListModel):
 
         # Эффективность агрегации: % от попыток что завершились успешно
         agg_efficiency = None
-        if events['agg_attempted'] > 0:
-            agg_efficiency = round(events['agg_finished'] / events['agg_attempted'] * 100, 1)
+        if events.get('agg_attempted', 0) > 0:
+            agg_efficiency = round(
+                events.get('agg_finished', 0) / events['agg_attempted'] * 100,
+                1,
+            )
 
         # Сколько SGTIN-кодов сканировались более 1 раза (потенциальные дубли)
         repeated_scans = sum(1 for c, n in sgtin_unique_per_scan_event.items() if n > 1)
@@ -553,6 +570,7 @@ class LogModel(QAbstractListModel):
         most_repeated = [(c, n) for c, n in most_repeated if n > 1]
 
         return {
+            'profile': self.profile_detection.profile.value,
             'batch_id': batch_id,
             'total': total,
             'first_ts': first_ts,
@@ -561,7 +579,7 @@ class LogModel(QAbstractListModel):
             'per_hour': per_hour,
             'levels': levels,
             'events': events,
-            'event_labels': {key: label for key, label, _ in BATCH_EVENT_RULES},
+            'event_labels': {key: label for key, label, _ in event_rules},
             'top_error_categories': error_categories.most_common(10),
             'top_loggers': loggers.most_common(5),
             'top_minutes': per_minute.most_common(5),
