@@ -119,7 +119,7 @@ class GroupHeader(QFrame):
         hover_bg = "rgba(0,0,0,40)" if lum > 160 else "rgba(255,255,255,40)"
         btn_css = (
             f"QToolButton {{ color: {text_alpha}; background: transparent; "
-            "border: none; font-size: 16px; font-weight: bold; }}"
+            "border: none; font-size: 16px; font-weight: bold; }"
             f"QToolButton:hover {{ background: {hover_bg}; border-radius: 3px; }}"
         )
         self.btn_menu.setStyleSheet(btn_css)
@@ -587,6 +587,8 @@ class EditorTabWidget(QTabWidget):
 
         widget = self.widget(index)
         if widget:
+            if hasattr(widget, 'stop_background_work'):
+                widget.stop_background_work()
             self.removeTab(index)
             widget.deleteLater()
 

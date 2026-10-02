@@ -13,7 +13,7 @@ import sys
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.workers import _open_log_stream, LINE_PATTERN
-from core.models import (
+from core.batch_index import (
     _BATCH_RESPONSE_BACKFILL_MAX_LINES,
     _extract_batch_open_marker,
     _should_backfill_before_open_source,
@@ -117,7 +117,7 @@ class GroupStatsWorker(QThread):
                                           если юзер прервал."""
 
     progress = pyqtSignal(int, int, str)
-    finished = pyqtSignal(dict, str)
+    finished = pyqtSignal(object, str)
 
     def __init__(self, file_paths):
         super().__init__()
@@ -141,6 +141,8 @@ class GroupStatsWorker(QThread):
             # видел 99.7% и приложение «висит» пока шёл последний файл).
             self.progress.emit(total, total, '')
             self.finished.emit(batches, '')
+        except InterruptedError:
+            self.finished.emit(batches, '__CANCELLED__')
         except Exception as e:
             self.finished.emit(batches, str(e))
 
@@ -220,7 +222,9 @@ class GroupStatsWorker(QThread):
             pending_no_batch.clear()
 
         try:
-            for line in stream:
+            for line_number, line in enumerate(stream):
+                if line_number % 512 == 0 and self.isInterruptionRequested():
+                    raise InterruptedError
                 # Проверяем прерывание не на каждой строке — раз в ~1000
                 # для скорости.
                 # (упростил: проверяем через счётчик в outer цикле проще

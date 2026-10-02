@@ -120,8 +120,8 @@ class MainWindow(QMainWindow):
         # Стартовая видимость debug-панели согласно настройкам
         self._apply_debug_panel_visibility()
 
-        # Restore session
-        self.restore_session()
+        # Показываем окно до восстановления тяжёлой сессии.
+        QTimer.singleShot(0, self.restore_session)
 
     def setup_ui(self):
         self.central_widget = QWidget()
@@ -704,6 +704,7 @@ class MainWindow(QMainWindow):
         )
         viewer.loadingFinished.connect(
             lambda v=viewer: self.on_loading_finished(v))
+        viewer.destroyed.connect(lambda _=None, v=viewer: self._forget_viewer(v))
         # Юзер может нажать «Загрузить файл» в placeholder'е (когда таб
         # lazy) — этот сигнал триггерит то же что и автоматическая активация:
         # busy + progress + ensure_loaded.
@@ -790,6 +791,18 @@ class MainWindow(QMainWindow):
         self._start_progress_for(viewer)
         self.btn_open.setEnabled(False)
         viewer.ensure_loaded()
+
+    def _forget_viewer(self, viewer):
+        """Удаляет закрытую вкладку из LRU и индикаторов незавершённой загрузки."""
+        self._lru_loaded = [item for item in self._lru_loaded if item is not viewer]
+        if getattr(self, '_last_active_viewer', None) is viewer:
+            self._last_active_viewer = None
+        if getattr(self, '_closing', False):
+            return
+        self.progress_bar.remove(viewer)
+        if not self.progress_bar.has_active():
+            self.btn_open.setEnabled(True)
+            self.hide_busy()
 
     def on_loading_finished(self, viewer=None):
         # viewer может быть None - старая сигнатура без аргументов от внешних
@@ -1204,6 +1217,8 @@ class MainWindow(QMainWindow):
         Источник истины - files_per_group (список списков по группам).
         Legacy files_left / files_right поддерживается как fallback для
         старых settings.json без полей per-group."""
+        if getattr(self, '_closing', False):
+            return
         per_group = self.settings.get("files_per_group")
         if not per_group:
             # Legacy: собираем из files_left / files_right
@@ -1329,31 +1344,24 @@ class MainWindow(QMainWindow):
         self.settings = data
 
     def closeEvent(self, event: QCloseEvent):
-        self.save_current_settings()
-        for dlg in list(getattr(self, '_group_stats_dialogs', [])):
-            try:
-                dlg.close()
-            except RuntimeError:
-                pass
-        # Корректно останавливаем все QThread'ы во всех viewer'ах перед
-        # super().closeEvent — иначе Qt прибивает потоки как «destroyed
-        # while running» с warning'ом / crash'ем. В каждом viewer'е могут
-        # быть loader (классический или Stage 2), fast_loader (Stage 1) и
-        # model.filter_worker.
+        if not getattr(self, '_closing', False):
+            self._closing = True
+            self.save_current_settings()
+            for dlg in list(getattr(self, '_group_stats_dialogs', [])):
+                try:
+                    dlg.close()
+                except RuntimeError:
+                    pass
+        from core.thread_lifecycle import retired_threads
         for group in self.split_manager.iter_groups():
             for i in range(group.count()):
-                w = group.widget(i)
-                if not isinstance(w, LogViewerWidget):
-                    continue
-                for attr in ('fast_loader', 'loader'):
-                    lo = getattr(w, attr, None)
-                    if lo is not None and lo.isRunning():
-                        try:
-                            lo.finished.disconnect()
-                        except (TypeError, RuntimeError):
-                            pass
-                        lo.requestInterruption()
-                        lo.wait(500)
-                w.search_timer.stop()
-                w.model.stop_filtering()
+                viewer = group.widget(i)
+                if isinstance(viewer, LogViewerWidget):
+                    viewer.stop_background_work()
+        if retired_threads().workers:
+            # Qt не должен уничтожать ещё работающий QThread. Оставляем
+            # цикл событий живым до завершения отменённых операций.
+            event.ignore()
+            QTimer.singleShot(50, self.close)
+            return
         super().closeEvent(event)

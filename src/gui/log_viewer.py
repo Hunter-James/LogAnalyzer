@@ -91,7 +91,7 @@ class LogViewerWidget(QWidget):
         }
 
         # Search debounce timer
-        self.search_timer = QTimer()
+        self.search_timer = QTimer(self)
         self.search_timer.setSingleShot(True)
         self.search_timer.setInterval(300)
         self.search_timer.timeout.connect(self.refresh_view)
@@ -125,13 +125,8 @@ class LogViewerWidget(QWidget):
         # во время Stage 1 запускал второй FastTextLoader и busy «висел».
         if hasattr(self, 'fast_loader') and self.fast_loader and self.fast_loader.isRunning():
             return
-        if hasattr(self, 'loader') and self.loader and self.loader.isRunning():
-            if self.loader.isInterruptionRequested():
-                self.loader.wait(300)
-                if self.loader.isRunning():
-                    return
-            else:
-                return
+        if getattr(self, 'loader', None) and self.loader.isRunning():
+            return
 
         # Выбор режима
         from config import load_settings
@@ -149,55 +144,30 @@ class LogViewerWidget(QWidget):
             self.load_file()
             self._loaded = True
 
-    def cancel_load(self):
-        """Юзер запросил отмену текущей загрузки. Прерываем оба возможных
-        loader'а — fast_loader (Stage 1 в Fast mode) и loader (классический
-        или Stage 2). Тот что активен, ответит __CANCELLED__ через свой
-        finished, и на нём UI откатится в lazy-состояние."""
+    def stop_background_work(self):
+        """Отменяет работу и передаёт потоки реестру до их завершения."""
+        from core.thread_lifecycle import retired_threads
+        self._stop_tail()
+        self.search_timer.stop()
         for attr in ('fast_loader', 'loader'):
-            lo = getattr(self, attr, None)
-            if lo is not None and lo.isRunning():
-                try:
-                    lo.requestInterruption()
-                except Exception:
-                    pass
-        # Моментальная обратная связь в строке статуса - не ждём loader.
-        self.lbl_stats.setText("Отмена загрузки …")
+            worker = getattr(self, attr, None)
+            if worker is not None:
+                retired_threads().retire(worker)
+                setattr(self, attr, None)
+        self.model.stop_filtering(wait=False)
+
+    def cancel_load(self):
+        """Отменяет загрузку, сразу возвращая вкладку в состояние ожидания."""
+        self.unload()
+        self.lbl_stats.setText("Загрузка отменена")
+        self.loadingFinished.emit()
 
     def unload(self):
-        """Освобождает память: убивает model, индексы, виджеты. После этого
-        viewer в том же состоянии как lazy-стартовый - данных нет, ждём
-        ensure_loaded(). file_path остаётся для отображения таба."""
-        if not self._loaded:
-            return
-        # 1. Останавливаем фоновые потоки. Важно: до фикса unload() знал
-        # только про self.loader — на ветке fast-open-mode появился ещё
-        # self.fast_loader (Stage 1). Если viewer выгружается через LRU
-        # пока fast_loader работает, его finished эмитится на уже-выгруженном
-        # виджете → crash. Отключаем сигналы И останавливаем оба.
-        self._stop_tail()
-        for attr in ('fast_loader', 'loader'):
-            lo = getattr(self, attr, None)
-            if lo is None:
-                continue
-            try:
-                if lo.isRunning():
-                    lo.requestInterruption()
-                    # disconnect перед wait чтобы поздний finished не
-                    # сработал на уже-выгруженном viewer'е
-                    try:
-                        lo.finished.disconnect()
-                    except (TypeError, RuntimeError):
-                        pass
-                    lo.wait(2000)
-            except Exception:
-                pass
-            setattr(self, attr, None)
-        self.search_timer.stop()
-        self.model.stop_filtering()
+        """Освобождает данные и отменяет задачи без ожидания в UI-потоке."""
+        self.stop_background_work()
 
         # 2. Чистим модель (это самый жирный потребитель)
-        self.model.set_entries([])
+        self.model.set_entries([], apply_filters=False)
 
         # 3. Тяжёлые кэши
         self._code_history_index = None
@@ -220,6 +190,9 @@ class LogViewerWidget(QWidget):
         if hasattr(self, 'search_journal_tree'):
             self.search_journal_tree.clear()
 
+        self._clear_fast_view()
+        self._fast_markers = []
+        self._fast_stage_emitted = False
         self.stats = {}
         self.lbl_stats.setText("Файл выгружен из памяти")
         self._show_placeholder()
@@ -687,6 +660,8 @@ class LogViewerWidget(QWidget):
             from gui.custom_widgets import RawLinesModel
             lv = QListView()
             lv.setUniformItemSizes(True)
+            lv.setLayoutMode(QListView.LayoutMode.Batched)
+            lv.setBatchSize(2000)
             lv.setFont(f)
             lv.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
             lv.setVerticalScrollBar(MarkerScrollBar(Qt.Orientation.Vertical))
@@ -704,10 +679,10 @@ class LogViewerWidget(QWidget):
         self._raw_lines_model = None
         return tv
 
-    def _ensure_fast_view_engine(self):
+    def _ensure_fast_view_engine(self, engine=None):
         """Если настройка движка сменилась с момента создания виджета —
         пересоздаёт self.text_view в center_stack нужного типа."""
-        engine = self._current_fast_engine()
+        engine = engine or self._current_fast_engine()
         if engine == getattr(self, '_fast_engine', None):
             return
         # Пересоздаём виджет в center_stack (page 2)
@@ -768,6 +743,8 @@ class LogViewerWidget(QWidget):
         """Stage 1 закончилось. FastTextLoader вернул список строк + маркеры
         одним эмитом. Показываем в text-view выбранным движком, применяем
         маркеры, запускаем Stage 2."""
+        if getattr(self, 'fast_loader', None) is None or self.sender() is not self.fast_loader:
+            return
         if error_msg == '__CANCELLED__':
             self._loaded = False
             self._show_placeholder()
@@ -786,6 +763,12 @@ class LogViewerWidget(QWidget):
         # _loaded=True ДО заполнения view (full-движок может занять секунды
         # синхронно — не дать start_fast_load запуститься повторно).
         self._loaded = True
+
+        # QTextDocument создаёт объект на каждую строку и блокирует UI.
+        # Для больших файлов сохраняем все строки в виртуальном списке.
+        if self._fast_engine == 'full' and total_lines > self.LIMITED_VIEW_LINES:
+            self._ensure_fast_view_engine('list')
+            self._show_fast_text()
 
         eng = self._fast_engine
         shown_total = total_lines
@@ -854,6 +837,8 @@ class LogViewerWidget(QWidget):
         self.loader.start()
 
     def on_load_finished(self, entries, stats, error_msg, last_pos):
+        if getattr(self, 'loader', None) is None or self.sender() is not self.loader:
+            return
         # Спец-маркер отмены загрузки юзером (см. LogLoader.run). Не показываем
         # диалог ошибки - просто откатываем viewer в lazy-состояние, чтобы
         # юзер мог попробовать снова кликом по табу.
@@ -866,6 +851,8 @@ class LogViewerWidget(QWidget):
             self.loadingFinished.emit()
             return
         if error_msg:
+            self._loaded = False
+            self._show_placeholder()
             _log.error("LogLoader finished with error for %r: %s",
                        self.file_path, error_msg)
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить файл:\n{error_msg}")
@@ -893,7 +880,11 @@ class LogViewerWidget(QWidget):
         # был 1.8с, на скрытом ~0.4с). _show_content переключаем в самом
         # конце — один repaint вместо нескольких.
         _p0 = _tm.elapsed()
-        self.model.set_entries(entries)
+        prepared = getattr(self.sender(), "prepared", None)
+        # После передачи модель владеет индексами; завершённый загрузчик
+        # не должен удерживать старый список после первого поиска.
+        self.loader.prepared = None
+        self.model.set_entries(entries, prepared=prepared, apply_filters=False)
         _prof['set_entries'] = _tm.elapsed() - _p0
         self._tail_position = last_pos
         if self._initial_bookmarks:
@@ -912,7 +903,7 @@ class LogViewerWidget(QWidget):
         self._invalidate_code_history()
 
         _p0 = _tm.elapsed()
-        self._collect_loggers(entries)
+        self._collect_loggers(entries, prepared.loggers if prepared else None)
         _prof['collect_loggers'] = _tm.elapsed() - _p0
         _p0 = _tm.elapsed()
         self._collect_batches()
@@ -1037,9 +1028,9 @@ class LogViewerWidget(QWidget):
         if was_at_bottom:
             QTimer.singleShot(50, self.log_view.scrollToBottom)
 
-    def _collect_loggers(self, entries):
+    def _collect_loggers(self, entries, prepared_loggers=None):
         """Собирает уникальные имена логгеров и пересобирает меню фильтра."""
-        loggers = sorted({e.logger for e in entries if e.logger})
+        loggers = prepared_loggers if prepared_loggers is not None else sorted({e.logger for e in entries if e.logger})
         self.all_loggers = loggers
         self.active_loggers = set(loggers)
         self._rebuild_loggers_menu()

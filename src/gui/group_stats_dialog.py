@@ -189,6 +189,8 @@ class GroupStatsDialog(QDialog):
         self._lbl_progress_file.setText(f"Файл {current + 1} из {total}: {filename}")
 
     def _on_finished(self, batches, error_msg):
+        if self._worker is None or self.sender() is not self._worker:
+            return
         if error_msg == '__CANCELLED__':
             # Юзер нажал «Отмена» — показываем что успели насчитать.
             self._lbl_summary.setText(
@@ -644,34 +646,13 @@ class GroupStatsDialog(QDialog):
         _batches dict. Иначе Qt держит диалог (parent=MainWindow) и сотни
         тысяч QTreeWidgetItem'ов + dict с миллионами кодов остаются в RAM
         даже после закрытия окна."""
-        if self._worker is not None and self._worker.isRunning():
-            # DISCONNECT finished перед wait — иначе worker может эмитнуть
-            # finished на уже-удалённый диалог после wait timeout → crash.
-            try:
-                self._worker.finished.disconnect()
-            except (TypeError, RuntimeError):
-                pass
-            self._worker.requestInterruption()
-            # 2с вместо 500мс: GroupStatsWorker проверяет interruption
-            # только между файлами, а текущий файл может быть 5+ ГБ.
-            self._worker.wait(2000)
-            if self._worker.isRunning():
-                # Не дождались — поток продолжит работать в фоне до
-                # окончания текущего файла. Никаких сигналов на удалённый
-                # диалог не придёт (мы дисконнектнули). Утечка ОЗУ
-                # временная — Python соберёт worker когда тот завершится.
-                import logging
-                logging.getLogger('group_stats_dialog').warning(
-                    "Worker не остановился за 2с при закрытии диалога — "
-                    "файл слишком большой, прерывание происходит между файлами")
+        if self._worker is not None:
+            from core.thread_lifecycle import retired_threads
+            retired_threads().retire(self._worker)
         # Чистим тяжёлые ссылки. self._batches на 336 логах — это 2.7M кодов
         # + counters + per_file_counters → несколько ГБ RAM.
         self._batches = {}
         self._worker = None
         if hasattr(self, '_tree'):
             self._tree.clear()
-        # Принудительный GC — Python иногда задерживает освобождение больших
-        # dict'ов с миллионами строк, особенно после openpyxl save().
-        import gc
-        gc.collect()
         super().closeEvent(event)

@@ -10,24 +10,6 @@ import tempfile
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.entities import LogEntry
 
-# Опциональные библиотеки для 7z и rar. Импорт делаем мягким - если пакет не
-# установлен, поддержка соответствующего архива отключается, а юзер получает
-# понятное сообщение в _open_log_stream.
-try:
-    import py7zr
-    _HAS_PY7ZR = True
-except ImportError:  # pragma: no cover
-    py7zr = None
-    _HAS_PY7ZR = False
-
-try:
-    import rarfile
-    _HAS_RARFILE = True
-except ImportError:  # pragma: no cover
-    rarfile = None
-    _HAS_RARFILE = False
-
-
 # Шаблон строки лога: ВРЕМЯ [УРОВЕНЬ] [Логгер.метод]: ...
 # Захватываем имя логгера (часть до первой точки во втором [])
 # Между ]_и_[ может НЕ быть пробела (формат "[ERROR ][t.e.s.Foo]"), поэтому \s* а не \s+.
@@ -129,7 +111,9 @@ def _open_log_stream(file_path):
         return text, info.file_size
 
     if low.endswith('.7z'):
-        if not _HAS_PY7ZR:
+        try:
+            import py7zr
+        except ImportError:
             raise ValueError(
                 "Для открытия .7z нужна библиотека py7zr.\n"
                 "Установи её: pip install py7zr"
@@ -152,6 +136,9 @@ def _open_log_stream(file_path):
         tmp_dir = tempfile.mkdtemp(prefix='loganalyzer_7z_')
         try:
             sz.extract(path=tmp_dir, targets=[name])
+        except Exception:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
         finally:
             sz.close()
 
@@ -184,7 +171,9 @@ def _open_log_stream(file_path):
         return stream, uncompressed
 
     if low.endswith('.rar'):
-        if not _HAS_RARFILE:
+        try:
+            import rarfile
+        except ImportError:
             raise ValueError(
                 "Для открытия .rar нужна библиотека rarfile.\n"
                 "Установи её: pip install rarfile"
@@ -246,7 +235,7 @@ def _find_unrar_tool():
 # --- Worker Thread for Loading Files ---
 class LogLoader(QThread):
     progress = pyqtSignal(int)
-    finished = pyqtSignal(list, dict, str, int)  # entries, stats, error_msg, last_byte_position
+    finished = pyqtSignal(object, object, str, object)  # entries, stats, error_msg, last_byte_position
 
     # Сохраняем ссылку для обратной совместимости
     LINE_PATTERN = LINE_PATTERN
@@ -254,6 +243,7 @@ class LogLoader(QThread):
     def __init__(self, file_path):
         super().__init__()
         self.file_path = file_path
+        self.prepared = None
 
     def run(self):
         parser = IncrementalLogParser()
@@ -270,34 +260,22 @@ class LogLoader(QThread):
             last_emit_time = 0.0
             cancelled = False
             try:
-                # Проверяем isInterruptionRequested() в горячем цикле - юзер мог
-                # нажать «Отмена» в busy-оверлее. Чек выполняем не на каждой
-                # строке (дорого), а раз в ~500 строк - и обязательно при
-                # каждом emit прогресса, чтобы реакция была не позже 100мс.
-                # 500 строк парсятся за единицы миллисекунд, реакция ощущается
-                # мгновенной для юзера.
-                check_every = 500
-                lines_since_check = 0
-                for line in stream:
-                    bytes_read += len(line.encode('utf-8'))
-                    now = time.time()
-                    lines_since_check += 1
+                # Читаем порциями: один вызов парсера на 512 строк,
+                # проверка отмены перед каждой порцией.
+                from itertools import islice
+                while True:
+                    if self.isInterruptionRequested():
+                        cancelled = True
+                        break
+                    lines = list(islice(stream, 512))
+                    if not lines:
+                        break
+                    entries.extend(parser.feed_lines(lines))
+                    bytes_read += sum(len(line.encode('utf-8')) for line in lines)
+                    now = time.monotonic()
                     if total_bytes > 0 and now - last_emit_time > 0.1:
-                        pct = max(0, min(100, int(bytes_read / total_bytes * 100)))
-                        self.progress.emit(pct)
+                        self.progress.emit(min(99, int(bytes_read / total_bytes * 100)))
                         last_emit_time = now
-                        if self.isInterruptionRequested():
-                            cancelled = True
-                            break
-                    elif lines_since_check >= check_every:
-                        lines_since_check = 0
-                        if self.isInterruptionRequested():
-                            cancelled = True
-                            break
-
-                    closed = parser.feed_lines([line])
-                    if closed:
-                        entries.extend(closed)
             finally:
                 stream.close()
 
@@ -315,8 +293,15 @@ class LogLoader(QThread):
             if is_plain:
                 last_pos = os.path.getsize(self.file_path)
 
+            from core.prepared_log import prepare_log
+            self.prepared = prepare_log(entries, self.isInterruptionRequested)
+            if self.isInterruptionRequested():
+                raise InterruptedError
             self.progress.emit(100)
             self.finished.emit(entries, parser.stats, "", last_pos)
+        except InterruptedError:
+            self.prepared = None
+            self.finished.emit([], {}, "__CANCELLED__", 0)
         except Exception as e:
             self.finished.emit([], {}, str(e), 0)
 

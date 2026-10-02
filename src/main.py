@@ -123,7 +123,6 @@ def _cleanup_log_if_clean_exit():
 
 atexit.register(_cleanup_log_if_clean_exit)
 
-from gui.window import MainWindow  # noqa: E402
 from core.single_instance import SingleInstanceChannel  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 from PyQt6.QtCore import QTimer, qInstallMessageHandler  # noqa: E402
@@ -146,6 +145,7 @@ if __name__ == "__main__":
         qInstallMessageHandler(_qt_message_handler)
         app.aboutToQuit.connect(_cleanup_log_if_clean_exit)
 
+        from gui.window import MainWindow
         window = MainWindow()
         window.show()
 

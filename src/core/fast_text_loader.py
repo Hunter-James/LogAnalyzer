@@ -36,7 +36,7 @@ class FastTextLoader(QThread):
         UI сам сделает '\\n'.join(lines) при необходимости."""
 
     progress = pyqtSignal(int)
-    finished = pyqtSignal(list, list, int, str)
+    finished = pyqtSignal(object, object, int, str)
 
     def __init__(self, file_path):
         super().__init__()
