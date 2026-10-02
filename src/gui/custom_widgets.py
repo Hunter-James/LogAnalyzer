@@ -10,12 +10,10 @@ from PyQt6.QtGui import (QWheelEvent, QPainter, QColor, QSyntaxHighlighter,
 
 
 class RawLinesModel(QAbstractListModel):
-    """Лёгкая read-only модель списка сырых строк лога. Используется в
-    fast text-view режиме «list»: QListView.setModel на 1.2M строк ~1мс,
-    тогда как QPlainTextEdit.setPlainText на тех же данных ~5.9с.
+    """Модель исходных строк для RawLogView: список или компактный RawLogBuffer.
 
-    Хранит ссылку на список строк как есть (без копирования). data()
-    отдаёт строку без хвостового '\\n'."""
+    Хранит последовательность без копирования и декодирует только строки,
+    запрошенные представлением. data() убирает хвостовой '\\n'."""
 
     def __init__(self, lines=None, parent=None):
         super().__init__(parent)

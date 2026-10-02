@@ -21,6 +21,7 @@ from gui.window import MainWindow
 from core.thread_lifecycle import retired_threads
 from core.workers import _open_log_stream
 from core.fast_text_loader import FastTextLoader
+from gui.log_viewer import LogViewerWidget
 
 
 def main():
@@ -39,6 +40,12 @@ def main():
 
     gc.callbacks.append(track_gc)
     original_read = FastTextLoader._read_preview
+    paint_times = {}
+    original_paint = LogViewerWidget._on_fast_rows_painted
+
+    def painted(viewer, rows):
+        paint_times.setdefault(viewer, []).append((time.perf_counter(), rows))
+        original_paint(viewer, rows)
 
     def timed_read(worker):
         started = time.perf_counter()
@@ -46,6 +53,7 @@ def main():
         worker.benchmark_read_s = time.perf_counter() - started
 
     with tempfile.TemporaryDirectory() as directory, \
+            patch.object(LogViewerWidget, '_on_fast_rows_painted', painted), \
             patch.object(FastTextLoader, '_read_preview', timed_read), \
             patch('gui.window.load_settings', return_value=settings), \
             patch('config.load_settings', return_value=settings), \
@@ -88,6 +96,8 @@ def main():
                 previous = now
                 time.sleep(.001)
             print(json.dumps(dict(label=label, ready_s=ready, max_ui_gap_s=gap,
+                                  paints=[(round(stamp - started, 4), rows)
+                                          for stamp, rows in paint_times.get(viewer, [])],
                                   gc_s=sum(gc_times), entries=len(viewer.model._entries),
                                   read_s=getattr(getattr(viewer, 'fast_loader', None), 'benchmark_read_s', None),
                                   raw_lines=viewer._fast_total_lines)), flush=True)

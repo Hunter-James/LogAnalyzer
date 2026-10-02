@@ -18,7 +18,7 @@ class RetiredThreads(QObject):
         # Отсоединяем и пользовательский результат, и системный finished:
         # ни один callback закрытой вкладки не должен запускать новую работу.
         for signal in (worker.finished, QThread.finished.__get__(worker),
-                       getattr(worker, 'progress', None)):
+                       getattr(worker, 'progress', None), getattr(worker, 'previewReady', None)):
             if signal is not None:
                 try:
                     signal.disconnect()

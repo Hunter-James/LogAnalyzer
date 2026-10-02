@@ -348,9 +348,9 @@ class MainWindow(QMainWindow):
                 background-color: {t['bg_main']}; border: 1px solid {t['border']};
                 padding: 6px; color: {t['text_main']};
             }}
-            QListView {{ background-color: {t['bg_main']}; border: none; }}
-            QListView::item {{ padding: 4px; border-bottom: 1px solid {t['border']}; }}
-            QListView::item:selected {{ background-color: {t['selection']}; color: {t['text_main']}; }}
+            QListView, QTableView {{ background-color: {t['bg_main']}; border: none; }}
+            QListView::item, QTableView::item {{ padding: 4px; border-bottom: 1px solid {t['border']}; }}
+            QListView::item:selected, QTableView::item:selected {{ background-color: {t['selection']}; color: {t['text_main']}; }}
             QTextEdit {{
                 background-color: {t['bg_panel']}; border-top: 1px solid {t['border']};
                 color: {t['text_main']}; font-family: '{t['mono_font']}';
@@ -706,6 +706,7 @@ class MainWindow(QMainWindow):
         )
         viewer.loadingFinished.connect(
             lambda v=viewer: self.on_loading_finished(v))
+        viewer.previewReady.connect(lambda v=viewer: self._on_preview_ready(v))
         viewer.destroyed.connect(lambda _=None, v=viewer: self._forget_viewer(v))
         # Юзер может нажать «Загрузить файл» в placeholder'е (когда таб
         # lazy) — этот сигнал триггерит то же что и автоматическая активация:
@@ -805,6 +806,12 @@ class MainWindow(QMainWindow):
         if not self.progress_bar.has_active():
             self.btn_open.setEnabled(True)
             self.hide_busy()
+
+    def _on_preview_ready(self, viewer):
+        """Убирает блокирующий экран, сохраняя прогресс чтения и текущие данные в памяти."""
+        if viewer is self.split_manager.get_current_viewer():
+            self.hide_busy()
+            self.btn_open.setEnabled(True)
 
     def on_loading_finished(self, viewer=None):
         # viewer может быть None - старая сигнатура без аргументов от внешних

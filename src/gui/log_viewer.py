@@ -2,6 +2,7 @@ import os
 import re
 import json
 import logging
+import time
 from datetime import datetime
 
 _log = logging.getLogger('log_viewer')
@@ -26,6 +27,7 @@ class LogViewerWidget(QWidget):
     statsChanged = pyqtSignal(dict)
     progressChanged = pyqtSignal(int)
     loadingFinished = pyqtSignal()
+    previewReady = pyqtSignal()
     # Юзер нажал «Загрузить файл» в placeholder'е. MainWindow должен показать
     # busy-оверлей, зарегистрировать progress и вызвать viewer.ensure_loaded().
     # Эмитим именно сигнал, а не вызываем ensure_loaded напрямую — иначе
@@ -633,7 +635,8 @@ class LogViewerWidget(QWidget):
     @classmethod
     def _needs_virtual_fast_view(cls, lines, total_lines):
         """Ограничивает работу QTextDocument, сохраняя весь большой лог в списке."""
-        if total_lines > cls.LIMITED_VIEW_LINES:
+        if (total_lines > cls.LIMITED_VIEW_LINES
+                or getattr(lines, 'byte_count', 0) > cls.FULL_VIEW_MAX_CHARS):
             return True
         characters = 0
         for line in lines:
@@ -664,7 +667,7 @@ class LogViewerWidget(QWidget):
 
     def _build_fast_view_widget(self, engine):
         """Строит конкретный виджет для движка:
-          list    → QListView + RawLinesModel (мгновенно)
+          list    → RawLogView + RawLinesModel (только видимые строки)
           full    → QPlainTextEdit (полный текст, медленно на 1M+)
           limited → QPlainTextEdit (первые LIMITED_VIEW_LINES строк)"""
         from PyQt6.QtGui import QFont
@@ -674,17 +677,14 @@ class LogViewerWidget(QWidget):
         f.setPointSize(self.current_font_size)
 
         if engine == 'list':
-            from PyQt6.QtWidgets import QListView, QAbstractItemView
+            from gui.raw_log_view import RawLogView
             from gui.custom_widgets import RawLinesModel
-            lv = QListView()
-            lv.setUniformItemSizes(True)
-            lv.setLayoutMode(QListView.LayoutMode.Batched)
-            lv.setBatchSize(2000)
+            lv = RawLogView()
             lv.setFont(f)
-            lv.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
             lv.setVerticalScrollBar(MarkerScrollBar(Qt.Orientation.Vertical))
             self._raw_lines_model = RawLinesModel()
             lv.setModel(self._raw_lines_model)
+            lv.firstRowsPainted.connect(self._on_fast_rows_painted)
             return lv
 
         # full / limited — QPlainTextEdit
@@ -721,6 +721,8 @@ class LogViewerWidget(QWidget):
         """Запускает Fast mode: Stage 1 (фоновое чтение → показ в text-view
         выбранным движком) → Stage 2 (полный парсинг в фоне)."""
         from core.fast_text_loader import FastTextLoader
+        self._fast_open_started = time.perf_counter()
+        _log.info("Fast preview requested: path=%r", self.file_path)
         # Движок мог поменяться в настройках между открытиями — синхронизируем
         self._ensure_fast_view_engine()
         # Сброс state'а text_view от предыдущего открытия
@@ -731,8 +733,29 @@ class LogViewerWidget(QWidget):
 
         self.fast_loader = FastTextLoader(self.file_path)
         self.fast_loader.progress.connect(self.progressChanged.emit)
+        self.fast_loader.previewReady.connect(self._on_fast_preview)
         self.fast_loader.finished.connect(self._on_fast_finished)
         self.fast_loader.start()
+
+    def _on_fast_preview(self, lines):
+        """Показывает первые строки большого файла, пока остальная часть читается."""
+        if getattr(self, 'fast_loader', None) is None or self.sender() is not self.fast_loader:
+            return
+        if self._fast_engine == 'limited':
+            return
+        self._ensure_fast_view_engine('list')
+        self._raw_lines_model.set_lines(lines)
+        self._fast_total_lines = len(lines)
+        self._loaded = True
+        self._show_fast_text()
+        self.lbl_stats.setText(f"Показаны первые {len(lines)} строк. Чтение остальной части файла …")
+        self.previewReady.emit()
+
+    def _on_fast_rows_painted(self, rows):
+        """Фиксирует фактическую отрисовку, отдельно от завершения фонового чтения."""
+        started = getattr(self, '_fast_open_started', time.perf_counter())
+        _log.info("Fast preview painted: path=%r rows=%d elapsed_ms=%d",
+                  self.file_path, rows, (time.perf_counter() - started) * 1000)
 
     def _clear_fast_view(self):
         """Очищает text-view независимо от движка."""
@@ -791,8 +814,9 @@ class LogViewerWidget(QWidget):
         eng = self._fast_engine
         shown_total = total_lines
         if eng == 'list':
-            # setModel/set_lines на список — мгновенно даже на 1M+ строк
+            position = self.text_view.verticalScrollBar().value()
             self._raw_lines_model.set_lines(lines)
+            self.text_view.verticalScrollBar().setValue(position)
         elif eng == 'limited':
             n = self.LIMITED_VIEW_LINES
             shown = lines[:n]

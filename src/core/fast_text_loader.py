@@ -1,19 +1,10 @@
-"""Быстрый loader первого этапа Two-stage open режима.
+"""Первый просмотр журнала до полного анализа.
 
-Читает файл целиком в свой воркер-поток, накапливает text + позиции
-ERROR/WARN. Эмитит результат ОДИН РАЗ в finished — UI делает setPlainText
-один раз O(N), а не N раз × insertText на растущем view.
-
-Раньше был streaming (chunks по 50K строк) — но на 1М+ строк UI thread
-не успевал обрабатывать очередь chunkReady, loadingFinished застревал в
-очереди событий, busy висел минутами. Single-shot emit устраняет это.
-
-После завершения FastTextLoader, LogViewerWidget запускает обычный
-LogLoader для полного парсинга в фоне. Когда он готов — UI заменяет
-text-view на list-view с моделью.
-
-Скорость: ~ S2 из research_perf.py (read + примитивная классификация).
-Для 12 МБ zip / 1.2M строк ~ 1.5с вместо 20с полного парсинга."""
+Большие файлы хранятся в блоках UTF-8 с компактным индексом строк.
+Один ранний снимок позволяет читать начало до завершения распаковки;
+finished передаёт весь файл и метки. Очереди множества порций в GUI нет.
+После finished LogViewerWidget запускает LogLoader для полного анализа.
+"""
 
 import os
 import time
@@ -21,22 +12,24 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.workers import _open_log_stream
 from core.loading_priority import loading_priority
+from core.raw_log_buffer import RawLogBuffer
 
 
 class FastTextLoader(QThread):
     """Сигналы:
       progress(int percent) — прогресс по байтам исходного файла.
-      finished(list lines, list[(int line_no, str level)] markers,
+      previewReady(tuple lines) — один снимок первых строк большого файла.
+      finished(Sequence lines, list[(int line_no, str level)] markers,
                int total_lines, str error_msg) —
         список сырых строк + все маркеры разом. error_msg='__CANCELLED__'
         если прерван через requestInterruption, '' при успехе.
 
-        Возвращаем СПИСОК строк (а не joined text), потому что
-        list-движок text-view (QListView+RawLinesModel) работает напрямую
-        со списком — setModel мгновенный. Для full/limited-движков
+        Возвращаем последовательность строк, которую RawLinesModel
+        использует без копирования. Для full/limited-движков
         UI сам сделает '\\n'.join(lines) при необходимости."""
 
     progress = pyqtSignal(int)
+    previewReady = pyqtSignal(object)
     finished = pyqtSignal(object, object, int, str)
 
     def __init__(self, file_path):
@@ -61,6 +54,19 @@ class FastTextLoader(QThread):
         bytes_read = 0
         last_progress = 0.0
         try:
+            if total_bytes >= 8 * 1024 * 1024 and hasattr(stream, 'buffer'):
+                def progress(consumed):
+                    nonlocal last_progress
+                    now = time.monotonic()
+                    if now - last_progress > .1:
+                        self.progress.emit(min(99, int(consumed / total_bytes * 100)))
+                        last_progress = now
+                lines = RawLogBuffer.read(
+                    stream.buffer, self.isInterruptionRequested, progress, self.previewReady.emit)
+                markers = lines.markers(self.isInterruptionRequested)
+                self.progress.emit(100)
+                self.finished.emit(lines, markers, len(lines), '')
+                return
             for line in stream:
                 # Проверяем прерывание не на каждой строке — раз в ~10000
                 # для скорости. interrupt проверяется ещё и на каждом
@@ -92,6 +98,8 @@ class FastTextLoader(QThread):
             # Один emit со списком строк + маркерами. UI сам выберет как
             # показать (setModel для list-движка / setPlainText для full).
             self.finished.emit(buf, markers, line_no, '')
+        except InterruptedError:
+            self.finished.emit([], [], 0, '__CANCELLED__')
         except Exception as e:
             self.finished.emit([], [], line_no, str(e))
         finally:
