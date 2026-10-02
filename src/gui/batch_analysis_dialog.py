@@ -2,6 +2,7 @@ from html import escape
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QTextBrowser, QPushButton
 
 from config import THEMES
+from gui.brief_conclusion_dialog import conclusion_html
 
 
 def _adjust_color(hex_color, delta):
@@ -82,6 +83,7 @@ def _build_analysis_html(analysis, theme_name):
     parts.append(f"<div class='muted'>Профиль: <b>{escape(analysis['profile'])}</b></div>")
     parts.append(f"<div class='muted'>Время: <b>{escape(analysis['first_ts'] or '—')} → "
                  f"{escape(analysis['last_ts'] or '—')}</b></div>")
+    parts.append(conclusion_html(analysis.get('conclusion', [])))
 
     # --- Общее ---
     parts.append("<h2>Общее</h2>")
@@ -170,7 +172,8 @@ def _build_analysis_html(analysis, theme_name):
         parts.append(f"<tr><td class='k'>Отправлено в принтер (PrintService.sendData)</td>"
                      f"<td class='v'>{grp_print:,}</td></tr>")
         if analysis['group_codes_lost']:
-            parts.append(f"<tr><td class='k'>⚠ Получено, но <b>не</b> ушло в принтер</td>"
+            parts.append(f"<tr><td class='k'>⚠ Получено; подтверждение отправки в принтер "
+                         f"не найдено в загруженных журналах</td>"
                          f"<td class='v lvl-error'>{analysis['group_codes_lost']:,}</td></tr>")
         elif grp_recv == grp_print and grp_recv > 0:
             parts.append(f"<tr><td class='k' colspan='2' "
@@ -288,7 +291,8 @@ def _build_analysis_html(analysis, theme_name):
             )
         parts.append("</table>")
     else:
-        parts.append("<div class='panel muted'>Ошибок (ERROR) в этой партии нет 🎉</div>")
+        parts.append("<div class='panel muted'>Сообщение уровня ERROR для этой партии "
+                     "не найдено в загруженных журналах.</div>")
 
     return "".join(parts)
 
@@ -296,7 +300,7 @@ def _build_analysis_html(analysis, theme_name):
 class BatchAnalysisDialog(QDialog):
     """Модальное окно с подробной аналитикой по партии."""
 
-    def __init__(self, analysis, theme_name="Default", parent=None):
+    def __init__(self, analysis, theme_name="Default", parent=None, entries=None):
         super().__init__(parent)
         bid = analysis['batch_id']
         title = f"Анализ партии {bid}" if bid else "Анализ: вне партии"
@@ -323,6 +327,7 @@ class BatchAnalysisDialog(QDialog):
 
         self.browser = QTextBrowser()
         self.browser.setOpenExternalLinks(False)
+        self.browser.setOpenLinks(False)
         self.browser.setStyleSheet(f"""
             QTextBrowser {{
                 background-color: {t['bg_main']};
@@ -333,6 +338,19 @@ class BatchAnalysisDialog(QDialog):
         """)
         self.browser.setHtml(_build_analysis_html(analysis, theme_name))
         layout.addWidget(self.browser, 1)
+        self.evidence = QTextBrowser()
+        self.evidence.setMaximumHeight(160)
+        self.evidence.hide()
+        layout.addWidget(self.evidence)
+
+        def show_evidence(url):
+            if url.scheme() == 'entry' and entries is not None:
+                index = int(url.path())
+                if 0 <= index < len(entries):
+                    self.evidence.setPlainText(entries[index].message)
+                    self.evidence.show()
+
+        self.browser.anchorClicked.connect(show_evidence)
 
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(10, 8, 10, 10)

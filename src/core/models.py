@@ -5,6 +5,7 @@ from PyQt6.QtGui import QColor, QFont
 from config import THEMES
 from core.log_profile import LogProfile, detect_log_profile, update_log_profile
 from core.workers import FilterWorker
+from core.brief_conclusion import BriefConclusion
 from core.batch_index import (
     SGTIN_CODE_RE, GROUP_CODE_RE, NO_BATCH, _normalize_error_message,
     _BATCH_OPEN_RE, _BATCH_RESPONSE_BACKFILL_MAX_LINES, _extract_batch_open_marker, _should_skip_close_after_open_source,
@@ -246,6 +247,7 @@ class LogModel(QAbstractListModel):
         """Подробная аналитика по конкретной партии."""
         entries = self._entries
         bfi = self._batch_for_index
+        conclusion = BriefConclusion(self.profile_detection.profile, batch_id)
         total = 0
         levels = {'INFO': 0, 'DEBUG': 0, 'ERROR': 0, 'WARN': 0, 'UNKNOWN': 0}
         loggers = collections.Counter()
@@ -286,6 +288,7 @@ class LogModel(QAbstractListModel):
             if bfi[i] != batch_id:
                 continue
             e = entries[i]
+            conclusion.observe(e, i)
             total += 1
             if e.timestamp:
                 if not first_ts:
@@ -401,6 +404,7 @@ class LogModel(QAbstractListModel):
 
         return {
             'profile': self.profile_detection.profile.value,
+            'conclusion': conclusion.build(),
             'batch_id': batch_id,
             'total': total,
             'first_ts': first_ts,

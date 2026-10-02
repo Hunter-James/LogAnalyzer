@@ -21,6 +21,8 @@ description: Карта архитектуры, проверок и выпуск
 - src/gui/tab_manager.py: группы, панели, вкладки файлов, drag-and-drop и прокрутка.
 - src/core/workers.py: чтение .log, .txt, .gz, .zip, .7z, .rar; FilterWorker выполняет поиск, группировку соседних дублей и подготовку меток ERROR/WARN в фоне.
 - src/core/log_profile.py: автоматическое определение SmartL2, SmartL3 или смешанного/неизвестного профиля по уникальным логгерам и характерным API.
+- src/core/brief_conclusion.py: доказательное краткое заключение, состояние линии, ошибки связи/синхронизации и отчёты по UUID. Контракты исходников и ограничения: `references/brief-conclusion.md`.
+- src/gui/brief_conclusion_dialog.py: фоновое заключение по текущему файлу, копирование и просмотр исходной записи. В `batch_analysis_dialog.py` тот же итог включён перед метриками партии.
 - src/core/models.py: очередь поиска (один активный и последний отложенный запрос), защита от устаревших результатов.
 - src/gui/log_viewer.py: debounce поиска 300 мс, применение фильтров и отображение готовых меток.
 - tests/test_search.py: регрессии поиска, отмены, очереди запросов, группировки и меток.
@@ -70,6 +72,7 @@ description: Карта архитектуры, проверок и выпуск
 - Чтение архивов, порции парсера, отмену загрузки: `src/core/workers.py`.
 - Подготовку данных перед показом: `src/core/prepared_log.py`; применение: `LogModel.set_entries`.
 - Правила границ партий: `src/core/batch_index.py`; потоковую сводку: `src/core/group_stats_worker.py`.
+- Правила краткого заключения: `src/core/brief_conclusion.py`; кнопка всего файла: `LogViewerWidget._open_brief_conclusion`; проверки: `tests/test_brief_conclusion.py`.
 - Безопасное закрытие фоновых задач: `src/core/thread_lifecycle.py`, `LogViewerWidget.stop_background_work`, `MainWindow.closeEvent`.
 - Быстрый просмотр и порог перехода на список: `src/gui/log_viewer.py`, `_on_fast_finished`, `LIMITED_VIEW_LINES`.
 

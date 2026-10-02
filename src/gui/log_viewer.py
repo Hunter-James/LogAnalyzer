@@ -505,6 +505,9 @@ class LogViewerWidget(QWidget):
 
         self.lbl_stats = QLabel("Загрузка...")
         stats_layout.addWidget(self.lbl_stats)
+        self.conclusion_button = QPushButton('Краткое заключение')
+        self.conclusion_button.clicked.connect(self._open_brief_conclusion)
+        stats_layout.addWidget(self.conclusion_button)
         stats_layout.addStretch()
         # Информация о выделении: строка, время, Δt от предыдущей
         self.lbl_selection_info = QLabel("")
@@ -1933,7 +1936,16 @@ class LogViewerWidget(QWidget):
     def _open_batch_analysis(self, batch_id):
         """Запускает подсчёт метрик и открывает диалог BatchAnalysisDialog."""
         analysis = self.model.analyze_batch(batch_id)
-        dlg = BatchAnalysisDialog(analysis, self.current_theme_name, self)
+        dlg = BatchAnalysisDialog(analysis, self.current_theme_name, self, entries=self.model._entries)
+        dlg.exec()
+
+    def _open_brief_conclusion(self):
+        """Анализирует текущий файл целиком, независимо от фильтров и партий."""
+        from gui.brief_conclusion_dialog import BriefConclusionDialog
+        if not self.model._entries:
+            QMessageBox.information(self, 'Краткое заключение', 'Дождитесь полной загрузки журнала.')
+            return
+        dlg = BriefConclusionDialog(self.model._entries, self.model.profile_detection.profile, self)
         dlg.exec()
 
     def update_stats_text(self):
