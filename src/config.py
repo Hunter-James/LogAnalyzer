@@ -280,7 +280,8 @@ THEMES = {
         "text_muted": "#404040",
         "accent": "#000080",
         "selection": "#FFFFFF",
-        "font_family": "MS Sans Serif",
+        # Масштабируемый аналог: растровый MS Sans Serif искажает кириллицу в Qt.
+        "font_family": "Microsoft Sans Serif",
         "mono_font": "Courier New",
         "info": "#008000", "debug": "#000080", "warn": "#808000", "error": "#800000",
         # Та же светлая палитра, но gutter под цвет панели Win95

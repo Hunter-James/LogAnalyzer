@@ -296,7 +296,7 @@ HELP_BODY = r"""
   <li><b>Default</b> — фирменная тёмно-серая с синим акцентом.</li>
   <li><b>Minimalist Black</b> — стиль VS Code Dark+.</li>
   <li><b>Minimalist White</b> — VS Code Light+.</li>
-  <li><b>Windows 95</b> — Classic-серый + MS Sans Serif.</li>
+  <li><b>Windows 95</b> — Classic-серый + Microsoft Sans Serif.</li>
   <li><b>Windows XP</b> — бежевый Windows Classic + ярко-синий Luna-акцент, шрифт Tahoma.</li>
   <li><b>macOS Big Sur Light</b> — молочно-белый Apple-стиль с iOS-blue.</li>
   <li><b>macOS Big Sur Dark</b> — тёмная вариация Big Sur.</li>

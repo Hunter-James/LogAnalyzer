@@ -69,6 +69,7 @@ description: Карта архитектуры, проверок и выпуск
 
 ## Где менять…
 
+- Цвета и шрифты тем: реестр `THEMES` в `src/config.py`; применение QSS: `MainWindow.apply_stylesheet` в `src/gui/window.py`. В теме Windows 95 использовать масштабируемый `Microsoft Sans Serif`: растровый `MS Sans Serif` искажает кириллицу в Qt. Регрессия масштабируемости и покрытия русского алфавита: `tests/test_theme_fonts.py`.
 - Чтение архивов, порции парсера, отмену загрузки: `src/core/workers.py`.
 - Подготовку данных перед показом: `src/core/prepared_log.py`; применение: `LogModel.set_entries`.
 - Правила границ партий: `src/core/batch_index.py`; потоковую сводку: `src/core/group_stats_worker.py`.
@@ -82,6 +83,7 @@ description: Карта архитектуры, проверок и выпуск
 - Тесты: `.venv-search\Scripts\python.exe -X utf8 -m unittest discover -s tests -v`. Для autopep8 также нужен `-X utf8` из-за русского setup.cfg; в тестах с настройкой sys.path использовать `--ignore E402`.
 - Проверять синтаксис измененных Python-файлов через ast.parse.
 - Для Qt-компонентов использовать QT_QPA_PLATFORM=offscreen и проверять свойства виджетов и PNG-рендер.
+- Для проверки системных шрифтов Windows запускать тесты с `$env:QT_QPA_PLATFORM='windows'`: offscreen на этой машине возвращает пустой `QFontDatabase.families()`. Шрифтовая регрессия в offscreen пропускается; проверка перед выпуском должна включать Windows platform.
 - Изменения запуска проверять двумя процессами EXE: второй должен завершиться, а переданный ему файл появиться в первом.
 - Выполнять git diff --check.
 - `tests/test_loading.py`: LOG/GZIP/ZIP/7z, идентичность переданного списка, фоновая подготовка, отмена, повторная загрузка, закрытие вкладки с работающим потоком, большой быстрый просмотр, отмена сводки внутри файла и асинхронное закрытие главного окна с однократным сохранением.
