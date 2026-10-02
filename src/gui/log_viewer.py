@@ -105,9 +105,7 @@ class LogViewerWidget(QWidget):
             self.lbl_stats.setText("Файл не загружен (lazy)")
             self._show_placeholder()
         else:
-            self._show_content()
-            self.load_file()
-            self._loaded = True
+            self.ensure_loaded()
 
     def ensure_loaded(self):
         """Если viewer не загружен (lazy-стартовый или unload()-нутый),
@@ -627,6 +625,23 @@ class LogViewerWidget(QWidget):
 
     # Сколько строк показывает limited-движок text-view.
     LIMITED_VIEW_LINES = 200_000
+    # QTextDocument дорог не только по числу блоков: длинные JSON-строки
+    # также надолго задерживают расчёт текста. В списке текст не обрезается.
+    FULL_VIEW_MAX_CHARS = 2_000_000
+    FULL_VIEW_MAX_LINE_CHARS = 16_384
+
+    @classmethod
+    def _needs_virtual_fast_view(cls, lines, total_lines):
+        """Ограничивает работу QTextDocument, сохраняя весь большой лог в списке."""
+        if total_lines > cls.LIMITED_VIEW_LINES:
+            return True
+        characters = 0
+        for line in lines:
+            length = len(line)
+            characters += length
+            if length > cls.FULL_VIEW_MAX_LINE_CHARS or characters > cls.FULL_VIEW_MAX_CHARS:
+                return True
+        return False
 
     def _create_fast_text_view(self):
         """Создаёт виджет text-view для Stage 1 по настройке fast_view_engine.
@@ -769,7 +784,7 @@ class LogViewerWidget(QWidget):
 
         # QTextDocument создаёт объект на каждую строку и блокирует UI.
         # Для больших файлов сохраняем все строки в виртуальном списке.
-        if self._fast_engine == 'full' and total_lines > self.LIMITED_VIEW_LINES:
+        if self._fast_engine == 'full' and self._needs_virtual_fast_view(lines, total_lines):
             self._ensure_fast_view_engine('list')
             self._show_fast_text()
 

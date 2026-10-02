@@ -20,6 +20,7 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.workers import _open_log_stream
+from core.loading_priority import loading_priority
 
 
 class FastTextLoader(QThread):
@@ -43,6 +44,11 @@ class FastTextLoader(QThread):
         self.file_path = file_path
 
     def run(self):
+        with loading_priority.preview():
+            self._read_preview()
+
+    def _read_preview(self):
+        """Читает исходный текст, пока полные анализаторы уступают ему процессор."""
         try:
             stream, total_bytes = _open_log_stream(self.file_path)
         except Exception as e:

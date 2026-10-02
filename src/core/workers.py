@@ -9,6 +9,7 @@ import shutil
 import tempfile
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.entities import LogEntry
+from core.loading_priority import loading_priority
 
 # Шаблон строки лога: ВРЕМЯ [УРОВЕНЬ] [Логгер.метод]: ...
 # Захватываем имя логгера (часть до первой точки во втором [])
@@ -245,7 +246,18 @@ class LogLoader(QThread):
         self.file_path = file_path
         self.prepared = None
 
+    def _cancelled_after_preview(self):
+        return loading_priority.cancelled_after_preview(
+            self.isInterruptionRequested, getattr(self, '_analysis_token', None))
+
     def run(self):
+        with loading_priority.analysis() as self._analysis_token:
+            try:
+                self._load()
+            finally:
+                self._analysis_token = None
+
+    def _load(self):
         parser = IncrementalLogParser()
         entries = []
         last_pos = 0  # для tail: позиция в исходном (не распакованном) файле
@@ -264,7 +276,7 @@ class LogLoader(QThread):
                 # проверка отмены перед каждой порцией.
                 from itertools import islice
                 while True:
-                    if self.isInterruptionRequested():
+                    if self._cancelled_after_preview():
                         cancelled = True
                         break
                     lines = list(islice(stream, 512))
@@ -294,7 +306,7 @@ class LogLoader(QThread):
                 last_pos = os.path.getsize(self.file_path)
 
             from core.prepared_log import prepare_log
-            self.prepared = prepare_log(entries, self.isInterruptionRequested)
+            self.prepared = prepare_log(entries, self._cancelled_after_preview)
             if self.isInterruptionRequested():
                 raise InterruptedError
             self.progress.emit(100)
@@ -347,6 +359,13 @@ class FilterWorker(QThread):
         self._is_cancelled = True
 
     def run(self):
+        with loading_priority.analysis() as self._analysis_token:
+            try:
+                self._filter()
+            finally:
+                self._analysis_token = None
+
+    def _filter(self):
         active_levels = set()
         if self.show_info:
             active_levels.add("INFO")
@@ -387,6 +406,8 @@ class FilterWorker(QThread):
         def candidates():
             # Отмена должна прерывать обход, а не только подавлять его результат.
             for i in range(len(entries)):
+                if i % 2048 == 0 and self._cancelled_after_preview():
+                    return
                 if self._is_cancelled:
                     return
                 yield i, entries[i]
@@ -439,11 +460,17 @@ class FilterWorker(QThread):
 
     _MSG_BODY_RE = re.compile(r'\]\s*:\s*(.*)', re.DOTALL)
 
+    def _cancelled_after_preview(self):
+        return loading_priority.cancelled_after_preview(
+            lambda: self._is_cancelled, getattr(self, '_analysis_token', None))
+
     def _build_groups(self, indices):
         """Группирует соседние совпадения в рабочем потоке, сохраняя навигацию."""
         grouped, counts, member_to_row = [], [], {}
         prev_key = None
-        for idx in indices:
+        for row, idx in enumerate(indices):
+            if row % 2048 == 0 and self._cancelled_after_preview():
+                return
             if self._is_cancelled:
                 return
             entry = self.entries[idx]
@@ -468,6 +495,8 @@ class FilterWorker(QThread):
         total = len(indices)
         levels = [None] * 200
         for row, idx in enumerate(indices):
+            if row % 2048 == 0 and self._cancelled_after_preview():
+                return
             if self._is_cancelled:
                 return
             bin_idx = min(199, row * 200 // total)
