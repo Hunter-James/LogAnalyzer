@@ -69,6 +69,8 @@ description: Карта архитектуры, проверок и выпуск
 
 ## Где менять…
 
+- Видимость элементов интерфейса: `DEFAULT_UI_FEATURES`, `UI_FEATURE_LABELS`, `UI_FEATURE_CATEGORIES` в `src/config.py`; диалог настроек строится из этого реестра. `batches_tab` независимо скрывает нижнюю вкладку «Партии», `batches_filter` — кнопку фильтра, `group_stats` — кнопку «Сводка группы». Применение: `LogViewerWidget.apply_ui_features` и `MainWindow._apply_ui_features_everywhere`, стартовая видимость кнопки — в конструкторе окна. Проверки: `tests/test_ui_visibility.py`.
+
 - Цвета и шрифты тем: реестр `THEMES` в `src/config.py`; применение QSS: `MainWindow.apply_stylesheet` в `src/gui/window.py`. В теме Windows 95 использовать масштабируемый `Microsoft Sans Serif`: растровый `MS Sans Serif` искажает кириллицу в Qt. Регрессия масштабируемости и покрытия русского алфавита: `tests/test_theme_fonts.py`.
 - Чтение архивов, порции парсера, отмену загрузки: `src/core/workers.py`.
 - Подготовку данных перед показом: `src/core/prepared_log.py`; применение: `LogModel.set_entries`.

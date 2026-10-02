@@ -2024,12 +2024,10 @@ class LogViewerWidget(QWidget):
         self.btn_loggers.setVisible(self._ui_features["loggers_filter"])
         self.btn_batches.setVisible(self._ui_features["batches_filter"])
 
-        # Tab "Партии" - скрываем через тот же ui_features.batches_filter
-        # Вкладка "Партии" теперь - контейнер с подвкладками ("Все события" + "История кода"),
-        # поэтому ищем по контейнеру, а не по самому дереву.
+        # Видимость нижней вкладки независима от кнопки фильтра партий.
         batches_tab_idx = self.bottom_tabs.indexOf(self.batches_container)
         if batches_tab_idx != -1:
-            self.bottom_tabs.setTabVisible(batches_tab_idx, self._ui_features["batches_filter"])
+            self.bottom_tabs.setTabVisible(batches_tab_idx, self._ui_features["batches_tab"])
         self.lbl_time.setVisible(self._ui_features["time_range"])
         self.time_from.setVisible(self._ui_features["time_range"])
         self.lbl_time_dash.setVisible(self._ui_features["time_range"])

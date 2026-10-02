@@ -84,8 +84,9 @@ class MainWindow(QMainWindow):
         sc_help.setContext(Qt.ShortcutContext.WindowShortcut)
         sc_help.activated.connect(self.open_help)
 
-        # Применяем стартовые UI-фичи (для chk_group в главном окне)
+        # Применяем стартовую видимость элементов главного окна.
         self.chk_group.setVisible(self.ui_features.get("group_dupes", True))
+        self.btn_group_stats.setVisible(self.ui_features.get("group_stats", True))
 
         # --- Busy overlay для долгих операций ---
         # Создаём с parent=self чтобы overlay тянулся под весь центральный
@@ -506,6 +507,7 @@ class MainWindow(QMainWindow):
 
     def _apply_ui_features_everywhere(self):
         """Распространяет настройки видимости на главное окно и все открытые вьюверы."""
+        self.btn_group_stats.setVisible(self.ui_features.get("group_stats", True))
         # chk_group в главном тулбаре - часть фичи "group_dupes"
         self.chk_group.setVisible(self.ui_features.get("group_dupes", True))
         # При скрытии глобально снимаем галочку, иначе фильтр продолжит группировать
