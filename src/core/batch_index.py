@@ -85,7 +85,7 @@ def _find_batch_response_backfill_start(entries, segment_start, marker_idx):
     scan_start = max(segment_start, marker_idx - _BATCH_RESPONSE_BACKFILL_MAX_LINES)
     first_code_idx = None
     for idx in range(marker_idx - 1, scan_start - 1, -1):
-        line = entries[idx].full_line
+        line = entries[idx].message
         if _extract_batch_open_marker(line)[0] is not None:
             break
         if '/api/close' in line and 'CustomLogFilter' in line:
@@ -154,7 +154,9 @@ def parse_batch_index(entries, start_from=0, segments=None, batch_for_index=None
     for i in range(start_from, len(entries)):
         if cancelled and i % 2048 == 0 and cancelled():
             raise InterruptedError
-        line = entries[i].full_line
+        # Маркеры не требуют завершающего newline из full_line; не копируем
+        # весь текст каждой записи во время прохода по большому журналу.
+        line = entries[i].message
 
         # Открытие/переключение партии: эта запись начинает НОВЫЙ сегмент,
         # поэтому current_batch обновляем ДО присваивания _batch_for_index[i].

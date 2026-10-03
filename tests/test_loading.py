@@ -46,6 +46,45 @@ class LoadingTests(unittest.TestCase):
     def tearDown(self):
         pump_until(lambda: not retired_threads().workers)
 
+    def test_parser_preserves_multiline_entries_across_chunk_boundaries(self):
+        lines = [' leading text\n', '\n',
+                 '10:00:00.000 [ INFO ][HIKROBOT.run]: начало\n',
+                 '  продолжение\n', '\n',
+                 '10:00:01.000 [ERROR] [Test.run]: ошибка\n',
+                 ' trace without final newline']
+        expected = [('', 'UNKNOWN', '', 'leading text\n'),
+                    ('10:00:00.000', 'INFO', 'HIKROBOT',
+                     '10:00:00.000 [ INFO ][HIKROBOT.run]: начало\nпродолжение\n'),
+                    ('10:00:01.000', 'ERROR', 'Test',
+                     '10:00:01.000 [ERROR] [Test.run]: ошибка\ntrace without final newline')]
+        for size in range(1, len(lines) + 1):
+            with self.subTest(chunk_size=size):
+                parser = IncrementalLogParser()
+                entries = []
+                for start in range(0, len(lines), size):
+                    entries.extend(parser.feed_lines(lines[start:start + size]))
+                entries.append(parser.take_open())
+                self.assertEqual([(e.timestamp, e.level, e.logger, e.message) for e in entries], expected)
+                self.assertEqual(parser.stats, {'INFO': 1, 'DEBUG': 0, 'ERROR': 1, 'WARN': 0})
+
+    def test_archive_progress_uses_uncompressed_bytes_with_invalid_utf8(self):
+        data = ('10:00:00.000 [INFO] [Test.run]: кириллица\r\n' * 1100).encode('utf-8') + b'\xff\n'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'x.zip'
+            with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr('x.log', data)
+            worker = LogLoader(str(path))
+            progress, results = [], []
+            worker.progress.connect(progress.append)
+            worker.finished.connect(lambda *args: results.append(args))
+            worker.run()
+            self.assertEqual(results[0][2], '')
+            self.assertEqual(len(results[0][0]), 1100)
+            self.assertTrue(results[0][0][-1].message.endswith('\n\ufffd'))
+            self.assertEqual(progress[-1], 100)
+            self.assertEqual(progress, sorted(progress))
+            self.assertTrue(all(0 <= value <= 100 for value in progress))
+
     def test_plain_and_archives_preserve_parser_results(self):
         parser = IncrementalLogParser()
         expected = parser.feed_lines(TEXT.splitlines(keepends=True))

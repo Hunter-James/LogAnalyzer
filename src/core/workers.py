@@ -10,6 +10,7 @@ import tempfile
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.entities import LogEntry
 from core.loading_priority import loading_priority
+from core.loading_memory import loading_memory
 
 # Шаблон строки лога: ВРЕМЯ [УРОВЕНЬ] [Логгер.метод]: ...
 # Захватываем имя логгера (часть до первой точки во втором [])
@@ -41,24 +42,26 @@ class IncrementalLogParser:
           continuation lines дописываются только в message."""
         new_closed = []
         intern = sys.intern  # локальный alias для скорости в горячем цикле
+        open_entry = self.open_entry
+        stats = self.stats
         for line in lines:
             m = LINE_PATTERN.match(line)
             if m:
-                if self.open_entry is not None:
-                    new_closed.append(self.open_entry)
-                ts = m.group(1)
-                lvl = intern(m.group(2))
-                lg = intern(m.group(3))
-                if lvl in self.stats:
-                    self.stats[lvl] += 1
-                self.open_entry = LogEntry(ts, lvl, lg, line.strip())
+                if open_entry is not None:
+                    new_closed.append(open_entry)
+                ts, lvl, lg = m.groups()
+                lvl = intern(lvl)
+                lg = intern(lg)
+                stats[lvl] += 1
+                open_entry = LogEntry(ts, lvl, lg, line.strip())
             else:
-                if self.open_entry is not None:
-                    if len(self.open_entry.message) < 50000:
-                        self.open_entry.message += "\n" + line.strip()
+                if open_entry is not None:
+                    if len(open_entry.message) < 50000:
+                        open_entry.message += "\n" + line.strip()
                 else:
                     # Файл начинается с продолжения - заворачиваем в UNKNOWN
-                    self.open_entry = LogEntry("", intern("UNKNOWN"), "", line.strip())
+                    open_entry = LogEntry("", intern("UNKNOWN"), "", line.strip())
+        self.open_entry = open_entry
         return new_closed
 
     def take_open(self):
@@ -251,7 +254,7 @@ class LogLoader(QThread):
             self.isInterruptionRequested, getattr(self, '_analysis_token', None))
 
     def run(self):
-        with loading_priority.analysis() as self._analysis_token:
+        with loading_memory.batch(), loading_priority.analysis() as self._analysis_token:
             try:
                 self._load()
             finally:
@@ -271,6 +274,7 @@ class LogLoader(QThread):
             bytes_read = 0
             last_emit_time = 0.0
             cancelled = False
+            byte_stream = getattr(stream, 'buffer', None)
             try:
                 # Читаем порциями: один вызов парсера на 512 строк,
                 # проверка отмены перед каждой порцией.
@@ -283,9 +287,14 @@ class LogLoader(QThread):
                     if not lines:
                         break
                     entries.extend(parser.feed_lines(lines))
-                    bytes_read += sum(len(line.encode('utf-8')) for line in lines)
+                    if byte_stream is None:
+                        bytes_read += len(''.join(lines).encode('utf-8'))
                     now = time.monotonic()
                     if total_bytes > 0 and now - last_emit_time > 0.1:
+                        # Позиция двоичного потока уже измерена в распакованных
+                        # байтах. Не кодируем миллионы строк обратно ради прогресса.
+                        if byte_stream is not None:
+                            bytes_read = byte_stream.tell()
                         self.progress.emit(min(99, int(bytes_read / total_bytes * 100)))
                         last_emit_time = now
             finally:
