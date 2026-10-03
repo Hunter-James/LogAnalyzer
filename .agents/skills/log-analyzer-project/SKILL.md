@@ -18,6 +18,8 @@ description: Карта архитектуры, проверок и выпуск
 - src/config.py: дефолты и нормализация settings.json.
 - src/gui/window.py: главное окно, восстановление сессии, открытие файлов, применение настроек.
 - src/gui/settings.py: диалог настроек; поведенческие параметры возвращаются в MainWindow.
+- src/core/update_checker.py: проверка последнего стабильного релиза GitHub через асинхронный QNetworkAccessManager, числовое сравнение версий, тайм-аут и отмена.
+- src/gui/update_dialog.py: окно новой версии, открытие страницы релиза и сообщения ручной проверки; UpdateController объединяет ручной и автоматический запросы.
 - src/gui/tab_manager.py: группы, панели, вкладки файлов, drag-and-drop и прокрутка.
 - src/core/workers.py: чтение .log, .txt, .gz, .zip, .7z, .rar; FilterWorker выполняет поиск, группировку соседних дублей и подготовку меток ERROR/WARN в фоне.
 - src/core/log_profile.py: автоматическое определение SmartL2, SmartL3 или смешанного/неизвестного профиля по уникальным логгерам и характерным API.
@@ -81,6 +83,9 @@ description: Карта архитектуры, проверок и выпуск
 
 ## Где менять…
 
+- Проверку обновлений: `src/core/update_checker.py` (репозиторий, адрес API, тайм-аут 15 секунд, теги `vX.Y.Z` или `X.Y`); окно и действия «Да»/ссылки — `src/gui/update_dialog.py`; кнопку и чекбокс — `src/gui/settings.py`. Ключ `auto_check_updates` по умолчанию выключен, сохраняется через `MainWindow.save_current_settings`; при включении проверяется один раз при запуске после показа окна. Автоматическая проверка сообщает только о новой версии, ручная также показывает отсутствие обновлений и ошибки. «Да» открывает страницу релиза для скачивания. EXE автоматически не заменяется. При выходе отменяются таймер и запрос.
+- Подтверждённый 04.10.2026 адрес репозитория релизов — `Hunter-James/LogAnalyzer`: прежний `Hunter-James/LogAnalyzerEVOL` перенаправляется туда. Последний на момент проверки релиз — `v1.6.0`, файл `LogAnalyzer.exe`. Источник: GitHub REST API `/repos/Hunter-James/LogAnalyzerEVOL` и `/releases/latest`. Номер последнего релиза не фиксировать в логике приложения.
+
 - Видимость элементов интерфейса: `DEFAULT_UI_FEATURES`, `UI_FEATURE_LABELS`, `UI_FEATURE_CATEGORIES` в `src/config.py`; диалог настроек строится из этого реестра. `batches_tab` независимо скрывает нижнюю вкладку «Партии», `batches_filter` — кнопку фильтра, `group_stats` — кнопку «Сводка группы». Применение: `LogViewerWidget.apply_ui_features` и `MainWindow._apply_ui_features_everywhere`, стартовая видимость кнопки — в конструкторе окна. Проверки: `tests/test_ui_visibility.py`.
 
 - Цвета и шрифты тем: реестр `THEMES` в `src/config.py`; применение QSS: `MainWindow.apply_stylesheet` в `src/gui/window.py`. В теме Windows 95 использовать масштабируемый `Microsoft Sans Serif`: растровый `MS Sans Serif` искажает кириллицу в Qt. Регрессия масштабируемости и покрытия русского алфавита: `tests/test_theme_fonts.py`.
@@ -96,6 +101,9 @@ description: Карта архитектуры, проверок и выпуск
 - Появление первых строк и память исходного текста: `FastTextLoader`, `RawLogBuffer`, `LogViewerWidget._on_fast_preview`; геометрия просмотра — `RawLogView`.
 
 ## Проверка
+
+- `tests/test_updates.py`: числовое сравнение версий, исключение черновиков/предрелизов, локальный HTTP-сервер для настоящего Qt-запроса, повторное нажатие, ошибки HTTP/сети/JSON, тайм-аут и отмена, сохранение/отмена настроек, ручной и автоматический показ, открытие ссылки и закрытие родительского окна. Тесты не обращаются к GitHub. Живой HTTPS-запрос проверять отдельно. Для PNG с читаемыми шрифтами в этом окружении использовать Windows platform: offscreen может рисовать квадраты вместо текста.
+- Все временные файлы проверок и сборки держать внутри проекта: перед запуском задавать `TEMP` и `TMP` на существующий `build/<задача>/tmp`, а для PyInstaller также `PYINSTALLER_CONFIG_DIR` на `build/<задача>/pyinstaller-cache`.
 
 - Сначала проверить доступность Python и импорт PyQt6: системный python/py может попадать в Windows Store shim. Старый .venv с Python 3.14 может не запускаться после переноса проекта. Проверенное окружение этой машины: .venv-search\Scripts\python.exe (Python 3.12, PyQt6/Qt6 6.10.2), локально исключено через .git/info/exclude.
 - Тесты: `.venv-search\Scripts\python.exe -X utf8 -m unittest discover -s tests -v`. Для autopep8 также нужен `-X utf8` из-за русского setup.cfg; в тестах с настройкой sys.path использовать `--ignore E402`.

@@ -25,6 +25,7 @@ from core.file_associations import open_default_apps_settings, sync_file_associa
 from gui.log_viewer import LogViewerWidget
 from gui.tab_manager import SplitManager
 from gui.settings import SettingsDialog
+from gui.update_dialog import UpdateController
 from gui.help_dialog import HelpDialog
 from gui.custom_widgets import BusyOverlay, MultiProgressBar
 
@@ -123,6 +124,16 @@ class MainWindow(QMainWindow):
 
         # Показываем окно до восстановления тяжёлой сессии.
         QTimer.singleShot(0, self.restore_session)
+        self.update_controller = UpdateController(self)
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self._check_updates_on_startup)
+        self._update_timer.start(1500)
+
+    def _check_updates_on_startup(self):
+        """Проверяет релиз после показа окна, если пользователь включил эту опцию."""
+        if self.settings.get("auto_check_updates", False):
+            self.update_controller.check_automatically()
 
     def setup_ui(self):
         self.central_widget = QWidget()
@@ -434,9 +445,13 @@ class MainWindow(QMainWindow):
             fast_view_engine=fast_engine,
             associate_log_files=associate_log,
             associate_zip_files=associate_zip,
+            auto_check_updates=self.settings.get("auto_check_updates", False),
             parent=self,
         )
         dlg.previewChanged.connect(self._preview_appearance)
+        dlg.checkUpdatesRequested.connect(self.update_controller.check_manually)
+        self.update_controller.checker.busyChanged.connect(dlg.set_update_checking)
+        dlg.set_update_checking(self.update_controller.checker.busy)
 
         result = dlg.exec()
         # Останавливаем debounce-таймер - иначе запланированное pending-
@@ -447,7 +462,7 @@ class MainWindow(QMainWindow):
         if result:
             (theme, size, features, group_layout,
              remember_split, fast_open, fast_engine,
-             associate_log, associate_zip) = dlg.get_settings()
+             associate_log, associate_zip, auto_check_updates) = dlg.get_settings()
             self.current_font_size = size
             self.ui_features = features
             self.apply_theme(theme)
@@ -460,6 +475,7 @@ class MainWindow(QMainWindow):
             self.settings["fast_view_engine"] = fast_engine or "list"
             self.settings["associate_log_files"] = bool(associate_log)
             self.settings["associate_zip_files"] = bool(associate_zip)
+            self.settings["auto_check_updates"] = bool(auto_check_updates)
             self.save_current_settings()
             self._sync_file_associations(show_error=True)
             if dlg.should_open_default_apps():
@@ -478,6 +494,7 @@ class MainWindow(QMainWindow):
                     or self.current_font_size != original_font_size):
                 self.current_font_size = original_font_size
                 self.apply_theme(original_theme)
+        dlg.deleteLater()
 
     def _preview_appearance(self, theme_name, font_size):
         """Слот live-превью из SettingsDialog: применяет тему и размер шрифта
@@ -1343,6 +1360,8 @@ class MainWindow(QMainWindow):
                 self.settings.get("associate_log_files", True)),
             "associate_zip_files": bool(
                 self.settings.get("associate_zip_files", False)),
+            "auto_check_updates": bool(
+                self.settings.get("auto_check_updates", False)),
             # Индекс активной группы - при следующем запуске именно её
             # первый таб начнёт грузиться (а не нулевая по счёту, если был на
             # другой группе).
@@ -1355,6 +1374,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent):
         if not getattr(self, '_closing', False):
             self._closing = True
+            self._update_timer.stop()
+            self.update_controller.close()
             self.save_current_settings()
             for dlg in list(getattr(self, '_group_stats_dialogs', [])):
                 try:

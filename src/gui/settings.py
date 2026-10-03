@@ -49,12 +49,13 @@ class SettingsDialog(QDialog):
     # Live-превью: испускается при любой смене темы или размера шрифта в комбо/спине.
     # MainWindow подписывается, чтобы применять выбор сразу, а на Cancel - откатывать.
     previewChanged = pyqtSignal(str, int)  # theme_name, font_size
+    checkUpdatesRequested = pyqtSignal()
 
     def __init__(self, current_theme, current_font_size, current_features,
                  current_group_layout='stack', remember_split_layout=False,
                  fast_open_mode=False, fast_view_engine='list',
                  associate_log_files=True, associate_zip_files=False,
-                 parent=None):
+                 parent=None, auto_check_updates=False):
         super().__init__(parent)
         # Сохраняем для get_settings - чтобы вернуть как есть, если юзер
         # не трогал соответствующий контрол (для current_group_layout сейчас
@@ -252,6 +253,14 @@ class SettingsDialog(QDialog):
         version_layout = QVBoxLayout(version_frame)
         self.lbl_version = QLabel(f"Текущая версия: {APP_VERSION}")
         version_layout.addWidget(self.lbl_version)
+        self.cb_auto_check_updates = QCheckBox("Автоматическая проверка обновления")
+        self.cb_auto_check_updates.setChecked(bool(auto_check_updates))
+        self.cb_auto_check_updates.setToolTip(
+            "Проверять новые стабильные релизы GitHub при запуске приложения")
+        version_layout.addWidget(self.cb_auto_check_updates)
+        self.btn_check_updates = QPushButton("Проверить обновления")
+        self.btn_check_updates.clicked.connect(self.checkUpdatesRequested.emit)
+        version_layout.addWidget(self.btn_check_updates)
         layout.addWidget(version_frame)
 
         # --- Кнопки ---
@@ -265,6 +274,11 @@ class SettingsDialog(QDialog):
         btn_box.addWidget(btn_ok)
         btn_box.addWidget(btn_cancel)
         layout.addLayout(btn_box)
+
+    def set_update_checking(self, checking):
+        """Отражает выполняющийся запрос и предотвращает повторные нажатия."""
+        self.btn_check_updates.setEnabled(not checking)
+        self.btn_check_updates.setText("Проверка…" if checking else "Проверить обновления")
 
     def _apply_theme_stylesheet(self, theme_name):
         """Перерисовывает стиль самого диалога под выбранную тему. Вызывается
@@ -324,4 +338,5 @@ class SettingsDialog(QDialog):
                 self.cb_fast_open.isChecked(),
                 self.combo_view_engine.currentData(),
                 self.cb_associate_log.isChecked(),
-                self.cb_associate_zip.isChecked())
+                self.cb_associate_zip.isChecked(),
+                self.cb_auto_check_updates.isChecked())
