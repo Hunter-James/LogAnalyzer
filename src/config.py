@@ -177,7 +177,7 @@ def load_settings():
     #   'full'    — QPlainTextEdit со всем текстом. Полноценный редактор
     #               (выделение фрагментов, Ctrl+F), но на 1M+ строк
     #               открытие занимает несколько секунд.
-    #   'limited' — QPlainTextEdit с первыми N строками. Компромисс:
+    #   'limited' — QPlainTextEdit с последними N строками. Компромисс:
     #               быстро + текстовый редактор, но виден не весь файл.
     engine = str(defaults.get("fast_view_engine") or "list").lower()
     if engine not in ("list", "full", "limited"):

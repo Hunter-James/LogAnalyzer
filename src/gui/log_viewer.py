@@ -63,6 +63,8 @@ class LogViewerWidget(QWidget):
 
         self.stats = {}
         self.preserved_real_index = None
+        self._scroll_to_end_after_filter = False
+        self._scroll_to_end_after_layout = False
         # Закладки восстанавливаемые из settings (применяются после загрузки модели)
         self._initial_bookmarks = list(bookmarks or [])
         # Позиция в исходном файле в байтах (нужна для tail-режима)
@@ -149,6 +151,8 @@ class LogViewerWidget(QWidget):
         from core.thread_lifecycle import retired_threads
         self._stop_tail()
         self.search_timer.stop()
+        self._scroll_to_end_after_filter = False
+        self._scroll_to_end_after_layout = False
         for attr in ('fast_loader', 'loader'):
             worker = getattr(self, attr, None)
             if worker is not None:
@@ -366,6 +370,7 @@ class LogViewerWidget(QWidget):
         self.log_view.setModel(self.model)
         # Скроллбар с метками ERROR/WARN
         self.log_view.setVerticalScrollBar(MarkerScrollBar(Qt.Orientation.Vertical))
+        self.log_view.verticalScrollBar().rangeChanged.connect(self._scroll_loaded_log_to_end)
 
         # Bottom Tabs (Выделение / Журнал поиска)
         self.bottom_tabs = QTabWidget()
@@ -669,7 +674,7 @@ class LogViewerWidget(QWidget):
         """Строит конкретный виджет для движка:
           list    → RawLogView + RawLinesModel (только видимые строки)
           full    → QPlainTextEdit (полный текст, медленно на 1M+)
-          limited → QPlainTextEdit (первые LIMITED_VIEW_LINES строк)"""
+          limited → QPlainTextEdit (последние LIMITED_VIEW_LINES строк)"""
         from PyQt6.QtGui import QFont
         from gui.custom_widgets import MarkerScrollBar
         f = QFont('Consolas')
@@ -814,12 +819,11 @@ class LogViewerWidget(QWidget):
         eng = self._fast_engine
         shown_total = total_lines
         if eng == 'list':
-            position = self.text_view.verticalScrollBar().value()
             self._raw_lines_model.set_lines(lines)
-            self.text_view.verticalScrollBar().setValue(position)
+            self.text_view.scrollToBottom()
         elif eng == 'limited':
             n = self.LIMITED_VIEW_LINES
-            shown = lines[:n]
+            shown = lines[-n:]
             self.text_view.setUpdatesEnabled(False)
             try:
                 self.text_view.setPlainText(
@@ -838,9 +842,15 @@ class LogViewerWidget(QWidget):
             finally:
                 self.text_view.setUpdatesEnabled(True)
 
+        if eng != 'list':
+            self.text_view.moveCursor(QTextCursor.MoveOperation.End)
+            scrollbar = self.text_view.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+
         # Маркеры (для limited — только в пределах показанных строк)
         if eng == 'limited' and total_lines > self.LIMITED_VIEW_LINES:
-            markers = [m for m in markers if m[0] <= self.LIMITED_VIEW_LINES]
+            offset = total_lines - self.LIMITED_VIEW_LINES
+            markers = [(line - offset, level) for line, level in markers if line > offset]
         self._fast_markers = markers
         self._fast_total_lines = shown_total
         self._update_fast_markers()
@@ -848,7 +858,7 @@ class LogViewerWidget(QWidget):
         note = (f"Быстрый просмотр: {total_lines:,} строк. "
                 f"Полный анализ загружается …")
         if eng == 'limited' and total_lines > self.LIMITED_VIEW_LINES:
-            note = (f"Быстрый просмотр: показаны первые "
+            note = (f"Быстрый просмотр: показаны последние "
                     f"{self.LIMITED_VIEW_LINES:,} из {total_lines:,} строк. "
                     f"Полный анализ загружается …")
         self.lbl_stats.setText(note)
@@ -952,6 +962,7 @@ class LogViewerWidget(QWidget):
         _prof['collect_batches'] = _tm.elapsed() - _p0
 
         _p0 = _tm.elapsed()
+        self._scroll_to_end_after_filter = True
         self.refresh_view()
         _prof['refresh_view'] = _tm.elapsed() - _p0
 
@@ -960,8 +971,6 @@ class LogViewerWidget(QWidget):
         self._show_content()
         if was_in_text_view:
             QTimer.singleShot(0, self._clear_fast_view)
-        if self.model.rowCount() > 0:
-            QTimer.singleShot(0, self.log_view.scrollToBottom)
         _prof['show_content'] = _tm.elapsed() - _p0
 
         total = _tm.elapsed()
@@ -2460,12 +2469,31 @@ class LogViewerWidget(QWidget):
         scrollbar.set_markers(markers)
 
     def on_filter_finished_scroll(self):
+        if self._scroll_to_end_after_filter:
+            self._scroll_to_end_after_filter = False
+            self._scroll_to_end_after_layout = True
+            QTimer.singleShot(0, self._scroll_loaded_log_to_end)
+            return
         if self.preserved_real_index is not None:
             new_row = self.model.find_row_by_real_index(self.preserved_real_index)
             if new_row != -1:
                 new_index = self.model.index(new_row)
                 self.log_view.setCurrentIndex(new_index)
                 self.log_view.scrollTo(new_index, QAbstractItemView.ScrollHint.PositionAtCenter)
+
+    def _scroll_loaded_log_to_end(self, *_range):
+        """Переходит в конец один раз, дождавшись фильтра и всех порций раскладки."""
+        if not self._scroll_to_end_after_layout:
+            return
+        last_row = self.model.rowCount() - 1
+        if last_row < 0:
+            self._scroll_to_end_after_layout = False
+            return
+        scrollbar = self.log_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        # При Batched layout максимум растёт, пока последняя строка не разложена.
+        if self.log_view.visualRect(self.model.index(last_row)).isValid():
+            self._scroll_to_end_after_layout = False
 
     def on_selection_changed(self, selected, deselected):
         self._refresh_details_view()

@@ -189,7 +189,7 @@ class SettingsDialog(QDialog):
         self.combo_view_engine = QComboBox()
         self.combo_view_engine.addItem("Список (быстро)", "list")
         self.combo_view_engine.addItem("Текст полностью", "full")
-        self.combo_view_engine.addItem("Текст (первые 200K строк)", "limited")
+        self.combo_view_engine.addItem("Текст (последние 200K строк)", "limited")
         idx = self.combo_view_engine.findData(fast_view_engine)
         if idx >= 0:
             self.combo_view_engine.setCurrentIndex(idx)
