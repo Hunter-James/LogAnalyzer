@@ -2,7 +2,7 @@ import json
 import os
 import sys
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 
 GITHUB_REPO = "Hunter-James/LogAnalyzerEVOL"
 
