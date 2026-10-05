@@ -48,23 +48,39 @@ _L3_TEXT_SIGNALS = (
 )
 
 
-def _collect_signals(entries):
-    l2_signals = set()
-    l3_signals = set()
+def _collect_signals(entries, l2_signals=(), l3_signals=()):
+    """Ищет только новые признаки, сохраняя полное множество доказательств."""
+    l2_signals = set(l2_signals)
+    l3_signals = set(l3_signals)
+    pending = [
+        (marker, f"api:{label}", found)
+        for definitions, found in ((_L2_TEXT_SIGNALS, l2_signals), (_L3_TEXT_SIGNALS, l3_signals))
+        for marker, label in definitions
+        if f"api:{label}" not in found
+    ]
+    # После обнаружения признаков L2 обычно остаются только API-пути L3.
+    # Условие выводится из самих маркеров: новые правила не требуют правки фильтра.
+    requires_slash = all('/' in marker for marker, _, _ in pending)
+    loggers = set()
     for entry in entries:
-        logger = getattr(entry, "logger", "")
-        if logger in _L2_LOGGERS:
-            l2_signals.add(f"logger:{logger}")
-        if logger in _L3_LOGGERS:
-            l3_signals.add(f"logger:{logger}")
+        loggers.add(getattr(entry, "logger", ""))
+        if not pending:
+            continue
+        message = getattr(entry, "message", "")
+        if requires_slash and '/' not in message:
+            continue
+        text = message.lower()
+        matched = False
+        for marker, signal, found in pending:
+            if marker in text:
+                found.add(signal)
+                matched = True
+        if matched:
+            pending = [(marker, signal, found) for marker, signal, found in pending if signal not in found]
+            requires_slash = all('/' in marker for marker, _, _ in pending)
 
-        text = getattr(entry, "message", "").lower()
-        for marker, label in _L2_TEXT_SIGNALS:
-            if marker in text:
-                l2_signals.add(f"api:{label}")
-        for marker, label in _L3_TEXT_SIGNALS:
-            if marker in text:
-                l3_signals.add(f"api:{label}")
+    l2_signals.update(f"logger:{logger}" for logger in loggers & _L2_LOGGERS)
+    l3_signals.update(f"logger:{logger}" for logger in loggers & _L3_LOGGERS)
     return l2_signals, l3_signals
 
 
@@ -100,7 +116,4 @@ def detect_log_profile(entries):
 
 def update_log_profile(current, new_entries):
     """Дополняет результат признаками новых tail-записей без повторного прохода."""
-    new_l2, new_l3 = _collect_signals(new_entries)
-    new_l2.update(current.l2_signals)
-    new_l3.update(current.l3_signals)
-    return _build_detection(new_l2, new_l3)
+    return _build_detection(*_collect_signals(new_entries, current.l2_signals, current.l3_signals))

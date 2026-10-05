@@ -1,11 +1,12 @@
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from core.entities import LogEntry
-from core.log_profile import LogProfile, detect_log_profile
+from core.log_profile import LogProfile, detect_log_profile, update_log_profile
 from core.models import LogModel, NO_BATCH
 
 
@@ -56,6 +57,70 @@ class LogProfileDetectionTests(unittest.TestCase):
         self.assertEqual(LogProfile.MIXED_UNKNOWN, result.profile)
         self.assertGreater(result.l2_score, 0)
         self.assertGreater(result.l3_score, 0)
+
+    def test_all_text_signals_preserve_case_insensitive_matching(self):
+        cases = [
+            ("Команда на деактивацию отбраковщика от L2", "L2 rejector API", True),
+            ("CodeVerificationQueueItem", "CodeVerificationQueue API", True),
+            ("/api/v3/true-api/orders", "True API v3", False),
+            ("/api/shipment-refund", "shipment-refund API", False),
+            ("/api/warehouse", "warehouse API", False),
+        ]
+        for message, label, is_l2 in cases:
+            for text in (message, message.lower(), message.upper(), message.swapcase()):
+                with self.subTest(text=text):
+                    result = detect_log_profile([entry("DataService", text)])
+                    self.assertEqual(("api:" + label,), result.l2_signals if is_l2 else result.l3_signals)
+                    self.assertEqual(1, result.l2_score + result.l3_score)
+
+    def test_text_signals_do_not_cross_record_boundaries(self):
+        for marker in ("codeverificationqueueitem", "/api/warehouse",
+                       "команда на деактивацию отбраковщика от l2"):
+            for split in range(1, len(marker)):
+                with self.subTest(marker=marker, split=split):
+                    result = detect_log_profile([
+                        entry("DataService", marker[:split]),
+                        entry("DataService", marker[split:]),
+                    ])
+                    self.assertEqual(0, result.l2_score + result.l3_score)
+
+    def test_late_signals_and_duplicates_keep_complete_evidence(self):
+        entries = [entry("PLCService", "ordinary message")] * 10000
+        entries.extend([
+            entry("DataService", "CODEVERIFICATIONQUEUEITEM"),
+            entry("DataService", "GET /API/WAREHOUSE"),
+            entry("TrueApiService", "GET /API/WAREHOUSE"),
+        ])
+        result = detect_log_profile(iter(entries))
+        self.assertEqual(LogProfile.MIXED_UNKNOWN, result.profile)
+        self.assertEqual(("api:CodeVerificationQueue API", "logger:PLCService"), result.l2_signals)
+        self.assertEqual(("api:warehouse API", "logger:TrueApiService"), result.l3_signals)
+        self.assertEqual((2, 2), (result.l2_score, result.l3_score))
+
+        incremental = detect_log_profile([])
+        for start in range(0, len(entries), 511):
+            incremental = update_log_profile(incremental, entries[start:start + 511])
+        self.assertEqual(result, incremental)
+        self.assertEqual(result, update_log_profile(result, []))
+
+    def test_unicode_matching_keeps_lower_semantics(self):
+        result = detect_log_profile([
+            entry("DataService", "/ap\u0131/warehouse"),
+            entry("DataService", "/API/WAREHOU\u017fE"),
+            entry("DataService", "/AP\u0130/WAREHOUSE"),
+        ])
+        self.assertEqual(0, result.l2_score + result.l3_score)
+        self.assertEqual(detect_log_profile([]), detect_log_profile([SimpleNamespace()]))
+
+    def test_new_loggers_are_found_after_all_text_signals(self):
+        initial = detect_log_profile([entry("DataService", (
+            "Команда на деактивацию отбраковщика от L2 CodeVerificationQueueItem "
+            "/api/v3/true-api/ /api/shipment-refund /api/warehouse"))])
+        result = update_log_profile(initial, [entry("PLCService"), entry("SuzService")])
+        self.assertEqual((2, 3), (initial.l2_score, initial.l3_score))
+        self.assertEqual((3, 4), (result.l2_score, result.l3_score))
+        self.assertIn("logger:PLCService", result.l2_signals)
+        self.assertIn("logger:SuzService", result.l3_signals)
 
     def test_model_activates_only_l2_specialized_rules(self):
         l2_model = LogModel([
