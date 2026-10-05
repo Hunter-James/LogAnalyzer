@@ -63,7 +63,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(release.url, f"{RELEASES_URL}/tag/v9.0.0")
 
 
-class NetworkTests(unittest.TestCase):
+class LocalServerCase(unittest.TestCase):
     """Локальный HTTP-сервер проверяет настоящий QNetworkAccessManager без GitHub."""
 
     def setUp(self):
@@ -115,6 +115,8 @@ class NetworkTests(unittest.TestCase):
         self.url_patch.stop()
         APP.processEvents()
 
+
+class NetworkTests(LocalServerCase):
     def test_async_success_and_duplicate_click(self):
         self.checker.check()
         self.checker.check()
@@ -227,7 +229,7 @@ class UpdateUiTests(unittest.TestCase):
         self.controller.checker.completed.emit(None)
         self.assertIsNotNone(self.controller._dialog)
 
-    def test_yes_and_changelog_open_release_no_does_not(self):
+    def test_only_changelog_opens_browser(self):
         with patch("gui.update_dialog.QDesktopServices.openUrl", return_value=True) as open_url:
             for action in ("no", "link", "yes"):
                 dialog = UpdateAvailableDialog(self.release, self.window)
@@ -239,9 +241,39 @@ class UpdateUiTests(unittest.TestCase):
                     standard = (QDialogButtonBox.StandardButton.Yes if action == "yes"
                                 else QDialogButtonBox.StandardButton.No)
                     buttons.button(standard).click()
-                self.assertEqual(open_url.call_count, {"no": 0, "link": 1, "yes": 2}[action])
+                self.assertEqual(open_url.call_count, {"no": 0, "link": 1, "yes": 1}[action])
+                if action == "yes":
+                    self.assertEqual(dialog.result(), dialog.DialogCode.Accepted)
                 dialog.deleteLater()
             self.assertEqual(open_url.call_args.args[0].toString(), self.release.url)
+
+    def test_confirmation_starts_download_and_ready_closes_window(self):
+        with patch.object(self.controller.installer, "start") as start, \
+                patch.object(self.controller.installer, "install", return_value=True) as install, \
+                patch.object(self.window, "close") as close:
+            self.controller._on_completed(self.release)
+            self.controller._dialog.accept()
+            start.assert_called_once_with(self.release)
+            self.controller.installer.progress.emit(50, 100)
+            self.assertEqual(self.controller._dialog.value(), 50)
+            self.controller.installer.ready.emit()
+            install.assert_called_once()
+            close.assert_called_once()
+
+    def test_download_error_keeps_application_open(self):
+        with patch.object(self.controller.installer, "start"), patch.object(self.window, "close") as close:
+            self.controller._start_update(self.release)
+            self.controller.installer.failed.emit("Обрыв соединения")
+            self.assertEqual(self.controller._dialog.text(), "Обрыв соединения")
+            close.assert_not_called()
+
+    def test_closing_progress_cancels_download(self):
+        with patch.object(self.controller.installer, "start"), \
+                patch.object(self.controller.installer, "cancel") as cancel:
+            self.controller._start_update(self.release)
+            self.controller._dialog.close()
+            cancel.assert_called_once()
+            self.assertIsNone(self.controller._dialog)
 
     def test_settings_button_and_busy_state(self):
         requests = []

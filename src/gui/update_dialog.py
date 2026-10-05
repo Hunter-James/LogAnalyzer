@@ -3,15 +3,16 @@ from PyQt6.QtCore import QObject, Qt, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
-    QMessageBox, QStyle, QVBoxLayout,
+    QMessageBox, QProgressDialog, QStyle, QVBoxLayout,
 )
 
 from config import APP_VERSION
 from core.update_checker import UpdateChecker
+from core.update_installer import UpdateInstaller
 
 
 class UpdateAvailableDialog(QDialog):
-    """Предлагает открыть страницу новой версии и её список изменений."""
+    """Предлагает установить новую версию; список изменений открывается отдельно."""
 
     def __init__(self, release, parent=None):
         super().__init__(parent)
@@ -26,7 +27,9 @@ class UpdateAvailableDialog(QDialog):
             QStyle.StandardPixmap.SP_MessageBoxQuestion).pixmap(48, 48))
         layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
         content = QVBoxLayout()
-        message = QLabel(f"Доступна новая версия {release.version}.\nХотите обновить?")
+        message = QLabel(f"Доступна новая версия {release.version}.\n"
+                         "Скачать и установить обновление?\n"
+                         "Приложение сохранит сессию и перезапустится.")
         message.setTextFormat(Qt.TextFormat.PlainText)
         content.addWidget(message)
         link = QLabel('<a href="release">Открыть список изменений…</a>')
@@ -35,12 +38,12 @@ class UpdateAvailableDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No)
         yes = buttons.button(QDialogButtonBox.StandardButton.Yes)
-        yes.setText("Да")
-        yes.setToolTip("Открыть страницу релиза GitHub для скачивания")
+        yes.setText("Обновить")
+        yes.setToolTip("Скачать обновление, установить и перезапустить приложение")
         no = buttons.button(QDialogButtonBox.StandardButton.No)
         no.setText("Нет")
         no.setDefault(True)
-        buttons.accepted.connect(self._accept_update)
+        buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         content.addWidget(buttons)
         layout.addLayout(content)
@@ -50,10 +53,6 @@ class UpdateAvailableDialog(QDialog):
         if not opened:
             QMessageBox.warning(self, "Обновление", "Не удалось открыть браузер.\n" + self.release.url)
         return opened
-
-    def _accept_update(self):
-        if self._open_release_page():
-            self.accept()
 
 
 class UpdateController(QObject):
@@ -66,6 +65,11 @@ class UpdateController(QObject):
         self.checker.failed.connect(self._on_failed)
         self._manual = False
         self._dialog = None
+        self._closing = False
+        self.installer = UpdateInstaller(self)
+        self.installer.progress.connect(self._on_progress)
+        self.installer.ready.connect(self._on_ready)
+        self.installer.failed.connect(self._on_install_failed)
 
     def check_manually(self):
         """Ручная проверка всегда сообщает результат, даже если запрос уже шёл."""
@@ -85,6 +89,8 @@ class UpdateController(QObject):
     def close(self):
         """Отменяет проверку и закрывает её окно при выходе из приложения."""
         self.checker.cancel()
+        self._closing = True
+        self.installer.cancel()
         if self._dialog is not None:
             self._dialog.reject()
 
@@ -115,7 +121,10 @@ class UpdateController(QObject):
 
     def _on_completed(self, release):
         if release is not None:
-            self._show_dialog(UpdateAvailableDialog(release, self._dialog_parent()))
+            dialog = UpdateAvailableDialog(release, self._dialog_parent())
+            self._show_dialog(dialog)
+            dialog.finished.connect(lambda result: self._start_update(release)
+                                    if result == QDialog.DialogCode.Accepted and not self._closing else None)
         elif self._manual:
             self._show_message(QMessageBox.Icon.Information,
                                f"Новых версий нет.\nТекущая версия: {APP_VERSION}.")
@@ -123,3 +132,34 @@ class UpdateController(QObject):
     def _on_failed(self, error):
         if self._manual:
             self._show_message(QMessageBox.Icon.Warning, error)
+
+    def _start_update(self, release):
+        progress = QProgressDialog("Скачивание обновления…", "Отмена", 0, 100, self.parent())
+        progress.setWindowTitle("Обновление Log Analyzer")
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.canceled.connect(self.installer.cancel)
+        progress.canceled.connect(self._forget_dialog)
+        self._show_dialog(progress)
+        self.installer.start(release)
+
+    def _on_progress(self, received, total):
+        if isinstance(self._dialog, QProgressDialog):
+            self._dialog.setValue(int(received * 100 / total))
+
+    def _on_install_failed(self, error):
+        if self._dialog is not None:
+            self._dialog.reject()
+        if not self._closing:
+            self._show_message(QMessageBox.Icon.Warning, error)
+
+    def _on_ready(self):
+        if self._closing or not self.installer.install():
+            return
+        if self._dialog is not None:
+            self._dialog.accept()
+        # Настройки могут быть открыты через exec(); сначала закрываем модальные окна.
+        modal = QApplication.activeModalWidget()
+        if modal is not None and modal is not self.parent():
+            modal.close()
+        self.parent().close()

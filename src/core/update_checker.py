@@ -22,6 +22,9 @@ class Release:
 
     version: str
     url: str
+    download_url: str = ""
+    size: int = 0
+    sha256: str = ""
 
 
 def version_numbers(version):
@@ -44,7 +47,22 @@ def newer_release(payload, current_version=APP_VERSION):
     if version_numbers(tag) <= version_numbers(current_version):
         return None
     # Адрес строится из фиксированного репозитория, а не из HTML ответа сервера.
-    return Release(tag.removeprefix("v"), f"{RELEASES_URL}/tag/{quote(tag, safe='')}")
+    page = f"{RELEASES_URL}/tag/{quote(tag, safe='')}"
+    assets = payload.get("assets", [])
+    if not isinstance(assets, list) or any(not isinstance(asset, dict) for asset in assets):
+        raise ValueError("Некорректный список файлов релиза")
+    for asset in assets:
+        if asset.get("name") == "LogAnalyzer.exe" and asset.get("state") == "uploaded":
+            size = asset.get("size")
+            if not isinstance(size, int) or size <= 0:
+                raise ValueError("Некорректный размер LogAnalyzer.exe")
+            digest = asset.get("digest") or ""
+            if not isinstance(digest, str) or (digest and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)):
+                raise ValueError("Некорректная контрольная сумма LogAnalyzer.exe")
+            return Release(tag.removeprefix("v"), page,
+                           f"{RELEASES_URL}/download/{quote(tag, safe='')}/LogAnalyzer.exe",
+                           size, digest.removeprefix("sha256:").lower())
+    return Release(tag.removeprefix("v"), page)
 
 
 class UpdateChecker(QObject):
