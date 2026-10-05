@@ -37,15 +37,23 @@ _L3_LOGGERS = frozenset({
     "WarehouseService",
 })
 
+# Третий элемент — варианты обязательного символа, редкого в обычных сообщениях.
+# Проверяем их до lower(), чтобы отсутствующий признак не заставлял преобразовывать
+# миллионы строк. Полное совпадение по-прежнему проверяется через str.lower().
 _L2_TEXT_SIGNALS = (
-    ("команда на деактивацию отбраковщика от l2", "L2 rejector API"),
-    ("codeverificationqueueitem", "CodeVerificationQueue API"),
+    ("команда на деактивацию отбраковщика от l2", "L2 rejector API", ("ю", "Ю")),
+    ("codeverificationqueueitem", "CodeVerificationQueue API", ("q", "Q")),
 )
 _L3_TEXT_SIGNALS = (
-    ("/api/v3/true-api/", "True API v3"),
-    ("/api/shipment-refund", "shipment-refund API"),
-    ("/api/warehouse", "warehouse API"),
+    ("/api/v3/true-api/", "True API v3", ("/",)),
+    ("/api/shipment-refund", "shipment-refund API", ("/",)),
+    ("/api/warehouse", "warehouse API", ("/",)),
 )
+
+
+def _required_chars(pending):
+    """Объединяет дешёвые проверки только для ещё не найденных признаков."""
+    return tuple(dict.fromkeys(char for _, _, _, chars in pending for char in chars))
 
 
 def _collect_signals(entries, l2_signals=(), l3_signals=()):
@@ -53,31 +61,32 @@ def _collect_signals(entries, l2_signals=(), l3_signals=()):
     l2_signals = set(l2_signals)
     l3_signals = set(l3_signals)
     pending = [
-        (marker, f"api:{label}", found)
+        (marker, f"api:{label}", found, chars)
         for definitions, found in ((_L2_TEXT_SIGNALS, l2_signals), (_L3_TEXT_SIGNALS, l3_signals))
-        for marker, label in definitions
+        for marker, label, chars in definitions
         if f"api:{label}" not in found
     ]
-    # После обнаружения признаков L2 обычно остаются только API-пути L3.
-    # Условие выводится из самих маркеров: новые правила не требуют правки фильтра.
-    requires_slash = all('/' in marker for marker, _, _ in pending)
+    required_chars = _required_chars(pending)
     loggers = set()
     for entry in entries:
         loggers.add(getattr(entry, "logger", ""))
         if not pending:
             continue
         message = getattr(entry, "message", "")
-        if requires_slash and '/' not in message:
+        for char in required_chars:
+            if char in message:
+                break
+        else:
             continue
         text = message.lower()
         matched = False
-        for marker, signal, found in pending:
+        for marker, signal, found, _ in pending:
             if marker in text:
                 found.add(signal)
                 matched = True
         if matched:
-            pending = [(marker, signal, found) for marker, signal, found in pending if signal not in found]
-            requires_slash = all('/' in marker for marker, _, _ in pending)
+            pending = [item for item in pending if item[1] not in item[2]]
+            required_chars = _required_chars(pending)
 
     l2_signals.update(f"logger:{logger}" for logger in loggers & _L2_LOGGERS)
     l3_signals.update(f"logger:{logger}" for logger in loggers & _L3_LOGGERS)

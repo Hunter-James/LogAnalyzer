@@ -6,7 +6,9 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from core.entities import LogEntry
-from core.log_profile import LogProfile, detect_log_profile, update_log_profile
+from core.log_profile import (
+    LogProfile, detect_log_profile, update_log_profile, _L2_TEXT_SIGNALS, _L3_TEXT_SIGNALS,
+)
 from core.models import LogModel, NO_BATCH
 
 
@@ -111,6 +113,42 @@ class LogProfileDetectionTests(unittest.TestCase):
         ])
         self.assertEqual(0, result.l2_score + result.l3_score)
         self.assertEqual(detect_log_profile([]), detect_log_profile([SimpleNamespace()]))
+
+    def test_missing_queue_signal_does_not_lower_unrelated_messages(self):
+        class UnrelatedMessage(str):
+            def lower(self):
+                raise AssertionError('Unrelated messages must not be converted to lowercase')
+
+        initial = detect_log_profile([
+            entry("PLCService", "Команда на деактивацию отбраковщика от L2"),
+        ])
+        result = update_log_profile(initial, [
+            entry("DataService", UnrelatedMessage("Получены данные от контроллера")),
+            entry("SuzService", UnrelatedMessage("Поздний компонент")),
+        ])
+        self.assertEqual(initial.l2_signals, result.l2_signals)
+        self.assertEqual(("logger:SuzService",), result.l3_signals)
+        self.assertEqual(LogProfile.MIXED_UNKNOWN, result.profile)
+
+        late = update_log_profile(result, [entry("DataService", "CoDeVeRiFiCaTiOnQuEuEiTeM")])
+        self.assertIn("api:CodeVerificationQueue API", late.l2_signals)
+        self.assertEqual(result.l3_signals, late.l3_signals)
+
+    def test_required_characters_cover_unicode_lower_variants(self):
+        # Пропуск до lower() безопасен только при учёте всех вариантов символа,
+        # включая символы, преобразующиеся в несколько кодовых точек.
+        definitions = _L2_TEXT_SIGNALS + _L3_TEXT_SIGNALS
+        variants = {chars[0].lower(): set() for _, _, chars in definitions}
+        for codepoint in range(sys.maxunicode + 1):
+            char = chr(codepoint)
+            for lowered in char.lower():
+                if lowered in variants:
+                    variants[lowered].add(char)
+        for marker, label, chars in definitions:
+            with self.subTest(signal=label):
+                required = chars[0].lower()
+                self.assertIn(required, marker)
+                self.assertTrue(variants[required].issubset(chars))
 
     def test_new_loggers_are_found_after_all_text_signals(self):
         initial = detect_log_profile([entry("DataService", (
