@@ -125,7 +125,7 @@ atexit.register(_cleanup_log_if_clean_exit)
 
 from core.single_instance import SingleInstanceChannel  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
-from PyQt6.QtCore import QTimer, qInstallMessageHandler  # noqa: E402
+from PyQt6.QtCore import qInstallMessageHandler  # noqa: E402
 
 
 if __name__ == "__main__":
@@ -145,22 +145,8 @@ if __name__ == "__main__":
         qInstallMessageHandler(_qt_message_handler)
         app.aboutToQuit.connect(_cleanup_log_if_clean_exit)
 
-        from gui.window import MainWindow
-        window = MainWindow()
-        window.show()
-
-        def handle_external_request(paths):
-            window.open_external_files(paths)
-            if window.isMinimized():
-                window.showNormal()
-            window.show()
-            window.raise_()
-            window.activateWindow()
-
-        single_instance.requestReceived.connect(handle_external_request)
-        if startup_files:
-            QTimer.singleShot(
-                0, lambda paths=tuple(startup_files): window.open_external_files(paths))
+        from gui.startup import show_main_window
+        window = show_main_window(single_instance, startup_files)
         _logger.info("Main window shown, entering event loop")
         exit_code = app.exec()
         _logger.info("Event loop exited with code %s", exit_code)

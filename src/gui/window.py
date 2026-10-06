@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLineEdit, QLabel, QFileDialog, QToolButton,
                              QMessageBox, QStyle, QFrame, QCheckBox, QApplication, QMenu)
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QIcon, QKeySequence, QCloseEvent, QShortcut
 
 from config import THEMES, APP_VERSION, DEFAULT_UI_FEATURES, load_settings, save_settings
@@ -41,6 +41,8 @@ def resource_path(relative_path):
 
 
 class MainWindow(QMainWindow):
+    sessionRestored = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         _log.info("MainWindow.__init__ start, APP_VERSION=%s", APP_VERSION)
@@ -1304,6 +1306,7 @@ class MainWindow(QMainWindow):
         elif total > 0:
             # Все группы скрыты или пусты - busy спрятать руками.
             self.hide_busy()
+        self.sessionRestored.emit()
 
     def save_current_settings(self):
         files_left, files_right = self.split_manager.get_open_files()
